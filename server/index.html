@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Upload Portal • Alaktra Stream</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            background: radial-gradient(circle at top, #1a221b 0%, #0d0f0e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 500px;
+        }
+        .upload-card {
+            background-color: #171a18;
+            padding: 2.2rem;
+            border-radius: 18px;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 0.5rem;
+        }
+        .brand-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            color: #0b0d0c;
+        }
+        h2 {
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            color: #ffffff;
+        }
+        p.subtitle {
+            text-align: center;
+            font-size: 0.85rem;
+            color: #94a398;
+            margin-bottom: 1.8rem;
+        }
+        .input-group {
+            margin-bottom: 1.25rem;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.45rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #b8c5bc;
+        }
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid #2a332d;
+            background-color: #202622;
+            color: white;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        input[type="text"]:focus {
+            border-color: #00E599;
+            box-shadow: 0 0 0 3px rgba(0, 229, 153, 0.15);
+        }
+        input[type="file"] {
+            font-size: 0.82rem;
+            padding: 9px;
+            cursor: pointer;
+        }
+        .preview-box {
+            display: none;
+            margin-top: 8px;
+            text-align: center;
+        }
+        .preview-box img {
+            max-width: 100px;
+            max-height: 100px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            object-fit: cover;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            border: none;
+            border-radius: 28px;
+            color: #0c120e;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.15s, opacity 0.15s, box-shadow 0.15s;
+            margin-top: 0.8rem;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(0, 229, 153, 0.35);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status-msg {
+            display: none;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            margin-top: 1rem;
+            text-align: center;
+        }
+        .status-success {
+            background-color: rgba(0, 229, 153, 0.12);
+            border: 1px solid #00E599;
+            color: #00E599;
+        }
+        .status-error {
+            background-color: rgba(239, 68, 68, 0.15);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+        }
+        .footer-note {
+            margin-top: 1.5rem;
+            text-align: center;
+            font-size: 0.78rem;
+            color: #6a776e;
+        }
+        .footer-note a {
+            color: #00E599;
+            text-decoration: none;
+        }
+        .footer-note a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="upload-card">
+        <div class="brand">
+            <div class="brand-icon">▶</div>
+            <h2>Upload Track</h2>
+        </div>
+        <p class="subtitle">Broadcast your music directly to Alaktra Player</p>
+        
+        <div class="input-group">
+            <label for="songName">Song Title</label>
+            <input type="text" id="songName" placeholder="e.g. Dilawara" required>
+        </div>
+
+        <div class="input-group">
+            <label for="artistName">Artist Name</label>
+            <input type="text" id="artistName" placeholder="e.g. The PropheC, Ezu" required>
+        </div>
+
+        <div class="input-group">
+            <label for="audioFile">Audio File (MP3, WAV, FLAC, M4A)</label>
+            <input type="file" id="audioFile" accept="audio/*" required>
+        </div>
+
+        <div class="input-group">
+            <label for="imageFile">Cover Art (JPG, PNG, WEBP)</label>
+            <input type="file" id="imageFile" accept="image/*" onchange="previewCover(event)" required>
+            <div class="preview-box" id="previewBox">
+                <img id="coverImgPreview" alt="Cover Preview">
+            </div>
+        </div>
+
+        <button id="submitBtn" onclick="handleSubmit()">Release to App</button>
+
+        <div id="statusMsg" class="status-msg"></div>
+    </div>
+
+    <div class="footer-note">
+        Powered by FastAPI & SQLite &bull; <a href="/docs" target="_blank">View API Docs</a> &bull; <a href="/songs" target="_blank">View Song List JSON</a>
+    </div>
+</div>
+
+<script>
+    function previewCover(event) {
+        const file = event.target.files[0];
+        const previewBox = document.getElementById('previewBox');
+        const img = document.getElementById('coverImgPreview');
+        if (file) {
+            img.src = URL.createObjectURL(file);
+            previewBox.style.display = 'block';
+        } else {
+            previewBox.style.display = 'none';
+        }
+    }
+
+    function showStatus(text, isError = false) {
+        const msg = document.getElementById('statusMsg');
+        msg.textContent = text;
+        msg.className = 'status-msg ' + (isError ? 'status-error' : 'status-success');
+        msg.style.display = 'block';
+    }
+
+    async function handleSubmit() {
+        const song = document.getElementById('songName').value.trim();
+        const artist = document.getElementById('artistName').value.trim();
+        const audio = document.getElementById('audioFile').files[0];
+        const image = document.getElementById('imageFile').files[0];
+        const btn = document.getElementById('submitBtn');
+
+        if (!song || !artist || !audio || !image) {
+            showStatus("⚠️ Please fill in all fields and select both an audio and cover file.", true);
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "Uploading Track...";
+
+        const formData = new FormData();
+        formData.append("title", song);
+        formData.append("artist", artist);
+        formData.append("audio", audio);
+        formData.append("cover", image);
+
+        // Dynamically resolve upload URL so it works seamlessly locally, over LAN, or configured IP
+        const uploadUrl = (window.location.origin && window.location.origin.startsWith("http")) 
+            ? `${window.location.origin}/songs/upload`
+            : "http://100.65.126.106:8000/songs/upload";
+
+        try {
+            const response = await fetch(uploadUrl, {
+                method: "POST",
+                body: formData
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                showStatus(`✅ Track "${song}" by ${artist} published successfully!`);
+                document.getElementById('songName').value = "";
+                document.getElementById('artistName').value = "";
+                document.getElementById('audioFile').value = "";
+                document.getElementById('imageFile').value = "";
+                document.getElementById('previewBox').style.display = 'none';
+            } else {
+                const errorText = await response.text();
+                showStatus("❌ Upload failed: " + errorText, true);
+            }
+        } catch (error) {
+            console.error(error);
+            showStatus("⚠️ Server connection failed. Make sure the backend server is running.", true);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Release to App";
+        }
+    }
+</script>
+</body>
+</html>

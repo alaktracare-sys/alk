@@ -1,0 +1,8 @@
+{
+  "name": "Alaktra",
+  "description": "High-fidelity music player and streaming client with responsive playback, custom equalizer, listening analytics, and playlist management",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
