@@ -32,15 +32,7 @@ fun WelcomeScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0D1B2A),
-                        AlaktraBackground,
-                        AlaktraBackground
-                    )
-                )
-            )
+            .background(Color(0xFF000000))
             .statusBarsPadding()
             .padding(horizontal = 24.dp, vertical = 24.dp)
     ) {
@@ -56,10 +48,9 @@ fun WelcomeScreen(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(92.dp)
+                    .size(120.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .background(Color(0xFF0E1118))
-                    .border(1.5.dp, Brush.linearGradient(listOf(AlaktraMint, AlaktraCyan)), RoundedCornerShape(26.dp))
+                    .background(Color(0xFF000000))
                     .padding(8.dp)
             ) {
                 Image(

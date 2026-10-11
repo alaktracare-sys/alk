@@ -492,8 +492,8 @@ fun MainShell(
                     shape = navPillShape,
                     // Bottom Navigation Bar Transparency:
                     // Modify the alpha value below (0.0f = completely transparent, 1.0f = completely solid/opaque, 0.82f = translucent frosted)
-                    color = Color(0xFF161822).copy(alpha = 0.99f),
-                    border = BorderStroke(1.dp, Color.Black.copy(alpha = 0.16f)),
+                    color = Color(0xFF000000).copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
                     tonalElevation = 0.dp
                 ) {
                     Row(
