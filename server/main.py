@@ -23,12 +23,13 @@ if os.path.exists(env_file):
     except Exception as e:
         print(f"⚠️ Could not load .env file: {e}")
 
-from database import init_db, COVER_DIR, MUSIC_DIR
-from routes import songs, auth, playlists, history
+from database import init_db, COVER_DIR, MUSIC_DIR, PIN_DIR
+from routes import songs, auth, playlists, history, pins
 
 # Ensure directories exist
 os.makedirs(COVER_DIR, exist_ok=True)
 os.makedirs(MUSIC_DIR, exist_ok=True)
+os.makedirs(PIN_DIR, exist_ok=True)
 init_db()
 
 app = FastAPI(
@@ -49,12 +50,14 @@ app.add_middleware(
 # Mount static asset directories
 app.mount("/covers", StaticFiles(directory=COVER_DIR), name="covers")
 app.mount("/music", StaticFiles(directory=MUSIC_DIR), name="music")
+app.mount("/pins", StaticFiles(directory=PIN_DIR), name="pins")
 
 # Include Routers with exact prefix compatibility for the Android app
 app.include_router(auth.router, prefix="/auth")
 app.include_router(songs.router)
 app.include_router(playlists.router)
 app.include_router(history.router)
+app.include_router(pins.router)
 
 
 # Web Upload Portal
@@ -65,6 +68,16 @@ def serve_upload_portal():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return "<h3>Alaktra Music Player Server is Running!</h3>"
+
+
+# Artwork Metadata & Theme Color Migration Tool
+@app.get("/migrate-art", response_class=HTMLResponse)
+@app.get("/update-art", response_class=HTMLResponse)
+def serve_migration_portal():
+    migrate_path = os.path.join(BASE_DIR, "migrate_art.html")
+    if os.path.exists(migrate_path):
+        return FileResponse(migrate_path)
+    return "<h3>Migration Portal (migrate_art.html) not found</h3>"
 
 
 # Health Check

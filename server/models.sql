@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS songs (
     artist TEXT NOT NULL,
     audio_path TEXT NOT NULL,
     cover_path TEXT NOT NULL,
+    dominant_color TEXT DEFAULT NULL,
     etag TEXT,
     duration REAL DEFAULT 0.0,
     created_at TEXT DEFAULT (datetime('now')),

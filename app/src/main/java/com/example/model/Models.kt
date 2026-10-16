@@ -10,7 +10,8 @@ data class Song(
     val isLiked: Boolean = false,
     val localPath: String? = null,
     val isDownloaded: Boolean = false,
-    val isCached: Boolean = false
+    val isCached: Boolean = false,
+    val dominantColorHex: String? = null
 ) {
     fun resolvedPath(): String = localPath ?: audioUrl
 }
@@ -45,3 +46,16 @@ data class OfflineAction(
     val payload: String,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+data class LocationPin(
+    val id: Int,
+    val userId: Int,
+    val songId: Int,
+    val latitude: Double,
+    val longitude: Double,
+    val distanceMeters: Double,
+    val imageUrl: String,
+    val createdAt: String,
+    val song: Song
+)
+

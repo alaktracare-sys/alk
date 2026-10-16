@@ -323,7 +323,8 @@ fun QueuePanel(
 
                 itemsIndexed(
                     items = playbackState.userQueue,
-                    key = { idx, s -> "user_q_${s.id}_$idx" }
+                    key = { idx, s -> "user_q_${s.id}_$idx" },
+                    contentType = { _, _ -> "queue_track" }
                 ) { index, song ->
                     QueueTrackRow(
                         song = song,
@@ -427,7 +428,8 @@ fun QueuePanel(
             } else {
                 itemsIndexed(
                     items = upcomingContextTracks,
-                    key = { idx, s -> "ctx_q_${s.id}_${playbackState.contextIndex + 1 + idx}" }
+                    key = { idx, s -> "ctx_q_${s.id}_${playbackState.contextIndex + 1 + idx}" },
+                    contentType = { _, _ -> "queue_track" }
                 ) { relIndex, song ->
                     val actualContextIndex = playbackState.contextIndex + 1 + relIndex
                     QueueTrackRow(
@@ -481,7 +483,8 @@ fun QueuePanel(
 
                 itemsIndexed(
                     items = playbackState.autoplayTracks,
-                    key = { idx, s -> "autoplay_${s.id}_$idx" }
+                    key = { idx, s -> "autoplay_${s.id}_$idx" },
+                    contentType = { _, _ -> "autoplay_track" }
                 ) { _, song ->
                     AutoplayRow(song = song)
                 }

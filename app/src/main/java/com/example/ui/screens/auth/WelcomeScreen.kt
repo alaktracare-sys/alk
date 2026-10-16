@@ -48,7 +48,7 @@ fun WelcomeScreen(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(120.dp)
+                    .size(180.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .background(Color(0xFF000000))
                     .padding(8.dp)

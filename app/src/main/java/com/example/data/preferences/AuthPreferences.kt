@@ -291,6 +291,49 @@ class AuthPreferences(context: Context) {
         prefs.edit().putInt(KEY_AUDIO_CACHE_CAP_MB, capMb).apply()
     }
 
+    // ==========================================
+    // RECENT SEARCHES
+    // ==========================================
+
+    fun getRecentSearches(): List<String> {
+        val json = prefs.getString(KEY_RECENT_SEARCHES, "[]") ?: "[]"
+        val list = mutableListOf<String>()
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val item = arr.getString(i).trim()
+                if (item.isNotEmpty() && !list.contains(item)) {
+                    list.add(item)
+                }
+            }
+        } catch (_: Exception) {}
+        return list
+    }
+
+    fun addRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return
+        val current = getRecentSearches().toMutableList()
+        current.removeAll { it.equals(trimmed, ignoreCase = true) }
+        current.add(0, trimmed)
+        val arr = JSONArray()
+        current.take(20).forEach { arr.put(it) }
+        prefs.edit().putString(KEY_RECENT_SEARCHES, arr.toString()).apply()
+    }
+
+    fun removeRecentSearch(query: String) {
+        val trimmed = query.trim()
+        val current = getRecentSearches().toMutableList()
+        current.removeAll { it.equals(trimmed, ignoreCase = true) }
+        val arr = JSONArray()
+        current.forEach { arr.put(it) }
+        prefs.edit().putString(KEY_RECENT_SEARCHES, arr.toString()).apply()
+    }
+
+    fun clearRecentSearches() {
+        prefs.edit().remove(KEY_RECENT_SEARCHES).apply()
+    }
+
     companion object {
         const val DEFAULT_SERVER_URL = "http://100.65.126.106:8000/"
         private const val KEY_SERVER_URL = "server_base_url"
@@ -311,5 +354,6 @@ class AuthPreferences(context: Context) {
         private const val KEY_RECENT_PLAYED_IDS = "recent_played_song_ids"
         private const val KEY_SAVED_QUEUE = "saved_playback_queue"
         private const val KEY_AUDIO_CACHE_CAP_MB = "audio_cache_cap_mb"
+        private const val KEY_RECENT_SEARCHES = "recent_searches_list"
     }
 }

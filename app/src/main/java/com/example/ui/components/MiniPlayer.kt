@@ -50,6 +50,7 @@ fun MiniPlayer(
     val song = playbackState.currentSong ?: return
 
     var totalDrag by remember { mutableFloatStateOf(0f) }
+    val wavePath = remember { Path() }
 
     // Wave animation controller: 2-second repeat loop (equivalent to Flutter's AnimationController..repeat())
     val infiniteTransition = rememberInfiniteTransition(label = "liquid_wave")
@@ -65,20 +66,20 @@ fun MiniPlayer(
 
     // Dynamic palette colors with 500ms smooth transition (matching Flutter AnimatedContainer)
     val color1 by animateColorAsState(
-        targetValue = if (playbackState.dominantColor != Color.Unspecified) {
+        targetValue = if (playbackState.dominantColor != Color.Unspecified && playbackState.dominantColor != Color.Transparent) {
             playbackState.dominantColor
         } else {
-            AlaktraMint
+            Color.Transparent
         },
         animationSpec = tween(500),
         label = "color1"
     )
 
     val color2 by animateColorAsState(
-        targetValue = if (playbackState.secondaryColor != Color.Unspecified) {
+        targetValue = if (playbackState.secondaryColor != Color.Unspecified && playbackState.secondaryColor != Color.Transparent) {
             playbackState.secondaryColor
         } else {
-            AlaktraCyan
+            Color.Transparent
         },
         animationSpec = tween(500),
         label = "color2"
@@ -138,30 +139,30 @@ fun MiniPlayer(
             if (fillWidth > 0f) {
                 val waveHeight = 6.dp.toPx()
                 val waveLength = 72.dp.toPx()
+                val twoPi = (2 * PI).toFloat()
+                val steps = height.toInt().coerceAtLeast(10)
+                val stepHeight = height / steps
+                val phaseOffset = wavePhase * twoPi
 
-                val path = Path().apply {
-                    moveTo(0f, 0f)
-                    lineTo(fillWidth, 0f)
+                wavePath.reset()
+                wavePath.moveTo(0f, 0f)
+                wavePath.lineTo(fillWidth, 0f)
 
-                    // Sinusoidal wave across the height of the pill
-                    val steps = height.toInt().coerceAtLeast(10)
-                    for (i in 0..steps) {
-                        val y = (height / steps) * i
-                        val dx = (waveHeight * sin((y / waveLength * 2 * PI) + (wavePhase * 2 * PI))).toFloat()
-                        lineTo(fillWidth + dx, y)
-                    }
-
-                    lineTo(0f, height)
-                    close()
+                // Sinusoidal wave across the height of the pill
+                for (i in 0..steps) {
+                    val y = stepHeight * i
+                    val dx = (waveHeight * sin((y / waveLength * twoPi) + phaseOffset)).toFloat()
+                    wavePath.lineTo(fillWidth + dx, y)
                 }
 
+                wavePath.lineTo(0f, height)
+                wavePath.close()
+
                 drawPath(
-                    path = path,
+                    path = wavePath,
                     brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            color1.copy(alpha = 0.90f),
-                            color2.copy(alpha = 0.85f)
-                        ),
+                        0.0f to color1.copy(alpha = 0.90f),
+                        1.0f to color2.copy(alpha = 0.85f),
                         startX = 0f,
                         endX = fillWidth.coerceAtLeast(1f)
                     )

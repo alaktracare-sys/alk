@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Artwork Metadata & Color Migration • Alaktra Stream</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            background: radial-gradient(circle at top, #141a15 0%, #0b0d0c 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 1040px;
+        }
+        header {
+            background-color: #161917;
+            padding: 1.8rem 2rem;
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.5);
+            margin-bottom: 1.8rem;
+        }
+        .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 0.8rem;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .brand-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            color: #0b0d0c;
+            font-size: 1.2rem;
+        }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            color: #ffffff;
+        }
+        p.subtitle {
+            font-size: 0.9rem;
+            color: #9aa89f;
+            line-height: 1.5;
+        }
+        .server-config-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 1.2rem;
+            background-color: #1f2521;
+            padding: 8px 14px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            flex-wrap: wrap;
+        }
+        .server-config-bar label {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #8c9c90;
+        }
+        .server-config-bar input {
+            flex-grow: 1;
+            background: transparent;
+            border: none;
+            color: #00E599;
+            font-family: monospace;
+            font-size: 0.95rem;
+            outline: none;
+            min-width: 220px;
+        }
+        .btn-small {
+            padding: 7px 14px;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid #2e3831;
+            background-color: #27302a;
+            color: #e0ece3;
+            transition: all 0.15s;
+        }
+        .btn-small:hover {
+            background-color: #334037;
+            color: #ffffff;
+        }
+        .actions-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 1.2rem;
+            padding-top: 1.2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .stats-badge {
+            font-size: 0.88rem;
+            color: #a4b3a8;
+        }
+        .stats-badge strong {
+            color: #00E599;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn-primary {
+            padding: 10px 18px;
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            border: none;
+            border-radius: 20px;
+            color: #0c120e;
+            font-size: 0.9rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(0, 229, 153, 0.35);
+        }
+        .btn-secondary {
+            padding: 10px 18px;
+            background: #232a25;
+            border: 1px solid #36423a;
+            border-radius: 20px;
+            color: #e0ebe3;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-secondary:hover {
+            background: #2d3730;
+            border-color: #00E599;
+            color: #ffffff;
+        }
+        .nav-link {
+            color: #00E599;
+            text-decoration: none;
+            font-size: 0.86rem;
+            font-weight: 600;
+        }
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+
+        /* Song Grid */
+        .song-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1.25rem;
+            margin-top: 1rem;
+        }
+        .song-card {
+            background-color: #171a18;
+            border-radius: 16px;
+            padding: 1.25rem;
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            transition: transform 0.15s, border-color 0.15s;
+            position: relative;
+        }
+        .song-card:hover {
+            border-color: rgba(0, 229, 153, 0.3);
+            transform: translateY(-2px);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .cover-preview {
+            width: 72px;
+            height: 72px;
+            border-radius: 10px;
+            object-fit: cover;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background-color: #202622;
+            flex-shrink: 0;
+        }
+        .song-info {
+            overflow: hidden;
+            flex-grow: 1;
+        }
+        .song-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #ffffff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .song-artist {
+            font-size: 0.82rem;
+            color: #93a397;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 2px;
+        }
+        .song-id-pill {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            background-color: #212923;
+            color: #7d9083;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 4px;
+        }
+        .color-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background-color: #1f2521;
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid #2b352e;
+        }
+        .color-circle {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            border: 2px solid white;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            flex-shrink: 0;
+        }
+        .color-circle input[type="color"] {
+            position: absolute;
+            top: -10px;
+            left: -10px;
+            width: 50px;
+            height: 50px;
+            border: none;
+            cursor: pointer;
+            opacity: 0;
+        }
+        .color-hex {
+            font-family: monospace;
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #ffffff;
+            background: transparent;
+            border: none;
+            outline: none;
+            text-transform: uppercase;
+            width: 90px;
+        }
+        .swatches-bar {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .swatch-dot {
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.2);
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+        .swatch-dot:hover {
+            transform: scale(1.2);
+            border-color: #ffffff;
+        }
+        .card-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: auto;
+            padding-top: 6px;
+        }
+        .card-status {
+            font-size: 0.78rem;
+            color: #8c9c90;
+        }
+        .card-status.success {
+            color: #00E599;
+            font-weight: 600;
+        }
+        .btn-card-save {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            border-radius: 8px;
+            border: none;
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            color: #0c120e;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.15s;
+        }
+        .btn-card-save:hover {
+            transform: translateY(-1px);
+        }
+        .btn-card-sample {
+            padding: 6px 10px;
+            font-size: 0.78rem;
+            border-radius: 8px;
+            border: 1px solid #354238;
+            background: #232c25;
+            color: #c4d4c8;
+            cursor: pointer;
+        }
+        .btn-card-sample:hover {
+            background: #2e3b31;
+            color: #ffffff;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 4rem 1rem;
+            background-color: #171a18;
+            border-radius: 16px;
+            border: 1px dashed rgba(255, 255, 255, 0.1);
+            color: #8c9b90;
+        }
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background-color: #171a18;
+            border: 1px solid #00E599;
+            color: #ffffff;
+            padding: 14px 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            font-size: 0.92rem;
+            display: none;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div class="header-top">
+            <div class="brand">
+                <div class="brand-icon">🎨</div>
+                <div>
+                    <h1>Artwork Metadata Migration Tool</h1>
+                    <p class="subtitle">Erase old image metadata and embed custom/auto-detected theme colors directly into existing cover EXIF files</p>
+                </div>
+            </div>
+            <a href="/" class="nav-link">← Upload Portal</a>
+        </div>
+
+        <div class="server-config-bar">
+            <label for="serverBase">Server URL:</label>
+            <input type="text" id="serverBase" placeholder="http://localhost:8000">
+            <button class="btn-small" onclick="loadSongs()">Connect & Reload</button>
+        </div>
+
+        <div class="actions-toolbar">
+            <div class="stats-badge" id="statsBadge">
+                Loading existing tracks...
+            </div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="autoScanAllArtworks()">🔍 Auto-Scan All Covers</button>
+                <button class="btn-primary" id="batchSaveBtn" onclick="batchSaveAll()">💾 Save All Changes</button>
+            </div>
+        </div>
+    </header>
+
+    <div id="songsContainer" class="song-grid">
+        <div class="empty-state">Loading tracks from server...</div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    let songsData = [];
+    const PRESET_SWATCHES = ['#00E599', '#00F2FE', '#0070F3', '#9B51E0', '#FF2A85', '#FF6B00', '#FFD600', '#E02424'];
+
+    function getBaseUrl() {
+        const inputVal = document.getElementById('serverBase').value.trim();
+        if (inputVal) return inputVal.replace(/\/$/, "");
+        if (window.location.origin && window.location.origin.startsWith("http")) {
+            return window.location.origin;
+        }
+        return "http://100.65.126.106:8000";
+    }
+
+    function showToast(msg, isSuccess = true) {
+        const toast = document.getElementById('toast');
+        toast.textContent = msg;
+        toast.style.borderColor = isSuccess ? '#00E599' : '#ef4444';
+        toast.style.display = 'block';
+        setTimeout(() => {
+            toast.style.display = 'none';
+        }, 3500);
+    }
+
+    // Initialize Server Base input
+    window.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('serverBase').value = (window.location.origin && window.location.origin.startsWith("http")) 
+            ? window.location.origin 
+            : "http://100.65.126.106:8000";
+        loadSongs();
+    });
+
+    async function loadSongs() {
+        const container = document.getElementById('songsContainer');
+        container.innerHTML = '<div class="empty-state">Fetching songs from server...</div>';
+        const base = getBaseUrl();
+
+        try {
+            const resp = await fetch(`${base}/songs`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            songsData = await resp.json();
+
+            if (!Array.isArray(songsData) || songsData.length === 0) {
+                container.innerHTML = '<div class="empty-state">No songs found on the server. Upload some songs via the portal first!</div>';
+                document.getElementById('statsBadge').innerHTML = 'Tracks Found: <strong>0</strong>';
+                return;
+            }
+
+            document.getElementById('statsBadge').innerHTML = `Tracks Found: <strong>${songsData.length}</strong> | Ready to sanitize & embed metadata.`;
+            renderSongs();
+        } catch (err) {
+            console.error("Failed to fetch songs:", err);
+            container.innerHTML = `<div class="empty-state">⚠️ Could not connect to <code>${base}</code>.<br><br>Make sure the server is running and CORS is enabled, then click "Connect & Reload".</div>`;
+            document.getElementById('statsBadge').innerHTML = 'Status: <strong style="color: #ef4444;">Connection Failed</strong>';
+        }
+    }
+
+    function renderSongs() {
+        const container = document.getElementById('songsContainer');
+        container.innerHTML = '';
+        const base = getBaseUrl();
+
+        songsData.forEach(song => {
+            const currentColor = (song.dominant_color || '#00E599').toUpperCase();
+            const coverUrl = song.cover_url.startsWith('http') ? song.cover_url : `${base}/${song.cover_url.replace(/^\//, '')}`;
+
+            const card = document.createElement('div');
+            card.className = 'song-card';
+            card.id = `songCard_${song.id}`;
+
+            card.innerHTML = `
+                <div class="card-header">
+                    <img src="${coverUrl}" id="img_${song.id}" class="cover-preview" alt="Cover" crossorigin="anonymous" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'72\\' height=\\'72\\' fill=\\'%23262d28\\'><rect width=\\'72\\' height=\\'72\\'/><text x=\\'50%\\' y=\\'50%\\' fill=\\'%23667\\' text-anchor=\\'middle\\' dy=\\'.3em\\' font-size=\\'12\\'>No Art</text></svg>'">
+                    <div class="song-info">
+                        <div class="song-title" title="${escapeHtml(song.title)}">${escapeHtml(song.title)}</div>
+                        <div class="song-artist" title="${escapeHtml(song.artist)}">${escapeHtml(song.artist)}</div>
+                        <div class="song-id-pill">ID: #${song.id}</div>
+                    </div>
+                </div>
+
+                <div class="color-row">
+                    <div class="color-circle" id="circle_${song.id}" style="background-color: ${currentColor};" title="Click to open color picker">
+                        <input type="color" id="picker_${song.id}" value="${currentColor}" oninput="handlePickerChange(${song.id}, this.value)">
+                    </div>
+                    <input type="text" id="hex_${song.id}" class="color-hex" value="${currentColor}" maxlength="7" oninput="handleHexChange(${song.id}, this.value)">
+                    <button class="btn-card-sample" onclick="sampleSingleSong(${song.id})" title="Sample dominant color from cover image">⚡ Sample Art</button>
+                </div>
+
+                <div class="swatches-bar">
+                    ${PRESET_SWATCHES.map(hex => `
+                        <div class="swatch-dot" style="background-color: ${hex};" onclick="setSongColor(${song.id}, '${hex}')" title="${hex}"></div>
+                    `).join('')}
+                </div>
+
+                <div class="card-actions">
+                    <span class="card-status" id="status_${song.id}">Ready</span>
+                    <button class="btn-card-save" onclick="saveSingleSong(${song.id})">Save Track</button>
+                </div>
+            `;
+
+            container.appendChild(card);
+        });
+    }
+
+    function handlePickerChange(songId, val) {
+        setSongColor(songId, val);
+    }
+
+    function handleHexChange(songId, val) {
+        let clean = val.trim();
+        if (clean.length === 6 && !clean.startsWith('#')) clean = '#' + clean;
+        if (/^#[0-9A-Fa-f]{6}$/.test(clean)) {
+            setSongColor(songId, clean);
+        }
+    }
+
+    function setSongColor(songId, hex) {
+        const upperHex = hex.toUpperCase();
+        const circle = document.getElementById(`circle_${songId}`);
+        const picker = document.getElementById(`picker_${songId}`);
+        const text = document.getElementById(`hex_${songId}`);
+        const status = document.getElementById(`status_${songId}`);
+
+        if (circle) circle.style.backgroundColor = upperHex;
+        if (picker) picker.value = upperHex;
+        if (text) text.value = upperHex;
+        if (status) {
+            status.textContent = 'Unsaved change';
+            status.className = 'card-status';
+        }
+
+        const song = songsData.find(s => s.id === songId);
+        if (song) song.dominant_color = upperHex;
+    }
+
+    // HTML5 Canvas Color Extractor
+    function extractDominantColorFromImgElement(imgElement) {
+        return new Promise((resolve) => {
+            try {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = 64;
+                canvas.height = 64;
+                ctx.drawImage(imgElement, 0, 0, 64, 64);
+                const data = ctx.getImageData(0, 0, 64, 64).data;
+
+                let bestR = 0, bestG = 229, bestB = 153, maxScore = -1;
+                for (let i = 0; i < data.length; i += 16) {
+                    const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+                    if (a < 128) continue;
+                    const lum = 0.299*r + 0.587*g + 0.114*b;
+                    const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+                    const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+                    if (lum > 20 && lum < 240 && sat > 0.22) {
+                        const score = sat * 100 + (lum > 40 && lum < 210 ? 50 : 0);
+                        if (score > maxScore) {
+                            maxScore = score;
+                            bestR = r; bestG = g; bestB = b;
+                        }
+                    }
+                }
+
+                if (maxScore > 0) {
+                    const hex = `#${bestR.toString(16).padStart(2,'0')}${bestG.toString(16).padStart(2,'0')}${bestB.toString(16).padStart(2,'0')}`.toUpperCase();
+                    resolve(hex);
+                } else {
+                    resolve('#00E599');
+                }
+            } catch (e) {
+                console.warn("Canvas analysis error:", e);
+                resolve('#00E599');
+            }
+        });
+    }
+
+    async function sampleSingleSong(songId) {
+        const img = document.getElementById(`img_${songId}`);
+        const status = document.getElementById(`status_${songId}`);
+        if (!img) return;
+
+        if (status) status.textContent = 'Sampling art...';
+        const hex = await extractDominantColorFromImgElement(img);
+        setSongColor(songId, hex);
+        if (status) status.textContent = `Sampled: ${hex}`;
+    }
+
+    async function autoScanAllArtworks() {
+        showToast("🔍 Scanning all cover artworks with HTML5 canvas...");
+        for (const song of songsData) {
+            const img = document.getElementById(`img_${song.id}`);
+            if (img) {
+                const hex = await extractDominantColorFromImgElement(img);
+                setSongColor(song.id, hex);
+            }
+        }
+        showToast("✅ Auto-scan complete! Review colors and click 'Save All Changes'.");
+    }
+
+    async function saveSingleSong(songId) {
+        const base = getBaseUrl();
+        const hexInput = document.getElementById(`hex_${songId}`);
+        const status = document.getElementById(`status_${songId}`);
+        const color = hexInput ? hexInput.value.trim() : '#00E599';
+
+        if (status) {
+            status.textContent = 'Updating...';
+            status.className = 'card-status';
+        }
+
+        try {
+            const formData = new FormData();
+            formData.append('color', color);
+
+            const resp = await fetch(`${base}/songs/${songId}/update-cover-metadata`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (resp.ok) {
+                if (status) {
+                    status.textContent = '✅ Metadata Embedded!';
+                    status.className = 'card-status success';
+                }
+                showToast(`Track #${songId} metadata embedded with ${color}!`);
+            } else {
+                const text = await resp.text();
+                if (status) status.textContent = `❌ Failed (${resp.status})`;
+                showToast(`Update failed for Track #${songId}: ${text}`, false);
+            }
+        } catch (e) {
+            if (status) status.textContent = '⚠️ Network error';
+            showToast(`Connection failed: ${e.message}`, false);
+        }
+    }
+
+    async function batchSaveAll() {
+        const base = getBaseUrl();
+        const btn = document.getElementById('batchSaveBtn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Saving All...';
+
+        const payload = songsData.map(s => {
+            const hexEl = document.getElementById(`hex_${s.id}`);
+            return {
+                song_id: s.id,
+                color: hexEl ? hexEl.value.trim() : (s.dominant_color || '#00E599')
+            };
+        });
+
+        try {
+            const resp = await fetch(`${base}/songs/batch-update-cover-metadata`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (resp.ok) {
+                const result = await resp.json();
+                showToast(`✅ Successfully migrated and embedded metadata for ${result.updated_count || payload.length} tracks!`);
+                songsData.forEach(s => {
+                    const status = document.getElementById(`status_${s.id}`);
+                    if (status) {
+                        status.textContent = '✅ Metadata Embedded!';
+                        status.className = 'card-status success';
+                    }
+                });
+            } else {
+                const text = await resp.text();
+                showToast(`Batch save failed: ${text}`, false);
+            }
+        } catch (e) {
+            showToast(`Server connection error: ${e.message}`, false);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '💾 Save All Changes';
+        }
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>'"]/g, 
+            tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+        );
+    }
+</script>
+</body>
+</html>

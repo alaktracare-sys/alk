@@ -85,7 +85,11 @@ fun PlayerScreen(
     // Pure pitch black at top (behind header and upper artwork),
     // blooming into the rich song-dependent dominant color across the middle (track info, seekbar, controls),
     // then smoothly deepening into a dark shade at the bottom.
-    val dominant = playbackState.dominantColor
+    val dominant = if (playbackState.dominantColor != Color.Unspecified && playbackState.dominantColor != Color.Transparent) {
+        playbackState.dominantColor
+    } else {
+        Color(0xFF161822)
+    }
     val midTone = Color(
         red = (dominant.red * 0.72f).coerceIn(0f, 1f),
         green = (dominant.green * 0.72f).coerceIn(0f, 1f),

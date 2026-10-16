@@ -452,7 +452,11 @@ fun HomeScreen(
                         contentPadding = PaddingValues(horizontal = horizontalPad),
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        items(songs.take(8)) { song ->
+                        items(
+                            items = songs.take(8),
+                            key = { "jump_${it.id}" },
+                            contentType = { "featured_song_card" }
+                        ) { song ->
                             FeaturedSongCard(
                                 song = song,
                                 isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -474,7 +478,11 @@ fun HomeScreen(
                             contentPadding = PaddingValues(horizontal = horizontalPad),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            items(songs.reversed().take(6)) { song ->
+                            items(
+                                items = songs.reversed().take(6),
+                                key = { "mfy_${it.id}" },
+                                contentType = { "made_for_you_card" }
+                            ) { song ->
                                 MadeForYouCard(
                                     song = song,
                                     isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -497,7 +505,11 @@ fun HomeScreen(
                             contentPadding = PaddingValues(horizontal = horizontalPad),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            items(playlists) { pl ->
+                            items(
+                                items = playlists,
+                                key = { "playlist_${it.id}" },
+                                contentType = { "playlist_card" }
+                            ) { pl ->
                                 PlaylistCard(
                                     playlist = pl,
                                     onClick = { onNavigateToPlaylist(pl.id, pl.name) },
@@ -515,7 +527,11 @@ fun HomeScreen(
                     SectionHeader(title = "Recommended Tracks", subtitle = "High fidelity streaming", horizontalPad = horizontalPad)
                 }
 
-                itemsIndexed(songs) { index, song ->
+                itemsIndexed(
+                    items = songs,
+                    key = { _, song -> song.id },
+                    contentType = { _, _ -> "song_row" }
+                ) { index, song ->
                     val isCurrent = playbackState.currentSong?.id == song.id
                     SongItemRow(
                         song = song,

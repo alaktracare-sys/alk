@@ -133,6 +133,7 @@ def get_playlist_songs(playlist_id: int, request: Request):
             "artist": s["artist"],
             "audio_url": f"{base_url}/songs/{s['id']}/stream",
             "cover_url": f"{base_url}/{s['cover_path'].replace(os.sep, '/')}",
+            "dominant_color": s["dominant_color"] or "#00E599",
             "duration": float(s["duration"]) if s["duration"] else 0.0,
         }
         for s in songs

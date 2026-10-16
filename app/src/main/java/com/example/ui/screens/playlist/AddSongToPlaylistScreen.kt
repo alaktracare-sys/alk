@@ -109,7 +109,11 @@ fun AddSongToPlaylistScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                items(filteredSongs) { song ->
+                items(
+                    items = filteredSongs,
+                    key = { it.id },
+                    contentType = { "add_song_row" }
+                ) { song ->
                     val isAdded = playlistSongIds.contains(song.id)
 
                     Row(

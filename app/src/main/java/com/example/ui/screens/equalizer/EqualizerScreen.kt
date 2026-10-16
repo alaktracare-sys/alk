@@ -248,7 +248,11 @@ fun EqualizerScreen(
 
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            // Interactive Canvas
+                            // Interactive Canvas (Zero-allocation DrawScope)
+                            val strokePath = remember { Path() }
+                            val fillPath = remember { Path() }
+                            val points = remember { ArrayList<Offset>(10) }
+
                             Box(modifier = Modifier.fillMaxSize()) {
                                 Canvas(modifier = Modifier.fillMaxSize()) {
                                     val w = size.width
@@ -276,75 +280,79 @@ fun EqualizerScreen(
                                         strokeWidth = 1.dp.toPx()
                                     )
 
-                                    val points = animatedGains.mapIndexed { index, gainDb ->
-                                        val x = (index.toFloat() / (animatedGains.size - 1)) * w
-                                        // Top is +12dB (y = 0), Bottom is -12dB (y = h)
+                                    points.clear()
+                                    val count = animatedGains.size
+                                    val divisor = (count - 1).coerceAtLeast(1)
+                                    for (index in 0 until count) {
+                                        val gainDb = animatedGains[index]
+                                        val x = (index.toFloat() / divisor) * w
                                         val normalized = (gainDb / maxDbRange).coerceIn(-1f, 1f)
                                         val y = midY - (normalized * (h * 0.42f))
-                                        Offset(x, y)
+                                        points.add(Offset(x, y))
                                     }
 
-                                    // Build smooth cubic Bezier path
-                                    val strokePath = Path().apply {
-                                        moveTo(points.first().x, points.first().y)
+                                    if (points.isNotEmpty()) {
+                                        // Build smooth cubic Bezier path
+                                        strokePath.reset()
+                                        strokePath.moveTo(points[0].x, points[0].y)
                                         for (i in 0 until points.size - 1) {
                                             val p0 = points[i]
                                             val p1 = points[i + 1]
                                             val cx = (p0.x + p1.x) / 2f
-                                            cubicTo(cx, p0.y, cx, p1.y, p1.x, p1.y)
+                                            strokePath.cubicTo(cx, p0.y, cx, p1.y, p1.x, p1.y)
                                         }
-                                    }
 
-                                    // Build gradient fill path
-                                    val fillPath = Path().apply {
-                                        addPath(strokePath)
-                                        lineTo(w, h)
-                                        lineTo(0f, h)
-                                        close()
-                                    }
+                                        // Build gradient fill path
+                                        fillPath.reset()
+                                        fillPath.addPath(strokePath)
+                                        fillPath.lineTo(w, h)
+                                        fillPath.lineTo(0f, h)
+                                        fillPath.close()
 
-                                    val curveBrush = if (isEnabled) {
-                                        Brush.horizontalGradient(listOf(AlaktraMint, AlaktraCyan))
-                                    } else {
-                                        Brush.horizontalGradient(listOf(AlaktraTextMuted, AlaktraTextMuted))
-                                    }
+                                        val curveBrush = if (isEnabled) {
+                                            Brush.horizontalGradient(listOf(AlaktraMint, AlaktraCyan))
+                                        } else {
+                                            Brush.horizontalGradient(listOf(AlaktraTextMuted, AlaktraTextMuted))
+                                        }
 
-                                    val fillBrush = if (isEnabled) {
-                                        Brush.verticalGradient(
-                                            listOf(
-                                                AlaktraMint.copy(alpha = 0.35f),
-                                                AlaktraCyan.copy(alpha = 0.08f),
-                                                Color.Transparent
+                                        val fillBrush = if (isEnabled) {
+                                            Brush.verticalGradient(
+                                                listOf(
+                                                    AlaktraMint.copy(alpha = 0.35f),
+                                                    AlaktraCyan.copy(alpha = 0.08f),
+                                                    Color.Transparent
+                                                )
                                             )
-                                        )
-                                    } else {
-                                        Brush.verticalGradient(
-                                            listOf(
-                                                Color.White.copy(alpha = 0.06f),
-                                                Color.Transparent
+                                        } else {
+                                            Brush.verticalGradient(
+                                                listOf(
+                                                    Color.White.copy(alpha = 0.06f),
+                                                    Color.Transparent
+                                                )
                                             )
-                                        )
-                                    }
+                                        }
 
-                                    drawPath(path = fillPath, brush = fillBrush)
-                                    drawPath(
-                                        path = strokePath,
-                                        brush = curveBrush,
-                                        style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-                                    )
+                                        drawPath(path = fillPath, brush = fillBrush)
+                                        drawPath(
+                                            path = strokePath,
+                                            brush = curveBrush,
+                                            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                                        )
 
-                                    // Draw node dots
-                                    points.forEach { pt ->
-                                        drawCircle(
-                                            color = if (isEnabled) Color(0xFF041C12) else Color(0xFF1E2028),
-                                            radius = 6.dp.toPx(),
-                                            center = pt
-                                        )
-                                        drawCircle(
-                                            color = if (isEnabled) AlaktraMint else AlaktraTextSecondary,
-                                            radius = 4.dp.toPx(),
-                                            center = pt
-                                        )
+                                        // Draw node dots
+                                        for (i in 0 until points.size) {
+                                            val pt = points[i]
+                                            drawCircle(
+                                                color = if (isEnabled) Color(0xFF041C12) else Color(0xFF1E2028),
+                                                radius = 6.dp.toPx(),
+                                                center = pt
+                                            )
+                                            drawCircle(
+                                                color = if (isEnabled) AlaktraMint else AlaktraTextSecondary,
+                                                radius = 4.dp.toPx(),
+                                                center = pt
+                                            )
+                                        }
                                     }
                                 }
                             }

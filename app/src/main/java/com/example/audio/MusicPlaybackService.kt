@@ -38,24 +38,7 @@ class MusicPlaybackService : MediaSessionService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
-    private var headsetClickCount = 0
-    private var headsetClickJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    private fun handleHeadsetHookClick(audioController: AudioController) {
-        headsetClickCount++
-        headsetClickJob?.cancel()
-        headsetClickJob = serviceScope.launch {
-            delay(350)
-            when (headsetClickCount) {
-                1 -> audioController.togglePlayPause()
-                2 -> audioController.next()
-                3 -> audioController.previous()
-                else -> audioController.previous()
-            }
-            headsetClickCount = 0
-        }
-    }
 
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -302,7 +285,7 @@ class MusicPlaybackService : MediaSessionService() {
                     when (keyEvent.keyCode) {
                         KeyEvent.KEYCODE_HEADSETHOOK,
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                            handleHeadsetHookClick(audioController)
+                            audioController.handleHeadsetHookClick()
                             return true
                         }
                         KeyEvent.KEYCODE_MEDIA_PLAY -> {
@@ -467,7 +450,6 @@ class MusicPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        headsetClickJob?.cancel()
         serviceScope.cancel()
         releaseLocks()
         mediaSession?.player?.removeListener(playerListener)

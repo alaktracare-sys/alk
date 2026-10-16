@@ -47,8 +47,9 @@ data class SongDto(
     val id: Int = 0,
     val title: String? = null,
     val artist: String? = null,
-    @SerializedName("audio_url") val audioUrl: String? = null,
-    @SerializedName("cover_url") val coverUrl: String? = null,
+    @SerializedName("audio_url", alternate = ["audioUrl"]) val audioUrl: String? = null,
+    @SerializedName("cover_url", alternate = ["coverUrl"]) val coverUrl: String? = null,
+    @SerializedName("dominant_color", alternate = ["dominantColor"]) val dominantColor: String? = null,
     val duration: Double = 0.0
 )
 
@@ -225,4 +226,36 @@ interface MusicApiService {
 
     @GET("history/plays/{user_id}")
     suspend fun getUserSongPlays(@Path("user_id") userId: Int): Response<List<UserSongPlayDto>>
+
+    // === LOCATION PINS ===
+    @Multipart
+    @POST("pins")
+    suspend fun createPin(
+        @Part("user_id") userId: RequestBody,
+        @Part("song_id") songId: RequestBody,
+        @Part("latitude") latitude: RequestBody,
+        @Part("longitude") longitude: RequestBody,
+        @Part image: MultipartBody.Part
+    ): Response<PinDto>
+
+    @GET("pins")
+    suspend fun getNearbyPins(
+        @Query("lat") lat: Double,
+        @Query("lng") lng: Double
+    ): Response<List<PinDto>>
 }
+
+// ----------------- LOCATION PINS MODELS -----------------
+
+data class PinDto(
+    val id: Int = 0,
+    @SerializedName("user_id") val userId: Int = 0,
+    @SerializedName("song_id") val songId: Int = 0,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    @SerializedName("distance_meters") val distanceMeters: Double = 0.0,
+    @SerializedName("image_url") val imageUrl: String? = null,
+    @SerializedName("created_at") val createdAt: String? = null,
+    val song: SongDto? = null
+)
+

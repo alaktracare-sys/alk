@@ -428,7 +428,11 @@ fun PlaylistScreen(
                     }
                 }
             } else {
-                itemsIndexed(displaySongs) { index, song ->
+                itemsIndexed(
+                    items = displaySongs,
+                    key = { _, song -> song.id },
+                    contentType = { _, _ -> "song_row" }
+                ) { index, song ->
                     val isCurrent = playbackState.currentSong?.id == song.id
                     SongItemRow(
                         song = song,

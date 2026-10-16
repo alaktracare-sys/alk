@@ -248,7 +248,11 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    items(playlists) { playlist ->
+                    items(
+                        items = playlists,
+                        key = { it.id },
+                        contentType = { "library_playlist_row" }
+                    ) { playlist ->
                             var menuExpanded by remember { mutableStateOf(false) }
 
                             Row(

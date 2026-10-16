@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
                 }
                 android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                 android.view.KeyEvent.KEYCODE_HEADSETHOOK -> {
-                    audioController.togglePlayPause()
+                    audioController.handleHeadsetHookClick()
                     return true
                 }
                 android.view.KeyEvent.KEYCODE_MEDIA_NEXT,

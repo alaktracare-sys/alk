@@ -10,6 +10,7 @@ data class SongEntity(
     val coverUrl: String,
     val duration: Double,
     val isLiked: Boolean = false,
+    val dominantColorHex: String? = null,
     val lastSyncedAt: Long = System.currentTimeMillis()
 ) {
     fun toSong(): Song {
@@ -20,7 +21,8 @@ data class SongEntity(
             audioUrl = audioUrl,
             coverUrl = coverUrl,
             duration = duration,
-            isLiked = isLiked
+            isLiked = isLiked,
+            dominantColorHex = dominantColorHex
         )
     }
 
@@ -38,6 +40,7 @@ data class SongEntity(
                 coverUrl = song.coverUrl,
                 duration = song.duration,
                 isLiked = isLiked,
+                dominantColorHex = song.dominantColorHex,
                 lastSyncedAt = lastSyncedAt
             )
         }

@@ -18,10 +18,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -51,11 +53,12 @@ import com.example.ui.screens.playlist.PlaylistScreen
 import com.example.ui.screens.profile.FullListeningHistorySheet
 import com.example.ui.screens.profile.ProfileScreen
 import com.example.ui.screens.search.SearchScreen
+import com.example.ui.screens.pins.LocationPinsScreen
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
 enum class Screen {
-    HOME, SEARCH, LIBRARY, PLAYLIST, ADD_SONGS, PROFILE, EQUALIZER, HISTORY
+    HOME, SEARCH, LIBRARY, PINS, PLAYLIST, ADD_SONGS, PROFILE, EQUALIZER, HISTORY
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,6 +76,7 @@ fun MainShell(
     var activePlaylistId by remember { mutableIntStateOf(1) }
     var activePlaylistName by remember { mutableStateOf("Playlist") }
     var showFullPlayer by remember { mutableStateOf(false) }
+    var pinsRefreshTrigger by remember { mutableIntStateOf(0) }
 
     // Playlist selector sheet (for "Add to Playlist" action)
     var songForPlaylistSelection by remember { mutableStateOf<Song?>(null) }
@@ -139,6 +143,7 @@ fun MainShell(
         Screen.HOME,
         Screen.SEARCH,
         Screen.LIBRARY,
+        Screen.PINS,
         Screen.PLAYLIST,
         Screen.PROFILE,
         Screen.EQUALIZER,
@@ -279,6 +284,34 @@ fun MainShell(
                                 indicatorColor = AlaktraMint.copy(alpha = 0.15f)
                             )
                         )
+
+                        NavigationRailItem(
+                            selected = currentTab == 3 && currentScreen == Screen.PINS,
+                            onClick = {
+                                currentTab = 3
+                                currentScreen = Screen.PINS
+                                pinsRefreshTrigger++
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = if (currentTab == 3 && currentScreen == Screen.PINS) Icons.Default.Place else Icons.Outlined.Place,
+                                    contentDescription = "Pins"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    "Pins",
+                                    fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationRailItemDefaults.colors(
+                                selectedIconColor = AlaktraMint,
+                                selectedTextColor = AlaktraMint,
+                                unselectedIconColor = AlaktraTextMuted,
+                                unselectedTextColor = AlaktraTextMuted,
+                                indicatorColor = AlaktraMint.copy(alpha = 0.15f)
+                            )
+                        )
                     }
                 }
 
@@ -374,6 +407,14 @@ fun MainShell(
                                         onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
                                         onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
                                         onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") }
+                                    )
+                                }
+
+                                Screen.PINS -> {
+                                    LocationPinsScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        refreshTrigger = pinsRefreshTrigger
                                     )
                                 }
 
@@ -480,7 +521,7 @@ fun MainShell(
                 Surface(
                     modifier = Modifier
                         .padding(horizontal = 24.dp, vertical = 3.dp)
-                        .widthIn(max = 240.dp)
+                        .widthIn(max = 320.dp)
                         .fillMaxWidth()
                         .height(58.dp)
                         .shadow(
@@ -513,6 +554,9 @@ fun MainShell(
                         val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
                             (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2)
 
+                        val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
+                            (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3)
+
                         CapsuleNavItem(
                             selected = isHomeSelected,
                             onClick = {
@@ -543,7 +587,19 @@ fun MainShell(
                             },
                             icon = Icons.Outlined.LibraryMusic,
                             selectedIcon = Icons.Default.LibraryMusic,
-                            label = "Your Library"
+                            label = "Library"
+                        )
+
+                        CapsuleNavItem(
+                            selected = isPinsSelected,
+                            onClick = {
+                                currentTab = 3
+                                currentScreen = Screen.PINS
+                                pinsRefreshTrigger++
+                            },
+                            icon = Icons.Outlined.Place,
+                            selectedIcon = Icons.Default.Place,
+                            label = "Pins"
                         )
                     }
                 }
@@ -638,7 +694,11 @@ fun MainShell(
                         LazyColumn(
                             modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)
                         ) {
-                            items(availablePlaylists) { pl ->
+                            items(
+                                items = availablePlaylists,
+                                key = { it.id },
+                                contentType = { "playlist_picker_row" }
+                            ) { pl ->
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier

@@ -3,179 +3,652 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music Upload Portal • Alaktra Stream</title>
+    <title>Alaktra Studio • Creator Portal</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-base: #060907;
+            --bg-card: rgba(17, 24, 20, 0.75);
+            --bg-card-solid: #111814;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(0, 229, 153, 0.35);
+            --primary: #00E599;
+            --primary-hover: #00c784;
+            --text-main: #f3f6f4;
+            --text-muted: #8b9d93;
+            --accent-glow: rgba(0, 229, 153, 0.15);
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
+
         body {
-            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-            background: radial-gradient(circle at top, #1a221b 0%, #0d0f0e 100%);
-            color: #ffffff;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-base);
+            background-image: 
+                radial-gradient(circle at 15% 10%, rgba(0, 229, 153, 0.1) 0%, transparent 45%),
+                radial-gradient(circle at 85% 90%, rgba(0, 112, 243, 0.08) 0%, transparent 45%),
+                radial-gradient(circle at 50% 50%, rgba(155, 81, 224, 0.04) 0%, transparent 60%);
+            color: var(--text-main);
             min-height: 100vh;
-            padding: 2rem 1rem;
+            padding: 2.5rem 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .portal-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .portal-header h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #ffffff 30%, #00E599 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.4rem;
+        }
+
+        .portal-header p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            width: 100%;
+            max-width: 1120px;
+            gap: 28px;
+            align-items: start;
+            justify-content: center;
+        }
+
+        .card {
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 2.2rem;
+            border-radius: 24px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border-color);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #00E599, #00B377, #0070F3);
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-title span {
+            font-size: 1.2rem;
+        }
+
+        .input-group {
+            margin-bottom: 1.35rem;
+            position: relative;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #c4d1c8;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 13px 16px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            background-color: rgba(255, 255, 255, 0.03);
+            color: white;
+            font-size: 0.95rem;
+            font-weight: 500;
+            outline: none;
+            transition: all 0.25s ease;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--primary);
+            background-color: rgba(255, 255, 255, 0.06);
+            box-shadow: 0 0 0 4px var(--accent-glow);
+        }
+
+        /* Live Match Dropdown */
+        .live-match-dropdown {
+            display: none;
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            background: #141c17;
+            border: 1px solid var(--border-hover);
+            border-radius: 14px;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.7);
+            z-index: 50;
+            max-height: 200px;
+            overflow-y: auto;
+            backdrop-filter: blur(10px);
+        }
+
+        .match-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .match-item:hover {
+            background: rgba(0, 229, 153, 0.08);
+        }
+
+        .match-item img {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            object-fit: cover;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .match-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .match-artist {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* Dropzones */
+        .dropzone {
+            position: relative;
+            border: 2px dashed rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 1.5rem;
+            text-align: center;
+            background-color: rgba(255, 255, 255, 0.02);
+            cursor: pointer;
+            transition: all 0.25s ease;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
+            gap: 6px;
         }
-        .container {
-            width: 100%;
-            max-width: 500px;
+
+        .dropzone:hover {
+            border-color: var(--primary);
+            background-color: rgba(0, 229, 153, 0.03);
         }
-        .upload-card {
-            background-color: #171a18;
-            padding: 2.2rem;
-            border-radius: 18px;
-            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+
+        .dropzone input[type="file"] {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            opacity: 0;
+            cursor: pointer;
         }
-        .brand {
+
+        .dropzone-icon {
+            font-size: 1.8rem;
+            margin-bottom: 2px;
+        }
+
+        .dropzone-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #e2ece6;
+        }
+
+        .dropzone-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .preview-container {
+            display: none;
+            margin-top: 10px;
+            align-items: center;
+            gap: 12px;
+            background: rgba(0, 229, 153, 0.05);
+            padding: 10px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(0, 229, 153, 0.2);
+        }
+
+        .preview-container img {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            object-fit: cover;
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        .preview-info {
+            flex-grow: 1;
+            overflow: hidden;
+        }
+
+        .preview-name {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .preview-size {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+
+        .remove-file {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 1.2rem;
+            padding: 6px;
+            transition: transform 0.2s;
+        }
+
+        .remove-file:hover {
+            transform: scale(1.15);
+        }
+
+        /* Color Picker Styling */
+        .color-picker-container {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 10px;
-            margin-bottom: 0.5rem;
+            gap: 12px;
+            margin-top: 6px;
         }
-        .brand-icon {
+
+        .color-input-wrapper {
+            position: relative;
+            width: 46px;
+            height: 46px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .color-input-wrapper input[type="color"] {
+            position: absolute;
+            top: -10px; left: -10px; width: 68px; height: 68px;
+            border: none;
+            cursor: pointer;
+            background: none;
+        }
+
+        .color-hex-input {
+            flex-grow: 1;
+            text-transform: uppercase;
+            font-family: monospace;
+            font-size: 1rem !important;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .color-preview-badge {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.8);
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+            box-shadow: 0 0 10px currentColor;
+        }
+
+        .swatches-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .swatch-btn {
             width: 32px;
             height: 32px;
-            border-radius: 8px;
-            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 900;
-            color: #0b0d0c;
-        }
-        h2 {
-            text-align: center;
-            font-size: 1.5rem;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-            color: #ffffff;
-        }
-        p.subtitle {
-            text-align: center;
-            font-size: 0.85rem;
-            color: #94a398;
-            margin-bottom: 1.8rem;
-        }
-        .input-group {
-            margin-bottom: 1.25rem;
-        }
-        label {
-            display: block;
-            margin-bottom: 0.45rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: #b8c5bc;
-        }
-        input[type="text"], input[type="file"] {
-            width: 100%;
-            padding: 12px 14px;
-            border-radius: 10px;
-            border: 1px solid #2a332d;
-            background-color: #202622;
-            color: white;
-            font-size: 0.95rem;
-            outline: none;
-            transition: border-color 0.2s, box-shadow 0.2s;
-        }
-        input[type="text"]:focus {
-            border-color: #00E599;
-            box-shadow: 0 0 0 3px rgba(0, 229, 153, 0.15);
-        }
-        input[type="file"] {
-            font-size: 0.82rem;
-            padding: 9px;
+            border-radius: 9px;
+            border: 2px solid rgba(255,255,255,0.12);
             cursor: pointer;
+            transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+            padding: 0;
         }
-        .preview-box {
-            display: none;
+
+        .swatch-btn:hover {
+            transform: scale(1.12);
+            border-color: #fff;
+        }
+
+        .swatch-btn.active {
+            border-color: #fff;
+            box-shadow: 0 0 12px rgba(255,255,255,0.6);
+        }
+
+        .helper-text {
+            font-size: 0.76rem;
+            color: var(--text-muted);
             margin-top: 8px;
-            text-align: center;
+            line-height: 1.45;
         }
-        .preview-box img {
-            max-width: 100px;
-            max-height: 100px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.2);
-            object-fit: cover;
-        }
-        button {
+
+        /* Buttons */
+        .btn-primary {
             width: 100%;
-            padding: 14px;
+            padding: 15px;
             background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
             border: none;
-            border-radius: 28px;
-            color: #0c120e;
+            border-radius: 14px;
+            color: #060a08;
             font-size: 1rem;
-            font-weight: 700;
+            font-weight: 800;
+            letter-spacing: 0.3px;
             cursor: pointer;
-            transition: transform 0.15s, opacity 0.15s, box-shadow 0.15s;
-            margin-top: 0.8rem;
+            transition: all 0.2s ease;
+            margin-top: 1rem;
+            box-shadow: 0 10px 25px rgba(0, 229, 153, 0.25);
         }
-        button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 6px 20px rgba(0, 229, 153, 0.35);
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 30px rgba(0, 229, 153, 0.4);
         }
-        button:active {
+
+        .btn-primary:active {
             transform: translateY(0);
         }
-        button:disabled {
-            opacity: 0.5;
+
+        .btn-primary:disabled {
+            opacity: 0.6;
             cursor: not-allowed;
             transform: none;
+            box-shadow: none;
         }
+
+        /* Catalog Section */
+        .catalog-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.2rem;
+            gap: 12px;
+        }
+
+        .catalog-search {
+            padding: 9px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            background-color: rgba(255, 255, 255, 0.03);
+            color: white;
+            font-size: 0.85rem;
+            outline: none;
+            width: 190px;
+            transition: border-color 0.2s;
+        }
+
+        .catalog-search:focus {
+            border-color: var(--primary);
+        }
+
+        .songs-list {
+            overflow-y: auto;
+            max-height: 520px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-right: 4px;
+        }
+
+        .songs-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        .songs-list::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+        }
+
+        .song-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 12px 16px;
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .song-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(0, 229, 153, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .song-cover {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            object-fit: cover;
+            border: 1px solid rgba(255,255,255,0.1);
+            flex-shrink: 0;
+        }
+
+        .song-meta {
+            flex-grow: 1;
+            overflow: hidden;
+        }
+
+        .song-title {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 2px;
+        }
+
+        .song-artist {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .song-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .color-indicator {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.9);
+            box-shadow: 0 0 10px currentColor;
+        }
+
+        .btn-edit {
+            background: rgba(0, 229, 153, 0.1);
+            border: 1px solid rgba(0, 229, 153, 0.3);
+            color: var(--primary);
+            padding: 7px 14px;
+            border-radius: 10px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-edit:hover {
+            background: var(--primary);
+            color: #060a08;
+            box-shadow: 0 0 15px rgba(0, 229, 153, 0.4);
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(12px);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+
+        .modal-card {
+            background: var(--bg-card-solid);
+            padding: 2.5rem;
+            border-radius: 24px;
+            width: 100%;
+            max-width: 440px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 25px 60px rgba(0,0,0,0.9);
+        }
+
+        .modal-card h3 {
+            font-size: 1.4rem;
+            font-weight: 800;
+            margin-bottom: 1.5rem;
+            color: #fff;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 2rem;
+        }
+
+        .btn-modal {
+            flex: 1;
+            padding: 13px;
+            border-radius: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 0.95rem;
+            border: none;
+        }
+
+        .btn-cancel {
+            background: rgba(255,255,255,0.06);
+            color: #a3b8ad;
+        }
+        .btn-cancel:hover { background: rgba(255,255,255,0.1); }
+
+        .btn-save {
+            background: var(--primary);
+            color: #060a08;
+            box-shadow: 0 8px 20px rgba(0, 229, 153, 0.25);
+        }
+        .btn-save:hover { background: var(--primary-hover); }
+
         .status-msg {
             display: none;
-            padding: 10px 14px;
-            border-radius: 8px;
+            padding: 12px 16px;
+            border-radius: 12px;
             font-size: 0.88rem;
-            margin-top: 1rem;
+            margin-top: 1.2rem;
             text-align: center;
+            font-weight: 600;
         }
+
         .status-success {
             background-color: rgba(0, 229, 153, 0.12);
-            border: 1px solid #00E599;
-            color: #00E599;
+            border: 1px solid var(--primary);
+            color: var(--primary);
         }
+
         .status-error {
             background-color: rgba(239, 68, 68, 0.15);
             border: 1px solid #ef4444;
             color: #fca5a5;
         }
-        .footer-note {
-            margin-top: 1.5rem;
+
+        .footer {
+            margin-top: 3rem;
             text-align: center;
-            font-size: 0.78rem;
-            color: #6a776e;
+            font-size: 0.82rem;
+            color: var(--text-muted);
         }
-        .footer-note a {
-            color: #00E599;
+
+        .footer a {
+            color: var(--primary);
             text-decoration: none;
+            font-weight: 600;
         }
-        .footer-note a:hover {
+
+        .footer a:hover {
             text-decoration: underline;
+        }
+
+        @media (max-width: 960px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="upload-card">
-        <div class="brand">
-            <div class="brand-icon">▶</div>
-            <h2>Upload Track</h2>
+<div class="portal-header">
+    <h1>Alaktra Studio Portal</h1>
+    <p>Manage music catalog, theme colors, and EXIF metadata streaming</p>
+</div>
+
+<div class="main-layout">
+    <!-- LEFT: UPLOAD CARD -->
+    <div class="card">
+        <div class="card-title">
+            <span>🚀</span> Upload New Track
         </div>
-        <p class="subtitle">Broadcast your music directly to Alaktra Player</p>
-        
+
         <div class="input-group">
             <label for="songName">Song Title</label>
-            <input type="text" id="songName" placeholder="e.g. Dilawara" required>
+            <input type="text" id="songName" placeholder="e.g. Dilawara" oninput="checkLiveDuplicates(this.value)" required autocomplete="off">
+            <div class="live-match-dropdown" id="liveMatchDropdown"></div>
         </div>
 
         <div class="input-group">
@@ -183,40 +656,378 @@
             <input type="text" id="artistName" placeholder="e.g. The PropheC, Ezu" required>
         </div>
 
+        <!-- Audio Dropzone -->
         <div class="input-group">
-            <label for="audioFile">Audio File (MP3, WAV, FLAC, M4A)</label>
-            <input type="file" id="audioFile" accept="audio/*" required>
-        </div>
-
-        <div class="input-group">
-            <label for="imageFile">Cover Art (JPG, PNG, WEBP)</label>
-            <input type="file" id="imageFile" accept="image/*" onchange="previewCover(event)" required>
-            <div class="preview-box" id="previewBox">
-                <img id="coverImgPreview" alt="Cover Preview">
+            <label>Audio File (MP3, WAV, FLAC)</label>
+            <div class="dropzone" id="audioDropzone">
+                <div class="dropzone-icon">🎵</div>
+                <div class="dropzone-title" id="audioTitleText">Click or drop audio file</div>
+                <div class="dropzone-desc">Lossless or compressed audio</div>
+                <input type="file" id="audioFile" accept="audio/*" onchange="handleAudioSelect(event)" required>
+            </div>
+            <div class="preview-container" id="audioPreview">
+                <div style="font-size: 1.6rem; padding-left: 2px;">🎶</div>
+                <div class="preview-info">
+                    <div class="preview-name" id="audioFileName">track.mp3</div>
+                    <div class="preview-size" id="audioFileSize">0 MB</div>
+                </div>
+                <button type="button" class="remove-file" onclick="clearAudioFile()" title="Remove">&times;</button>
             </div>
         </div>
 
-        <button id="submitBtn" onclick="handleSubmit()">Release to App</button>
+        <!-- Cover Art Dropzone -->
+        <div class="input-group">
+            <label>Cover Artwork (JPG, PNG)</label>
+            <div class="dropzone" id="coverDropzone">
+                <div class="dropzone-icon">🖼️</div>
+                <div class="dropzone-title" id="coverTitleText">Click or drop cover art</div>
+                <div class="dropzone-desc">Auto-samples dominant color</div>
+                <input type="file" id="imageFile" accept="image/*" onchange="previewCover(event)" required>
+            </div>
+            <div class="preview-container" id="coverPreviewContainer">
+                <img id="coverImgPreview" alt="Cover Preview">
+                <div class="preview-info">
+                    <div class="preview-name" id="coverFileName">cover.jpg</div>
+                    <div class="preview-size" id="coverFileSize">0 KB</div>
+                </div>
+                <button type="button" class="remove-file" onclick="clearCoverFile()" title="Remove">&times;</button>
+            </div>
+        </div>
 
+        <!-- Theme Color -->
+        <div class="input-group">
+            <label for="themeColor">
+                Theme Color / Wave Ambient
+                <span class="color-preview-badge" id="previewBadge" style="background-color: #00E599;"></span>
+            </label>
+            <div class="color-picker-container">
+                <div class="color-input-wrapper" title="Pick custom color">
+                    <input type="color" id="themeColor" value="#00E599" oninput="syncColorFromPicker(this.value)">
+                </div>
+                <input type="text" id="colorHex" class="color-hex-input" value="#00E599" maxlength="7" placeholder="#00E599" oninput="syncColorFromHex(this.value)">
+            </div>
+            <div class="swatches-row">
+                <button type="button" class="swatch-btn active" style="background-color: #00E599;" onclick="selectSwatch('#00E599')" title="Neon Green"></button>
+                <button type="button" class="swatch-btn" style="background-color: #00F2FE;" onclick="selectSwatch('#00F2FE')" title="Cyan Wave"></button>
+                <button type="button" class="swatch-btn" style="background-color: #0070F3;" onclick="selectSwatch('#0070F3')" title="Electric Azure"></button>
+                <button type="button" class="swatch-btn" style="background-color: #9B51E0;" onclick="selectSwatch('#9B51E0')" title="Vibrant Purple"></button>
+                <button type="button" class="swatch-btn" style="background-color: #FF2A85;" onclick="selectSwatch('#FF2A85')" title="Hot Pink"></button>
+                <button type="button" class="swatch-btn" style="background-color: #FF6B00;" onclick="selectSwatch('#FF6B00')" title="Sunset Orange"></button>
+                <button type="button" class="swatch-btn" style="background-color: #FFD600;" onclick="selectSwatch('#FFD600')" title="Solar Gold"></button>
+                <button type="button" class="swatch-btn" style="background-color: #E02424;" onclick="selectSwatch('#E02424')" title="Ruby Red"></button>
+            </div>
+            <p class="helper-text">
+                🔒 Privacy Sanitized: All prior GPS/camera metadata is wiped and replaced with embedded color EXIF tags.
+            </p>
+        </div>
+
+        <button id="submitBtn" class="btn-primary" onclick="handleSubmit()">Release to Alaktra Player</button>
         <div id="statusMsg" class="status-msg"></div>
     </div>
 
-    <div class="footer-note">
-        Powered by FastAPI & SQLite &bull; <a href="/docs" target="_blank">View API Docs</a> &bull; <a href="/songs" target="_blank">View Song List JSON</a>
+    <!-- RIGHT: CATALOG CARD -->
+    <div class="card">
+        <div class="catalog-header">
+            <div class="card-title" style="margin-bottom: 0;">
+                <span>📚</span> Library Catalog
+            </div>
+            <input type="text" id="catalogSearch" class="catalog-search" placeholder="Search catalog..." oninput="filterCatalog(this.value)">
+        </div>
+        <div class="songs-list" id="songsListContainer">
+            <div style="text-align: center; color: var(--text-muted); padding: 3rem;">Loading catalog...</div>
+        </div>
+    </div>
+</div>
+
+<div class="footer">
+    Powered by FastAPI & SQLite &bull; <a href="/docs" target="_blank">API Documentation</a> &bull; <a href="/songs" target="_blank">Catalog JSON</a>
+</div>
+
+<!-- EDIT MODAL -->
+<div class="modal-overlay" id="editModal">
+    <div class="modal-card">
+        <h3>Edit Track Details</h3>
+        <input type="hidden" id="editSongId">
+        <div class="input-group">
+            <label>Song Title</label>
+            <input type="text" id="editSongTitle" readonly style="opacity: 0.7; cursor: not-allowed;">
+        </div>
+        <div class="input-group">
+            <label>Artist Name</label>
+            <input type="text" id="editSongArtist" readonly style="opacity: 0.7; cursor: not-allowed;">
+        </div>
+        <div class="input-group">
+            <label>Theme Color / Wave Ambient</label>
+            <div class="color-picker-container">
+                <div class="color-input-wrapper">
+                    <input type="color" id="editThemeColor" oninput="document.getElementById('editColorHex').value = this.value.toUpperCase()">
+                </div>
+                <input type="text" id="editColorHex" class="color-hex-input" maxlength="7">
+            </div>
+        </div>
+        <div class="modal-buttons">
+            <button class="btn-modal btn-cancel" onclick="closeEditModal()">Cancel</button>
+            <button class="btn-modal btn-save" onclick="saveEditedSong()">Save Changes</button>
+        </div>
     </div>
 </div>
 
 <script>
+    let allCatalogSongs = [];
+    let currentColor = "#00E599";
+
+    async function fetchCatalog() {
+        try {
+            const res = await fetch('/songs');
+            if (res.ok) {
+                allCatalogSongs = await res.json();
+                renderCatalogSongs(allCatalogSongs);
+            }
+        } catch(e) {
+            console.error("Failed to fetch catalog:", e);
+        }
+    }
+
+    function renderCatalogSongs(songs) {
+        const container = document.getElementById('songsListContainer');
+        if (!songs || songs.length === 0) {
+            container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 3rem;">No songs found in catalog.</div>`;
+            return;
+        }
+
+        container.innerHTML = songs.map(s => `
+            <div class="song-item">
+                <img src="${s.cover_url}" class="song-cover" alt="Cover">
+                <div class="song-meta">
+                    <div class="song-title">${escapeHtml(s.title)}</div>
+                    <div class="song-artist">${escapeHtml(s.artist)}</div>
+                </div>
+                <div class="song-actions">
+                    <span class="color-indicator" style="background-color: ${s.dominant_color || '#00E599'}; color: ${s.dominant_color || '#00E599'};" title="${s.dominant_color || '#00E599'}"></span>
+                    <button class="btn-edit" onclick="openEditModal(${s.id}, '${escapeQuote(s.title)}', '${escapeQuote(s.artist)}', '${s.dominant_color || '#00E599'}')">Edit</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async function filterCatalog(query) {
+        const q = query.trim();
+        if (!q) {
+            renderCatalogSongs(allCatalogSongs);
+            return;
+        }
+        try {
+            const res = await fetch(`/songs/search?q=${encodeURIComponent(q)}`);
+            if (res.ok) {
+                const results = await res.json();
+                renderCatalogSongs(results);
+            }
+        } catch(e) {
+            console.error("Search failed:", e);
+            // Fallback to client-side filter
+            const qLower = q.toLowerCase();
+            const filtered = allCatalogSongs.filter(s => 
+                (s.title && s.title.toLowerCase().includes(qLower)) || 
+                (s.artist && s.artist.toLowerCase().includes(qLower))
+            );
+            renderCatalogSongs(filtered);
+        }
+    }
+
+    function checkLiveDuplicates(query) {
+        const dropdown = document.getElementById('liveMatchDropdown');
+        const q = query.toLowerCase().trim();
+        if (!q || q.length < 2) {
+            dropdown.style.display = 'none';
+            return;
+        }
+
+        const matches = allCatalogSongs.filter(s => 
+            s.title && s.title.toLowerCase().includes(q)
+        );
+
+        if (matches.length === 0) {
+            dropdown.style.display = 'none';
+            return;
+        }
+
+        dropdown.innerHTML = matches.map(m => `
+            <div class="match-item" onclick="selectExistingSong(${m.id})">
+                <img src="${m.cover_url}" alt="Cover">
+                <div>
+                    <div class="match-title">⚠️ Exists: ${escapeHtml(m.title)}</div>
+                    <div class="match-artist">${escapeHtml(m.artist)}</div>
+                </div>
+            </div>
+        `).join('');
+        dropdown.style.display = 'block';
+    }
+
+    function selectExistingSong(id) {
+        const found = allCatalogSongs.find(s => s.id === id);
+        if (found) {
+            document.getElementById('songName').value = found.title;
+            document.getElementById('artistName').value = found.artist;
+            if (found.dominant_color) updateColorUI(found.dominant_color);
+        }
+        document.getElementById('liveMatchDropdown').style.display = 'none';
+    }
+
+    function escapeHtml(str) {
+        return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function escapeQuote(str) {
+        return (str || '').replace(/'/g, "\\'");
+    }
+
+    function openEditModal(id, title, artist, color) {
+        document.getElementById('editSongId').value = id;
+        document.getElementById('editSongTitle').value = title;
+        document.getElementById('editSongArtist').value = artist;
+        document.getElementById('editThemeColor').value = color;
+        document.getElementById('editColorHex').value = color;
+        document.getElementById('editModal').style.display = 'flex';
+    }
+
+    function closeEditModal() {
+        document.getElementById('editModal').style.display = 'none';
+    }
+
+    async function saveEditedSong() {
+        const id = document.getElementById('editSongId').value;
+        const color = document.getElementById('editColorHex').value;
+
+        try {
+            const formData = new FormData();
+            formData.append("color", color);
+
+            const res = await fetch(`/songs/${id}/update-cover-metadata`, {
+                method: "POST",
+                body: formData
+            });
+
+            if (res.ok) {
+                closeEditModal();
+                fetchCatalog();
+            } else {
+                alert("Failed to update track theme.");
+            }
+        } catch(e) {
+            alert("Error updating song.");
+        }
+    }
+
+    function updateColorUI(hex) {
+        if (!hex) return;
+        if (!hex.startsWith('#')) hex = '#' + hex;
+        currentColor = hex.toUpperCase();
+        document.getElementById('themeColor').value = currentColor;
+        document.getElementById('colorHex').value = currentColor;
+        const badge = document.getElementById('previewBadge');
+        if (badge) {
+            badge.style.backgroundColor = currentColor;
+            badge.style.color = currentColor;
+        }
+
+        document.querySelectorAll('.swatch-btn').forEach(btn => {
+            const btnColor = btn.getAttribute('style')?.match(/background-color:\s*([^;]+)/i)?.[1]?.trim();
+            if (btnColor && (btnColor.toUpperCase() === currentColor || rgbToHex(btnColor) === currentColor)) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+    }
+
+    function syncColorFromPicker(val) { updateColorUI(val); }
+    function syncColorFromHex(val) {
+        if (/^#[0-9A-Fa-f]{6}$/.test(val)) updateColorUI(val);
+        else if (/^[0-9A-Fa-f]{6}$/.test(val)) updateColorUI('#' + val);
+    }
+    function selectSwatch(hex) { updateColorUI(hex); }
+
+    function rgbToHex(rgbStr) {
+        if (rgbStr.startsWith('#')) return rgbStr.toUpperCase();
+        const m = rgbStr.match(/\d+/g);
+        if (m && m.length >= 3) {
+            const r = parseInt(m[0]).toString(16).padStart(2, '0');
+            const g = parseInt(m[1]).toString(16).padStart(2, '0');
+            const b = parseInt(m[2]).toString(16).padStart(2, '0');
+            return (`#${r}${g}${b}`).toUpperCase();
+        }
+        return rgbStr.toUpperCase();
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024, dm = 2, sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    function handleAudioSelect(event) {
+        const file = event.target.files[0];
+        if (file) {
+            document.getElementById('audioDropzone').style.display = 'none';
+            document.getElementById('audioPreview').style.display = 'flex';
+            document.getElementById('audioFileName').textContent = file.name;
+            document.getElementById('audioFileSize').textContent = formatFileSize(file.size);
+        }
+    }
+
+    function clearAudioFile() {
+        document.getElementById('audioFile').value = '';
+        document.getElementById('audioDropzone').style.display = 'flex';
+        document.getElementById('audioPreview').style.display = 'none';
+    }
+
     function previewCover(event) {
         const file = event.target.files[0];
-        const previewBox = document.getElementById('previewBox');
-        const img = document.getElementById('coverImgPreview');
         if (file) {
-            img.src = URL.createObjectURL(file);
-            previewBox.style.display = 'block';
-        } else {
-            previewBox.style.display = 'none';
+            const objectUrl = URL.createObjectURL(file);
+            document.getElementById('coverImgPreview').src = objectUrl;
+            document.getElementById('coverDropzone').style.display = 'none';
+            document.getElementById('coverPreviewContainer').style.display = 'flex';
+            document.getElementById('coverFileName').textContent = file.name;
+            document.getElementById('coverFileSize').textContent = formatFileSize(file.size);
+
+            const tempImg = new Image();
+            tempImg.crossOrigin = "Anonymous";
+            tempImg.onload = function() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = 64; canvas.height = 64;
+                    ctx.drawImage(tempImg, 0, 0, 64, 64);
+                    const data = ctx.getImageData(0, 0, 64, 64).data;
+                    let bestR = 0, bestG = 229, bestB = 153, maxScore = -1;
+                    for (let i = 0; i < data.length; i += 16) {
+                        const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+                        if (a < 128) continue;
+                        const lum = 0.299*r + 0.587*g + 0.114*b;
+                        const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+                        const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+                        if (lum > 20 && lum < 240 && sat > 0.25) {
+                            const score = sat * 100 + (lum > 50 && lum < 200 ? 50 : 0);
+                            if (score > maxScore) { maxScore = score; bestR = r; bestG = g; bestB = b; }
+                        }
+                    }
+                    if (maxScore > 0) {
+                        const hex = `#${bestR.toString(16).padStart(2,'0')}${bestG.toString(16).padStart(2,'0')}${bestB.toString(16).padStart(2,'0')}`.toUpperCase();
+                        updateColorUI(hex);
+                    }
+                } catch(e) {}
+            };
+            tempImg.src = objectUrl;
         }
+    }
+
+    function clearCoverFile() {
+        document.getElementById('imageFile').value = '';
+        document.getElementById('coverDropzone').style.display = 'flex';
+        document.getElementById('coverPreviewContainer').style.display = 'none';
+        updateColorUI("#00E599");
     }
 
     function showStatus(text, isError = false) {
@@ -231,53 +1042,51 @@
         const artist = document.getElementById('artistName').value.trim();
         const audio = document.getElementById('audioFile').files[0];
         const image = document.getElementById('imageFile').files[0];
+        const colorVal = (document.getElementById('colorHex').value || currentColor || "#00E599").trim();
         const btn = document.getElementById('submitBtn');
 
         if (!song || !artist || !audio || !image) {
-            showStatus("⚠️ Please fill in all fields and select both an audio and cover file.", true);
+            showStatus("⚠️ Please fill in all fields and select both audio & cover.", true);
             return;
         }
 
         btn.disabled = true;
-        btn.textContent = "Uploading Track...";
+        btn.textContent = "Uploading & Sanitizing...";
 
         const formData = new FormData();
         formData.append("title", song);
         formData.append("artist", artist);
         formData.append("audio", audio);
         formData.append("cover", image);
+        formData.append("color", colorVal);
 
-        // Dynamically resolve upload URL so it works seamlessly locally, over LAN, or configured IP
         const uploadUrl = (window.location.origin && window.location.origin.startsWith("http")) 
             ? `${window.location.origin}/songs/upload`
             : "http://100.65.126.106:8000/songs/upload";
 
         try {
-            const response = await fetch(uploadUrl, {
-                method: "POST",
-                body: formData
-            });
-
+            const response = await fetch(uploadUrl, { method: "POST", body: formData });
             if (response.ok) {
-                const result = await response.json();
-                showStatus(`✅ Track "${song}" by ${artist} published successfully!`);
+                showStatus(`✅ Track "${song}" published successfully!`);
                 document.getElementById('songName').value = "";
                 document.getElementById('artistName').value = "";
-                document.getElementById('audioFile').value = "";
-                document.getElementById('imageFile').value = "";
-                document.getElementById('previewBox').style.display = 'none';
+                clearAudioFile();
+                clearCoverFile();
+                updateColorUI("#00E599");
+                fetchCatalog();
             } else {
                 const errorText = await response.text();
                 showStatus("❌ Upload failed: " + errorText, true);
             }
         } catch (error) {
-            console.error(error);
-            showStatus("⚠️ Server connection failed. Make sure the backend server is running.", true);
+            showStatus("⚠️ Server connection failed.", true);
         } finally {
             btn.disabled = false;
-            btn.textContent = "Release to App";
+            btn.textContent = "Release to Alaktra Player";
         }
     }
+
+    fetchCatalog();
 </script>
 </body>
 </html>

@@ -6,6 +6,7 @@ import com.example.data.DownloadManager
 import com.example.data.local.AppDatabase
 import com.example.data.preferences.AuthPreferences
 import com.example.data.remote.*
+import com.example.model.LocationPin
 import com.example.model.Playlist
 import com.example.model.Song
 import com.example.model.User
@@ -13,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import okhttp3.OkHttpClient
 import okhttp3.Cache
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -420,7 +422,8 @@ class MusicRepository(private val context: Context) {
                         audioUrl = sanitizeUrl(dto.audioUrl),
                         coverUrl = sanitizeUrl(dto.coverUrl),
                         duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id)
+                        isLiked = likedIds.contains(dto.id),
+                        dominantColorHex = dto.dominantColor
                     )
                 }
                 apiCacheManager.putFeed("home_feed", remoteSongs)
@@ -483,7 +486,8 @@ class MusicRepository(private val context: Context) {
                         audioUrl = sanitizeUrl(dto.audioUrl),
                         coverUrl = sanitizeUrl(dto.coverUrl),
                         duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id)
+                        isLiked = likedIds.contains(dto.id),
+                        dominantColorHex = dto.dominantColor
                     )
                 }
                 apiCacheManager.putSearch(searchKey, songs)
@@ -914,7 +918,8 @@ class MusicRepository(private val context: Context) {
                                 audioUrl = sanitizeUrl(dto.audioUrl),
                                 coverUrl = sanitizeUrl(dto.coverUrl),
                                 duration = dto.duration,
-                                isLiked = true
+                                isLiked = true,
+                                dominantColorHex = dto.dominantColor
                             )
                         }
                         songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it, isLiked = true) })
@@ -949,7 +954,8 @@ class MusicRepository(private val context: Context) {
                         audioUrl = sanitizeUrl(dto.audioUrl),
                         coverUrl = sanitizeUrl(dto.coverUrl),
                         duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id)
+                        isLiked = likedIds.contains(dto.id),
+                        dominantColorHex = dto.dominantColor
                     )
                 }
                 apiCacheManager.putPlaylistSongs(playlistId, remoteSongs)
@@ -1162,33 +1168,34 @@ class MusicRepository(private val context: Context) {
 
         val isOnline = com.example.util.NetworkMonitor.isOnline(context)
         if (isOnline) {
-            try {
-                val likedPlaylistId = getOrFetchLikedPlaylistId(userId)
-                if (likedPlaylistId != null) {
-                    val resp = if (newStatus) {
-                        api.addSongToPlaylist(playlistId = likedPlaylistId, songId = song.id)
-                    } else {
-                        api.removeSongFromPlaylist(playlistId = likedPlaylistId, songId = song.id)
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val likedPlaylistId = getOrFetchLikedPlaylistId(userId)
+                    if (likedPlaylistId != null) {
+                        if (newStatus) {
+                            api.addSongToPlaylist(playlistId = likedPlaylistId, songId = song.id)
+                        } else {
+                            api.removeSongFromPlaylist(playlistId = likedPlaylistId, songId = song.id)
+                        }
                     }
-                    if (resp.isSuccessful) return@withContext newStatus
-                }
-            } catch (_: Exception) {}
+                } catch (_: Exception) {}
+            }
+        } else {
+            // Collapse or replace previous pending toggle_like for this song
+            val existingQueue = authPreferences.getOfflineQueue().toMutableList()
+            existingQueue.removeAll {
+                it.optString("type") == "toggle_like" && it.optInt("songId") == song.id
+            }
+            val action = JSONObject().apply {
+                put("type", "toggle_like")
+                put("songId", song.id)
+                put("newStatus", newStatus)
+                put("userId", userId)
+                put("timestamp", System.currentTimeMillis())
+            }
+            existingQueue.add(action)
+            authPreferences.setOfflineQueue(existingQueue)
         }
-
-        // Collapse or replace previous pending toggle_like for this song
-        val existingQueue = authPreferences.getOfflineQueue().toMutableList()
-        existingQueue.removeAll {
-            it.optString("type") == "toggle_like" && it.optInt("songId") == song.id
-        }
-        val action = JSONObject().apply {
-            put("type", "toggle_like")
-            put("songId", song.id)
-            put("newStatus", newStatus)
-            put("userId", userId)
-            put("timestamp", System.currentTimeMillis())
-        }
-        existingQueue.add(action)
-        authPreferences.setOfflineQueue(existingQueue)
 
         newStatus
     }
@@ -1494,7 +1501,81 @@ class MusicRepository(private val context: Context) {
         }
     }
 
+    suspend fun getNearbyPins(lat: Double, lng: Double): List<LocationPin> = withContext(Dispatchers.IO) {
+        try {
+            val resp = api.getNearbyPins(lat, lng)
+            if (resp.isSuccessful && resp.body() != null) {
+                return@withContext resp.body()!!.map { dto ->
+                    val songDto = dto.song
+                    val songId = songDto?.id ?: dto.songId
+                    val rawAudio = songDto?.audioUrl
+                    val resolvedAudioUrl = if (!rawAudio.isNullOrBlank()) {
+                        sanitizeUrl(rawAudio)
+                    } else {
+                        "${authPreferences.getServerBaseUrl().trimEnd('/')}/songs/$songId/stream"
+                    }
+                    val song = Song(
+                        id = songId,
+                        title = songDto?.title ?: "Pinned Track",
+                        artist = songDto?.artist ?: "Unknown",
+                        audioUrl = resolvedAudioUrl,
+                        coverUrl = sanitizeUrl(songDto?.coverUrl ?: ""),
+                        duration = songDto?.duration ?: 0.0,
+                        dominantColorHex = songDto?.dominantColor
+                    )
+                    LocationPin(
+                        id = dto.id,
+                        userId = dto.userId,
+                        songId = dto.songId,
+                        latitude = dto.latitude,
+                        longitude = dto.longitude,
+                        distanceMeters = dto.distanceMeters,
+                        imageUrl = dto.imageUrl ?: "",
+                        createdAt = dto.createdAt ?: "",
+                        song = song
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MusicRepository", "Error fetching nearby pins", e)
+        }
+        emptyList()
+    }
+
+    suspend fun createPin(songId: Int, lat: Double, lng: Double, imageFile: File): LocationPin? = withContext(Dispatchers.IO) {
+        val user = authPreferences.getUser() ?: return@withContext null
+        try {
+            val userIdBody = RequestBody.create("text/plain".toMediaTypeOrNull(), user.id.toString())
+            val songIdBody = RequestBody.create("text/plain".toMediaTypeOrNull(), songId.toString())
+            val latBody = RequestBody.create("text/plain".toMediaTypeOrNull(), lat.toString())
+            val lngBody = RequestBody.create("text/plain".toMediaTypeOrNull(), lng.toString())
+
+            val reqFile = RequestBody.create("image/*".toMediaTypeOrNull(), imageFile)
+            val body = MultipartBody.Part.createFormData("image", imageFile.name, reqFile)
+
+            val resp = api.createPin(userIdBody, songIdBody, latBody, lngBody, body)
+            if (resp.isSuccessful && resp.body() != null) {
+                val dto = resp.body()!!
+                return@withContext LocationPin(
+                    id = dto.id,
+                    userId = dto.userId,
+                    songId = dto.songId,
+                    latitude = dto.latitude,
+                    longitude = dto.longitude,
+                    distanceMeters = 0.0,
+                    imageUrl = dto.imageUrl ?: "",
+                    createdAt = dto.createdAt ?: "",
+                    song = Song(id = songId, title = "Pinned Track", artist = "", audioUrl = "", coverUrl = "")
+                )
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MusicRepository", "Error creating location pin", e)
+        }
+        null
+    }
+
     companion object {
         const val KEY_HISTORY_SYNC = "history_sync"
     }
 }
+

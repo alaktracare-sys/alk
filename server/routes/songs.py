@@ -5,6 +5,8 @@ import uuid
 import os
 import hashlib
 import mimetypes
+import struct
+import io
 
 router = APIRouter(prefix="/songs", tags=["songs"])
 
@@ -32,6 +34,94 @@ def calculate_duration(file_path: str) -> float:
     return 0.0
 
 
+def sanitize_and_inject_color_metadata(image_bytes: bytes, ext: str, color_hex: str) -> bytes:
+    """
+    Completely erases all existing metadata (GPS, camera tags, device info, timestamps, XMP, IPTC)
+    from the cover image and embeds the user-chosen color directly into the image's EXIF metadata.
+    Uses Pillow if installed, and seamlessly falls back to a pure-Python byte-level EXIF injector.
+    """
+    clean_hex = (color_hex or "").strip().upper()
+    if not clean_hex.startswith("#"):
+        clean_hex = "#" + clean_hex
+    if len(clean_hex) != 7 or not all(c in "0123456789ABCDEF" for c in clean_hex[1:]):
+        clean_hex = "#00E599"
+
+    meta_payload = f"DOMINANT_COLOR:{clean_hex}"
+
+    # 1. Attempt sanitization via Pillow if available
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes))
+        out_buf = io.BytesIO()
+        lower_ext = ext.lower()
+        target_fmt = "JPEG" if lower_ext in (".jpg", ".jpeg") else ("PNG" if lower_ext == ".png" else (img.format or "JPEG"))
+
+        if target_fmt == "JPEG":
+            exif = img.getexif()
+            exif.clear()  # Erase all prior metadata
+            exif[0x010E] = meta_payload  # ImageDescription
+            exif[0x0131] = f"AlaktraMusic {meta_payload}"  # Software
+            exif[0x9286] = meta_payload.encode("utf-8")  # UserComment
+            img.save(out_buf, format="JPEG", quality=95, exif=exif)
+            return out_buf.getvalue()
+        elif target_fmt == "PNG":
+            from PIL.PngImagePlugin import PngInfo
+            target_info = PngInfo()
+            target_info.add_text("Comment", meta_payload)
+            target_info.add_text("Description", meta_payload)
+            target_info.add_text("Software", f"AlaktraMusic {meta_payload}")
+            img.save(out_buf, format="PNG", pnginfo=target_info)
+            return out_buf.getvalue()
+    except Exception:
+        pass
+
+    # 2. Pure-Python Zero-Dependency JPEG Sanitizer & EXIF APP1 Injector
+    if image_bytes.startswith(b"\xFF\xD8"):
+        try:
+            # Strip all metadata markers: APP1-APP15 (0xE1..0xEF) and COM (0xFE)
+            strip_markers = {0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xFE}
+
+            # Build minimal TIFF with ImageDescription (0x010E) and Software (0x0131)
+            ascii_bytes = meta_payload.encode("utf-8") + b"\x00"
+            str_len = len(ascii_bytes)
+            offset_str1 = 38
+            offset_str2 = 38 + str_len
+            entry1 = struct.pack("<HHII", 0x010E, 2, str_len, offset_str1)
+            entry2 = struct.pack("<HHII", 0x0131, 2, str_len, offset_str2)
+            ifd0 = struct.pack("<H", 2) + entry1 + entry2 + struct.pack("<I", 0)
+            tiff = b"II\x2a\x00" + struct.pack("<I", 8) + ifd0 + ascii_bytes + ascii_bytes
+            app1_payload = b"Exif\x00\x00" + tiff
+            app1_seg = b"\xFF\xE1" + struct.pack(">H", len(app1_payload) + 2) + app1_payload
+
+            out = [b"\xFF\xD8", app1_seg]
+            i = 2
+            while i < len(image_bytes) - 1:
+                if image_bytes[i] != 0xFF:
+                    out.append(image_bytes[i:])
+                    break
+                marker = image_bytes[i + 1]
+                i += 2
+                if marker in (0xD8, 0xD9):
+                    out.append(bytes([0xFF, marker]))
+                    continue
+                if marker == 0xDA:  # SOS (Start of Scan - image data starts)
+                    out.append(bytes([0xFF, marker]))
+                    out.append(image_bytes[i:])
+                    break
+                if i + 2 > len(image_bytes):
+                    break
+                seg_len = struct.unpack(">H", image_bytes[i:i + 2])[0]
+                if marker not in strip_markers:
+                    out.append(bytes([0xFF, marker]))
+                    out.append(image_bytes[i:i + seg_len])
+                i += seg_len
+            return b"".join(out)
+        except Exception:
+            return image_bytes
+
+    return image_bytes
+
+
 # 🎵 GET ALL SONGS
 @router.get("")
 def get_songs(request: Request):
@@ -52,6 +142,7 @@ def get_songs(request: Request):
             "artist": s["artist"],
             "audio_url": f"{base_url}/songs/{s['id']}/stream",
             "cover_url": f"{base_url}/{s['cover_path'].replace(os.sep, '/')}",
+            "dominant_color": s["dominant_color"] or "#00E599",
             "duration": float(s["duration"]) if s["duration"] else 0.0,
         }
         for s in songs
@@ -194,7 +285,8 @@ async def upload_song(
     title: str = Form(...),
     artist: str = Form(...),
     audio: UploadFile = File(...),
-    cover: UploadFile = File(...)
+    cover: UploadFile = File(...),
+    color: str = Form("#00E599")
 ):
     # Determine safe extensions
     audio_ext = os.path.splitext(audio.filename or "")[1].lower() or ".mp3"
@@ -207,13 +299,23 @@ async def upload_song(
     cover_path = os.path.join(COVER_DIR, cover_filename)
 
     audio_bytes = await audio.read()
-    cover_bytes = await cover.read()
+    raw_cover_bytes = await cover.read()
+
+    # Format and sanitize color hex
+    clean_color = (color or "").strip().upper()
+    if not clean_color.startswith("#"):
+        clean_color = "#" + clean_color
+    if len(clean_color) != 7 or not all(c in "0123456789ABCDEF" for c in clean_color[1:]):
+        clean_color = "#00E599"
+
+    # Erase all prior image metadata and embed the chosen theme color into the image's EXIF metadata
+    sanitized_cover_bytes = sanitize_and_inject_color_metadata(raw_cover_bytes, cover_ext, clean_color)
 
     with open(audio_path, "wb") as f:
         f.write(audio_bytes)
 
     with open(cover_path, "wb") as f:
-        f.write(cover_bytes)
+        f.write(sanitized_cover_bytes)
 
     # Relative paths for database & web serving
     rel_audio_path = os.path.join("music", audio_filename).replace(os.sep, "/")
@@ -225,10 +327,10 @@ async def upload_song(
     db = get_db()
     cursor = db.execute(
         """
-        INSERT INTO songs (title, artist, audio_path, cover_path, etag, duration, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO songs (title, artist, audio_path, cover_path, dominant_color, etag, duration, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
-        (title.strip(), artist.strip(), rel_audio_path, rel_cover_path, etag, duration),
+        (title.strip(), artist.strip(), rel_audio_path, rel_cover_path, clean_color, etag, duration),
     )
     db.commit()
     new_song_id = cursor.lastrowid
@@ -237,7 +339,8 @@ async def upload_song(
         "success": True,
         "id": new_song_id,
         "title": title.strip(),
-        "artist": artist.strip()
+        "artist": artist.strip(),
+        "dominant_color": clean_color
     }
 
 
@@ -279,9 +382,99 @@ def search_songs(
             "artist": s["artist"],
             "audio_url": f"{base_url}/songs/{s['id']}/stream",
             "cover_url": f"{base_url}/{s['cover_path'].replace(os.sep, '/')}",
+            "dominant_color": s["dominant_color"] or "#00E599",
             "duration": float(s["duration"]) if s["duration"] else 0.0,
         }
         for s in songs
     ]
     return JSONResponse(content=data, headers={"ETag": etag, "Cache-Control": "private, max-age=60"})
+
+
+# 🎨 UPDATE EXISTING SONG COVER METADATA & THEME COLOR
+@router.post("/{song_id}/update-cover-metadata")
+def update_song_cover_metadata(song_id: int, color: str = Form(...)):
+    db = get_db()
+    song = db.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    clean_color = (color or "").strip().upper()
+    if not clean_color.startswith("#"):
+        clean_color = "#" + clean_color
+    if len(clean_color) != 7 or not all(c in "0123456789ABCDEF" for c in clean_color[1:]):
+        clean_color = "#00E599"
+
+    cover_rel = song["cover_path"]
+    cover_abs = os.path.join(os.path.dirname(os.path.dirname(__file__)), cover_rel)
+    if os.path.exists(cover_abs):
+        ext = os.path.splitext(cover_abs)[1].lower() or ".jpg"
+        try:
+            with open(cover_abs, "rb") as f:
+                raw_bytes = f.read()
+            sanitized_bytes = sanitize_and_inject_color_metadata(raw_bytes, ext, clean_color)
+            with open(cover_abs, "wb") as f:
+                f.write(sanitized_bytes)
+        except Exception as e:
+            print(f"⚠️ Error updating cover image file on disk: {e}")
+
+    db.execute(
+        "UPDATE songs SET dominant_color = ?, updated_at = datetime('now') WHERE id = ?",
+        (clean_color, song_id)
+    )
+    db.commit()
+
+    return {
+        "success": True,
+        "id": song_id,
+        "title": song["title"],
+        "dominant_color": clean_color
+    }
+
+
+# 🎨 BATCH UPDATE COVER METADATA FOR ALL EXISTING SONGS
+@router.post("/batch-update-cover-metadata")
+async def batch_update_cover_metadata(request: Request):
+    """Batch updates metadata and theme colors for multiple existing songs at once."""
+    payload = await request.json()
+    items = payload if isinstance(payload, list) else payload.get("items", [])
+    db = get_db()
+    results = []
+
+    for item in items:
+        song_id = item.get("song_id") or item.get("id")
+        color = item.get("color", "#00E599")
+        if not song_id:
+            continue
+
+        song = db.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
+        if not song:
+            continue
+
+        clean_color = (color or "").strip().upper()
+        if not clean_color.startswith("#"):
+            clean_color = "#" + clean_color
+        if len(clean_color) != 7 or not all(c in "0123456789ABCDEF" for c in clean_color[1:]):
+            clean_color = "#00E599"
+
+        cover_rel = song["cover_path"]
+        cover_abs = os.path.join(os.path.dirname(os.path.dirname(__file__)), cover_rel)
+        if os.path.exists(cover_abs):
+            ext = os.path.splitext(cover_abs)[1].lower() or ".jpg"
+            try:
+                with open(cover_abs, "rb") as f:
+                    raw_bytes = f.read()
+                sanitized_bytes = sanitize_and_inject_color_metadata(raw_bytes, ext, clean_color)
+                with open(cover_abs, "wb") as f:
+                    f.write(sanitized_bytes)
+            except Exception as e:
+                print(f"⚠️ Error updating cover image file for song {song_id}: {e}")
+
+        db.execute(
+            "UPDATE songs SET dominant_color = ?, updated_at = datetime('now') WHERE id = ?",
+            (clean_color, song_id)
+        )
+        results.append({"id": song_id, "title": song["title"], "dominant_color": clean_color})
+
+    db.commit()
+    return {"success": True, "updated_count": len(results), "results": results}
 

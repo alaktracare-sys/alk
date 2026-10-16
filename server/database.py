@@ -5,9 +5,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "music.db")
 MUSIC_DIR = os.path.join(BASE_DIR, "music")
 COVER_DIR = os.path.join(BASE_DIR, "covers")
+PIN_DIR = os.path.join(BASE_DIR, "pins")
 
 os.makedirs(MUSIC_DIR, exist_ok=True)
 os.makedirs(COVER_DIR, exist_ok=True)
+os.makedirs(PIN_DIR, exist_ok=True)
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -41,12 +43,17 @@ def init_db():
             artist TEXT NOT NULL,
             audio_path TEXT NOT NULL,
             cover_path TEXT NOT NULL,
+            dominant_color TEXT DEFAULT NULL,
             etag TEXT,
             duration REAL DEFAULT 0.0,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    try:
+        cursor.execute("ALTER TABLE songs ADD COLUMN dominant_color TEXT DEFAULT NULL")
+    except Exception:
+        pass
 
     # Playlists Table
     cursor.execute("""
@@ -123,6 +130,24 @@ def init_db():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_server_history_user ON listening_history(user_id, played_at DESC)")
+
+    # Location Pins Table (expires at the end of the month)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS location_pins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            image_path TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_location_pins_time ON location_pins(year, month)")
 
     conn.commit()
     conn.close()

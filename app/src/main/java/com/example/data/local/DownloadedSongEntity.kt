@@ -11,7 +11,8 @@ data class DownloadedSongEntity(
     val localPath: String,
     val duration: Double,
     val downloadedAt: Long = System.currentTimeMillis(),
-    val fileSize: Long = 0L
+    val fileSize: Long = 0L,
+    val dominantColorHex: String? = null
 ) {
     fun toSong(): Song {
         return Song(
@@ -22,7 +23,8 @@ data class DownloadedSongEntity(
             coverUrl = coverUrl,
             duration = duration,
             localPath = localPath,
-            isDownloaded = true
+            isDownloaded = true,
+            dominantColorHex = dominantColorHex
         )
     }
 
@@ -37,7 +39,8 @@ data class DownloadedSongEntity(
                 localPath = localPath,
                 duration = song.duration,
                 downloadedAt = System.currentTimeMillis(),
-                fileSize = fileSize
+                fileSize = fileSize,
+                dominantColorHex = song.dominantColorHex
             )
         }
     }

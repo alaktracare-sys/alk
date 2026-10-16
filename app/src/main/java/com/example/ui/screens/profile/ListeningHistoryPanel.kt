@@ -526,7 +526,11 @@ fun FullListeningHistorySheet(
                             }
 
                             // Individual songs listened to during that day
-                            items(dayGroup.songs, key = { it.id }) { historyItem ->
+                            items(
+                                items = dayGroup.songs,
+                                key = { it.id },
+                                contentType = { "history_song_row" }
+                            ) { historyItem ->
                                 HistorySongRow(
                                     item = historyItem,
                                     onPlay = {
