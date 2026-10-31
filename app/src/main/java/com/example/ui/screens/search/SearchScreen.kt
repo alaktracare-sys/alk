@@ -136,12 +136,12 @@ fun SearchScreen(
     }
 
     Scaffold(
-        containerColor = AlaktraBackground
-    ) { padding ->
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { _ ->
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+                .fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
@@ -157,7 +157,7 @@ fun SearchScreen(
                         fontSize = 28.sp
                     ),
                     color = AlaktraTextPrimary,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                    modifier = Modifier.padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 10.dp)
                 )
 
                 // Search Bar with Real Keyboard Search action
@@ -293,7 +293,7 @@ fun SearchScreen(
                     if (recentSearches.isNotEmpty()) {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 140.dp)
+                            contentPadding = PaddingValues(bottom = 160.dp)
                         ) {
                             item {
                                 Row(
@@ -435,7 +435,7 @@ fun SearchScreen(
                     // Search Results List
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 140.dp)
+                        contentPadding = PaddingValues(bottom = 160.dp)
                     ) {
                         itemsIndexed(
                             items = filteredResults,

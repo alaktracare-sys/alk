@@ -87,15 +87,18 @@ fun EqualizerScreen(
                         )
                     }
                 },
+                expandedHeight = 52.dp,
+                windowInsets = WindowInsets(top = 8.dp),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
             )
         },
-        containerColor = AlaktraBackground
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(top = padding.calculateTopPadding()),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
@@ -103,7 +106,7 @@ fun EqualizerScreen(
                     .fillMaxSize()
                     .widthIn(max = 760.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .padding(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 8.dp)
             ) {
                 // Now Playing Info Banner (if active)
                 playbackState.currentSong?.let { song ->
@@ -615,7 +618,7 @@ fun EqualizerScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(120.dp))
+                Spacer(modifier = Modifier.height(160.dp))
             }
         }
     }

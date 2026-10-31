@@ -85,38 +85,48 @@ fun PlayerScreen(
     // Pure pitch black at top (behind header and upper artwork),
     // blooming into the rich song-dependent dominant color across the middle (track info, seekbar, controls),
     // then smoothly deepening into a dark shade at the bottom.
-    val dominant = if (playbackState.dominantColor != Color.Unspecified && playbackState.dominantColor != Color.Transparent) {
+    val hasDominant = playbackState.dominantColor != Color.Unspecified &&
+        playbackState.dominantColor != Color.Transparent
+    val dominant = if (hasDominant) {
         playbackState.dominantColor
     } else {
         Color(0xFF161822)
     }
-    val midTone = Color(
-        red = (dominant.red * 0.72f).coerceIn(0f, 1f),
-        green = (dominant.green * 0.72f).coerceIn(0f, 1f),
-        blue = (dominant.blue * 0.72f).coerceIn(0f, 1f),
-        alpha = 1f
-    )
-    val bottomTone = Color(
-        red = (dominant.red * 0.22f).coerceIn(0f, 1f),
-        green = (dominant.green * 0.22f).coerceIn(0f, 1f),
-        blue = (dominant.blue * 0.22f).coerceIn(0f, 1f),
-        alpha = 1f
-    )
-
-    val backgroundBrush = Brush.verticalGradient(
-        0.0f to Color.Black,
-        0.32f to Color.Black,
-        0.50f to midTone.copy(alpha = 0.65f),
-        0.68f to midTone,
-        0.88f to bottomTone,
-        1.0f to Color(0xFF080808)
-    )
+    val shapePalette = remember(playbackState.dominantColor) {
+        buildShapePalette(playbackState.dominantColor)
+    }
+    val backgroundBrush = remember(dominant) {
+        val midTone = Color(
+            red = (dominant.red * 0.92f).coerceIn(0f, 1f),
+            green = (dominant.green * 0.92f).coerceIn(0f, 1f),
+            blue = (dominant.blue * 0.92f).coerceIn(0f, 1f),
+            alpha = 1f
+        )
+        val bottomTone = Color(
+            red = (dominant.red * 0.30f).coerceIn(0f, 1f),
+            green = (dominant.green * 0.30f).coerceIn(0f, 1f),
+            blue = (dominant.blue * 0.30f).coerceIn(0f, 1f),
+            alpha = 1f
+        )
+        Brush.verticalGradient(
+            0.0f to Color.Black.copy(alpha = 0.68f),
+            0.32f to Color.Black.copy(alpha = 0.55f),
+            0.50f to midTone.copy(alpha = 0.58f),
+            0.68f to midTone.copy(alpha = 0.72f),
+            0.88f to bottomTone.copy(alpha = 0.76f),
+            1.0f to Color.Black.copy(alpha = 0.86f)
+        )
+    }
+    val bottomScrimBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
+        )
+    }
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .background(backgroundBrush)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -139,7 +149,7 @@ fun PlayerScreen(
         val horizontalPadding = (20.dp * widthScale).coerceIn(16.dp, 28.dp)
 
         val portraitArtMaxWidth = (screenWidth - (horizontalPadding * 2) - 8.dp).coerceAtLeast(140.dp)
-        val portraitArtMaxHeight = (screenHeight - 290.dp).coerceAtLeast(140.dp)
+        val portraitArtMaxHeight = (screenHeight - 296.dp).coerceAtLeast(140.dp)
         val portraitArtworkSize = min(portraitArtMaxWidth, portraitArtMaxHeight).coerceIn(160.dp, 400.dp)
 
         val landscapeArtMaxHeight = (screenHeight - 88.dp).coerceAtLeast(140.dp)
@@ -181,6 +191,37 @@ fun PlayerScreen(
         val likeIconContainerSize = (28.dp * heightScale).coerceIn(24.dp, 32.dp)
         val likeIconSize = (16.dp * heightScale).coerceIn(14.dp, 19.dp)
 
+        // 1. Random shapes layer at the back (above base black)
+        RandomShapesBackground(
+            seedKey = "${song.id}_${song.title}",
+            palette = shapePalette,
+            isLandscape = isLandscape,
+            minCount = 24,
+            maxCount = 44,
+            minSizeFraction = 0.09f,
+            maxSizeFraction = 0.25f,
+            minAlpha = 0.52f,
+            maxAlpha = 0.88f,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 2. Existing dynamic song color gradient layered above the random shapes
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(backgroundBrush)
+                .testTag("player_gradient_overlay")
+        )
+
+        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
+                .background(bottomScrimBrush)
+        )
+
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.fillMaxSize()
@@ -200,7 +241,7 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = topBarVerticalPadding)
+                    .padding(top = topBarVerticalPadding + 6.dp, bottom = topBarVerticalPadding)
             ) {
                 IconButton(
                     onClick = onClose,
@@ -486,10 +527,10 @@ fun PlayerScreen(
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        CustomDurationBar(
-                            positionMs = playbackState.currentPositionMs,
+                        LiveDurationBar(
+                            audioController = audioController,
+                            fallbackPositionMs = playbackState.currentPositionMs,
                             durationMs = effectiveDurationMs,
-                            onSeek = { targetMs -> audioController.seekTo(targetMs) },
                             modifier = Modifier.padding(horizontal = 4.dp)
                         )
 
@@ -768,10 +809,10 @@ fun PlayerScreen(
                 Spacer(modifier = Modifier.height(titleSectionBottomSpacing))
 
                 // Custom Duration Bar (matching uploaded screenshot)
-                CustomDurationBar(
-                    positionMs = playbackState.currentPositionMs,
+                LiveDurationBar(
+                    audioController = audioController,
+                    fallbackPositionMs = playbackState.currentPositionMs,
                     durationMs = effectiveDurationMs,
-                    onSeek = { targetMs -> audioController.seekTo(targetMs) },
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
 
@@ -1250,6 +1291,23 @@ fun PlayerScreen(
  * - Direct tap & scrub gestures
  * - Timestamps directly below in clean 12sp typography
  */
+@Composable
+private fun LiveDurationBar(
+    audioController: AudioController,
+    fallbackPositionMs: Long,
+    durationMs: Long,
+    modifier: Modifier = Modifier
+) {
+    val liveState by audioController.playbackState.collectAsState()
+    val positionMs = if (liveState.currentSong != null) liveState.currentPositionMs else fallbackPositionMs
+    CustomDurationBar(
+        positionMs = positionMs,
+        durationMs = durationMs,
+        onSeek = { targetMs -> audioController.seekTo(targetMs) },
+        modifier = modifier
+    )
+}
+
 @Composable
 private fun CustomDurationBar(
     positionMs: Long,

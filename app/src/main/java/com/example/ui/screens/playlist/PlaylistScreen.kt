@@ -106,7 +106,7 @@ fun PlaylistScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
+                    .height(196.dp)
                     .background(
                         Brush.verticalGradient(
                             listOf(
@@ -121,13 +121,12 @@ fun PlaylistScreen(
                             )
                         )
                     )
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp)
             ) {
                 IconButton(
                     onClick = onBack,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .statusBarsPadding()
                         .clip(CircleShape)
                         .background(AlaktraSurface.copy(alpha = 0.6f))
                 ) {

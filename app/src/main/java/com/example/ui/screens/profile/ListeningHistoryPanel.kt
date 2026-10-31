@@ -1,5 +1,6 @@
 package com.example.ui.screens.profile
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -254,6 +255,7 @@ fun FullListeningHistorySheet(
     audioController: AudioController,
     onDismiss: () -> Unit
 ) {
+    BackHandler(onBack = onDismiss)
     val today = remember { LocalDate.now() }
     var searchQuery by remember { mutableStateOf("") }
 
@@ -307,6 +309,7 @@ fun FullListeningHistorySheet(
 
     Scaffold(
         containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = {
@@ -327,6 +330,8 @@ fun FullListeningHistorySheet(
                         )
                     }
                 },
+                expandedHeight = 52.dp,
+                windowInsets = WindowInsets(top = 8.dp),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
             )
         }
@@ -334,7 +339,7 @@ fun FullListeningHistorySheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
+                .padding(top = paddingValues.calculateTopPadding()),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
@@ -511,7 +516,7 @@ fun FullListeningHistorySheet(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 120.dp)
+                        contentPadding = PaddingValues(bottom = 160.dp)
                     ) {
                         daywiseGroups.forEach { dayGroup ->
                             // Sticky Day Header showing: Date, Songs count for the day, and Total listen time for the whole day!

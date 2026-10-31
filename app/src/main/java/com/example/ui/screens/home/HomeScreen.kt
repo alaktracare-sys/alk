@@ -112,26 +112,26 @@ fun HomeScreen(
     val mfyCardWidth = (cardWidth * 1.15f).coerceIn(160.dp, 220.dp)
 
     Scaffold(
-        containerColor = AlaktraBackground
-    ) { padding ->
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { _ ->
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+                .fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .widthIn(max = 1000.dp),
-                contentPadding = PaddingValues(bottom = 140.dp)
+                contentPadding = PaddingValues(top = 12.dp, bottom = 140.dp)
             ) {
             // Alaktra Brand Header & Greeting
             item {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = horizontalPad, vertical = 16.dp)
+                        .padding(start = horizontalPad, end = horizontalPad, bottom = 16.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -143,8 +143,6 @@ fun HomeScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
-                                .background(AlaktraSurface)
-                                .border(1.dp, AlaktraBorder, RoundedCornerShape(20.dp))
                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Image(

@@ -28,6 +28,9 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
 
         // Request POST_NOTIFICATIONS permission on Android 13+ for persistent background media controls
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

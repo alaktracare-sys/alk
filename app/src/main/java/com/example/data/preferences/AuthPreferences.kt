@@ -11,6 +11,9 @@ class AuthPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("already_prefs", Context.MODE_PRIVATE)
 
+    @Volatile
+    private var memoryCachedPins: List<com.example.model.LocationPin>? = null
+
     fun saveUser(userId: Int, username: String, email: String, token: String? = null, name: String? = null, avatarUrl: String? = null) {
         prefs.edit()
             .putInt(KEY_USER_ID, userId)
@@ -59,6 +62,7 @@ class AuthPreferences(context: Context) {
     }
 
     fun clear() {
+        memoryCachedPins = null
         prefs.edit().clear().apply()
     }
 
@@ -267,11 +271,78 @@ class AuthPreferences(context: Context) {
         return list
     }
 
+    data class SavedContextInfo(
+        val uri: String,
+        val typeName: String,
+        val name: String,
+        val tracks: List<Song>
+    )
+
+    fun savePlaybackContext(uri: String, typeName: String, name: String, tracks: List<Song>) {
+        val arr = JSONArray()
+        tracks.take(150).forEach { song ->
+            val json = JSONObject().apply {
+                put("id", song.id)
+                put("title", song.title)
+                put("artist", song.artist)
+                put("audioUrl", song.audioUrl)
+                put("coverUrl", song.coverUrl)
+                put("duration", song.duration)
+                put("isLiked", song.isLiked)
+                put("localPath", song.localPath ?: "")
+                put("isDownloaded", song.isDownloaded)
+            }
+            arr.put(json)
+        }
+        prefs.edit()
+            .putString(KEY_SAVED_CONTEXT_URI, uri)
+            .putString(KEY_SAVED_CONTEXT_TYPE, typeName)
+            .putString(KEY_SAVED_CONTEXT_NAME, name)
+            .putString(KEY_SAVED_CONTEXT_TRACKS, arr.toString())
+            .apply()
+    }
+
+    fun getSavedPlaybackContext(): SavedContextInfo? {
+        val uri = prefs.getString(KEY_SAVED_CONTEXT_URI, null) ?: return null
+        val typeName = prefs.getString(KEY_SAVED_CONTEXT_TYPE, "PLAYLIST") ?: "PLAYLIST"
+        val name = prefs.getString(KEY_SAVED_CONTEXT_NAME, "Alaktra Stream") ?: "Alaktra Stream"
+        val tracksJson = prefs.getString(KEY_SAVED_CONTEXT_TRACKS, null) ?: return null
+        val tracks = mutableListOf<Song>()
+        try {
+            val arr = JSONArray(tracksJson)
+            for (i in 0 until arr.length()) {
+                val json = arr.getJSONObject(i)
+                val localPathStr = json.optString("localPath", "")
+                tracks.add(
+                    Song(
+                        id = json.getInt("id"),
+                        title = json.getString("title"),
+                        artist = json.getString("artist"),
+                        audioUrl = json.getString("audioUrl"),
+                        coverUrl = json.getString("coverUrl"),
+                        duration = json.optDouble("duration", 0.0),
+                        isLiked = json.optBoolean("isLiked", false),
+                        localPath = if (localPathStr.isNotBlank()) localPathStr else null,
+                        isDownloaded = json.optBoolean("isDownloaded", false)
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            return null
+        }
+        if (tracks.isEmpty()) return null
+        return SavedContextInfo(uri = uri, typeName = typeName, name = name, tracks = tracks)
+    }
+
     fun clearPlaybackState() {
         prefs.edit()
             .remove(KEY_LAST_SONG_JSON)
             .remove(KEY_LAST_PLAYBACK_POSITION_MS)
             .remove(KEY_SAVED_QUEUE)
+            .remove(KEY_SAVED_CONTEXT_URI)
+            .remove(KEY_SAVED_CONTEXT_TYPE)
+            .remove(KEY_SAVED_CONTEXT_NAME)
+            .remove(KEY_SAVED_CONTEXT_TRACKS)
             .apply()
     }
 
@@ -334,6 +405,93 @@ class AuthPreferences(context: Context) {
         prefs.edit().remove(KEY_RECENT_SEARCHES).apply()
     }
 
+    // ==========================================
+    // CACHED LOCATION PINS (Offline Persistence)
+    // ==========================================
+
+    fun saveCachedPins(pins: List<com.example.model.LocationPin>) {
+        val capped = pins.take(100)
+        memoryCachedPins = capped
+        val arr = JSONArray()
+        capped.forEach { pin ->
+            val songJson = JSONObject().apply {
+                put("id", pin.song.id)
+                put("title", pin.song.title)
+                put("artist", pin.song.artist)
+                put("audioUrl", pin.song.audioUrl)
+                put("coverUrl", pin.song.coverUrl)
+                put("duration", pin.song.duration)
+                put("isLiked", pin.song.isLiked)
+                put("localPath", pin.song.localPath ?: "")
+                put("isDownloaded", pin.song.isDownloaded)
+                put("dominantColorHex", pin.song.dominantColorHex ?: "")
+            }
+            val pinJson = JSONObject().apply {
+                put("id", pin.id)
+                put("userId", pin.userId)
+                put("songId", pin.songId)
+                put("latitude", pin.latitude)
+                put("longitude", pin.longitude)
+                put("distanceMeters", pin.distanceMeters)
+                put("imageUrl", pin.imageUrl)
+                put("createdAt", pin.createdAt)
+                put("song", songJson)
+            }
+            arr.put(pinJson)
+        }
+        prefs.edit().putString(KEY_CACHED_PINS, arr.toString()).apply()
+    }
+
+    fun getCachedPins(): List<com.example.model.LocationPin> {
+        memoryCachedPins?.let { return it }
+        val jsonStr = prefs.getString(KEY_CACHED_PINS, null) ?: run {
+            memoryCachedPins = emptyList()
+            return emptyList()
+        }
+        val list = mutableListOf<com.example.model.LocationPin>()
+        try {
+            val arr = JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val songObj = obj.optJSONObject("song")
+                val localPathStr = songObj?.optString("localPath", "") ?: ""
+                val domColorStr = songObj?.optString("dominantColorHex", "") ?: ""
+                val songId = obj.getInt("songId")
+                val song = if (songObj != null) {
+                    Song(
+                        id = songObj.optInt("id", songId),
+                        title = songObj.optString("title", "Pinned Track"),
+                        artist = songObj.optString("artist", "Unknown"),
+                        audioUrl = songObj.optString("audioUrl", ""),
+                        coverUrl = songObj.optString("coverUrl", ""),
+                        duration = songObj.optDouble("duration", 0.0),
+                        isLiked = songObj.optBoolean("isLiked", false),
+                        localPath = if (localPathStr.isNotBlank()) localPathStr else null,
+                        isDownloaded = songObj.optBoolean("isDownloaded", false),
+                        dominantColorHex = if (domColorStr.isNotBlank()) domColorStr else null
+                    )
+                } else {
+                    Song(id = songId, title = "Pinned Track", artist = "Unknown", audioUrl = "", coverUrl = "")
+                }
+                list.add(
+                    com.example.model.LocationPin(
+                        id = obj.getInt("id"),
+                        userId = obj.optInt("userId", 1),
+                        songId = songId,
+                        latitude = obj.getDouble("latitude"),
+                        longitude = obj.getDouble("longitude"),
+                        distanceMeters = obj.optDouble("distanceMeters", 0.0),
+                        imageUrl = obj.optString("imageUrl", ""),
+                        createdAt = obj.optString("createdAt", ""),
+                        song = song
+                    )
+                )
+            }
+        } catch (_: Exception) {}
+        memoryCachedPins = list
+        return list
+    }
+
     companion object {
         const val DEFAULT_SERVER_URL = "http://100.65.126.106:8000/"
         private const val KEY_SERVER_URL = "server_base_url"
@@ -353,7 +511,12 @@ class AuthPreferences(context: Context) {
         private const val KEY_REPEAT_MODE = "playback_repeat_mode"
         private const val KEY_RECENT_PLAYED_IDS = "recent_played_song_ids"
         private const val KEY_SAVED_QUEUE = "saved_playback_queue"
+        private const val KEY_SAVED_CONTEXT_URI = "saved_playback_context_uri"
+        private const val KEY_SAVED_CONTEXT_TYPE = "saved_playback_context_type"
+        private const val KEY_SAVED_CONTEXT_NAME = "saved_playback_context_name"
+        private const val KEY_SAVED_CONTEXT_TRACKS = "saved_playback_context_tracks"
         private const val KEY_AUDIO_CACHE_CAP_MB = "audio_cache_cap_mb"
         private const val KEY_RECENT_SEARCHES = "recent_searches_list"
+        private const val KEY_CACHED_PINS = "cached_location_pins"
     }
 }

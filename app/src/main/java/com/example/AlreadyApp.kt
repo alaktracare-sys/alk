@@ -17,6 +17,7 @@ class AlreadyApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        com.example.ui.screens.player.ShapeAtlas.preloadAsync(this)
         repository = MusicRepository(this)
         audioController = AudioController.getInstance(this)
         

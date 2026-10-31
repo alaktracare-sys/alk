@@ -27,15 +27,61 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.ColorUtils
 import com.example.audio.PlaybackState
-import com.example.ui.theme.AlaktraCyan
-import com.example.ui.theme.AlaktraMint
 import kotlin.math.PI
 import kotlin.math.sin
+
+private fun createDarkerShade(color: Color): Color {
+    if (color == Color.Unspecified || color == Color.Transparent || color.alpha == 0f) {
+        return Color.Transparent
+    }
+    val hsl = FloatArray(3)
+    ColorUtils.colorToHSL(color.toArgb(), hsl)
+    val desaturation = (1f - (hsl[1] / 0.35f)).coerceIn(0f, 1f)
+    hsl[1] = if (hsl[1] > 0.05f) (hsl[1] * 1.08f).coerceIn(0f, 1f) else hsl[1]
+    val minLightness = 0.16f + (0.08f * desaturation)
+    hsl[2] = (hsl[2] * 0.56f).coerceIn(minLightness, 0.70f)
+    return Color(ColorUtils.HSLToColor(hsl)).copy(alpha = color.alpha)
+}
+
+private fun createBackWaveColor(color: Color): Color {
+    if (color == Color.Unspecified || color == Color.Transparent || color.alpha == 0f) {
+        return Color.Transparent
+    }
+    val hsl = FloatArray(3)
+    ColorUtils.colorToHSL(color.toArgb(), hsl)
+    // Boost minimum lightness and soften darkening when saturation is low (grey/muted covers)
+    // so the background wave stays clearly visible against the dark #161822 mini-player pill.
+    val desaturation = (1f - (hsl[1] / 0.35f)).coerceIn(0f, 1f)
+    hsl[1] = if (hsl[1] > 0.05f) (hsl[1] * 1.08f).coerceIn(0f, 1f) else hsl[1]
+    val darkenFactor = 0.62f + (0.12f * desaturation)
+    val minLightness = 0.24f + (0.10f * desaturation) // 0.34f floor for greys, 0.24f for vivid colors
+    hsl[2] = (hsl[2] * darkenFactor).coerceIn(minLightness, 0.74f)
+    return Color(ColorUtils.HSLToColor(hsl)).copy(alpha = color.alpha)
+}
+
+private fun createLighterShade(color: Color): Color {
+    if (color == Color.Unspecified || color == Color.Transparent || color.alpha == 0f) {
+        return Color.Transparent
+    }
+    val hsl = FloatArray(3)
+    ColorUtils.colorToHSL(color.toArgb(), hsl)
+    val desaturation = (1f - (hsl[1] / 0.35f)).coerceIn(0f, 1f)
+    hsl[1] = if (hsl[1] > 0.05f) (hsl[1] * 1.05f).coerceIn(0f, 1f) else hsl[1]
+    val boostedLightness = minOf(
+        hsl[2] + 0.25f,
+        hsl[2] + (1f - hsl[2]) * 0.50f
+    )
+    val minLighter = 0.32f + (0.14f * desaturation)
+    hsl[2] = boostedLightness.coerceIn(minLighter, 0.96f)
+    return Color(ColorUtils.HSLToColor(hsl)).copy(alpha = color.alpha)
+}
 
 @Composable
 fun MiniPlayer(
@@ -50,6 +96,7 @@ fun MiniPlayer(
     val song = playbackState.currentSong ?: return
 
     var totalDrag by remember { mutableFloatStateOf(0f) }
+    val backWavePath = remember { Path() }
     val wavePath = remember { Path() }
 
     // Wave animation controller: 2-second repeat loop (equivalent to Flutter's AnimationController..repeat())
@@ -63,26 +110,51 @@ fun MiniPlayer(
         ),
         label = "wave_phase"
     )
-
-    // Dynamic palette colors with 500ms smooth transition (matching Flutter AnimatedContainer)
-    val color1 by animateColorAsState(
-        targetValue = if (playbackState.dominantColor != Color.Unspecified && playbackState.dominantColor != Color.Transparent) {
-            playbackState.dominantColor
-        } else {
-            Color.Transparent
-        },
-        animationSpec = tween(500),
-        label = "color1"
+    val backWavePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "back_wave_phase"
     )
 
-    val color2 by animateColorAsState(
-        targetValue = if (playbackState.secondaryColor != Color.Unspecified && playbackState.secondaryColor != Color.Transparent) {
+    val rawMajorColor = when {
+        playbackState.dominantColor != Color.Unspecified && playbackState.dominantColor != Color.Transparent ->
+            playbackState.dominantColor
+        playbackState.secondaryColor != Color.Unspecified && playbackState.secondaryColor != Color.Transparent ->
             playbackState.secondaryColor
-        } else {
-            Color.Transparent
-        },
+        else -> Color.Transparent
+    }
+
+    val targetStartColor = remember(rawMajorColor) { createDarkerShade(rawMajorColor) }
+    val targetBackWaveColor = remember(rawMajorColor) { createBackWaveColor(rawMajorColor) }
+    val targetEndColor = remember(rawMajorColor) { createLighterShade(rawMajorColor) }
+
+    // Smooth 500ms transition across darker start shade -> major color -> lighter end shade
+    val waveStartColor by animateColorAsState(
+        targetValue = targetStartColor,
         animationSpec = tween(500),
-        label = "color2"
+        label = "waveStartColor"
+    )
+
+    val backWaveColor by animateColorAsState(
+        targetValue = targetBackWaveColor,
+        animationSpec = tween(500),
+        label = "backWaveColor"
+    )
+
+    val waveMidColor by animateColorAsState(
+        targetValue = rawMajorColor,
+        animationSpec = tween(500),
+        label = "waveMidColor"
+    )
+
+    val waveEndColor by animateColorAsState(
+        targetValue = targetEndColor,
+        animationSpec = tween(500),
+        label = "waveEndColor"
     )
 
     val progressFraction = remember(playbackState.currentPositionMs, playbackState.durationMs) {
@@ -136,17 +208,41 @@ fun MiniPlayer(
             val height = size.height
             val fillWidth = width * progressFraction
 
-            if (fillWidth > 0f) {
+            if (fillWidth > 0f && waveMidColor.alpha > 0f) {
                 val waveHeight = 6.dp.toPx()
+                val backWaveHeight = 4.dp.toPx()
                 val waveLength = 72.dp.toPx()
+                val backWaveLength = 52.dp.toPx()
                 val twoPi = (2 * PI).toFloat()
+                val halfPi = (PI / 2.0).toFloat()
                 val steps = height.toInt().coerceAtLeast(10)
                 val stepHeight = height / steps
                 val phaseOffset = wavePhase * twoPi
+                val backPhaseOffset = (backWavePhase * twoPi) + halfPi
+                val leadRamp = (progressFraction / 0.05f).coerceIn(0f, 1f)
+                val backFillWidth = fillWidth + (6.dp.toPx() * leadRamp)
 
+                // Background wave: single darker shade of major color with 90° initial phase offset, faster speed & higher frequency
+                backWavePath.reset()
+                backWavePath.moveTo(0f, 0f)
+
+                for (i in 0..steps) {
+                    val y = stepHeight * i
+                    val backDx = (backWaveHeight * sin((y / backWaveLength * twoPi) + backPhaseOffset)).toFloat()
+                    backWavePath.lineTo(backFillWidth + backDx, y)
+                }
+
+                backWavePath.lineTo(0f, height)
+                backWavePath.close()
+
+                drawPath(
+                    path = backWavePath,
+                    color = backWaveColor.copy(alpha = backWaveColor.alpha * 0.96f)
+                )
+
+                // Foreground wave: darker -> major -> lighter horizontal gradient
                 wavePath.reset()
                 wavePath.moveTo(0f, 0f)
-                wavePath.lineTo(fillWidth, 0f)
 
                 // Sinusoidal wave across the height of the pill
                 for (i in 0..steps) {
@@ -161,10 +257,11 @@ fun MiniPlayer(
                 drawPath(
                     path = wavePath,
                     brush = Brush.horizontalGradient(
-                        0.0f to color1.copy(alpha = 0.90f),
-                        1.0f to color2.copy(alpha = 0.85f),
+                        0.0f to waveStartColor.copy(alpha = waveStartColor.alpha * 0.94f),
+                        0.50f to waveMidColor.copy(alpha = waveMidColor.alpha * 0.90f),
+                        1.0f to waveEndColor.copy(alpha = waveEndColor.alpha * 0.88f),
                         startX = 0f,
-                        endX = fillWidth.coerceAtLeast(1f)
+                        endX = (fillWidth + waveHeight).coerceAtLeast(1f)
                     )
                 )
             }

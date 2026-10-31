@@ -66,15 +66,18 @@ fun AddSongToPlaylistScreen(
                         )
                     }
                 },
+                expandedHeight = 52.dp,
+                windowInsets = WindowInsets(top = 8.dp),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
             )
         },
-        containerColor = AlaktraBackground
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(top = padding.calculateTopPadding()),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
@@ -102,12 +105,12 @@ fun AddSongToPlaylistScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .padding(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 8.dp)
             )
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                contentPadding = PaddingValues(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 88.dp)
             ) {
                 items(
                     items = filteredSongs,

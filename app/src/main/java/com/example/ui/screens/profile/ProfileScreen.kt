@@ -108,8 +108,9 @@ fun ProfileScreen(
         AVATAR_PRESETS.firstOrNull { it.id == user?.avatarUrl } ?: AVATAR_PRESETS.first()
     }
 
-    Scaffold(
-        topBar = {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
             TopAppBar(
                 title = { Text("Profile & Account", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
@@ -121,10 +122,13 @@ fun ProfileScreen(
                         )
                     }
                 },
+                expandedHeight = 52.dp,
+                windowInsets = WindowInsets(top = 8.dp),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
             )
         },
-        containerColor = AlaktraBackground
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
         Box(
             modifier = Modifier
@@ -141,7 +145,7 @@ fun ProfileScreen(
                     .padding(horizontal = 20.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Profile Picture with Edit Overlay Badge
                 Box(
@@ -1212,5 +1216,6 @@ fun ProfileScreen(
                 ).show()
             }
         )
+    }
     }
 }

@@ -29,18 +29,33 @@ fun WelcomeScreen(
     onNavigateToSignup: () -> Unit,
     onContinueAsGuest: () -> Unit
 ) {
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF000000))
-            .statusBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 24.dp)
+            .background(Color.Black)
     ) {
+        // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.Transparent, Color.Black)
+                    )
+                )
+        )
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 24.dp)
         ) {
             Spacer(modifier = Modifier.weight(0.8f))
 
@@ -137,19 +152,6 @@ fun WelcomeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
         }
-
-        // Bottom navigation gradient scrim (opaque at bottom to transparent at top)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(96.dp)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, AlaktraBackground)
-                    )
-                )
-        )
     }
 }
 

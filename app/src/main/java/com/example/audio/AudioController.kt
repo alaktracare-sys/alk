@@ -68,6 +68,13 @@ data class PlaybackContext(
     val tracks: List<Song> = emptyList()
 )
 
+data class PreOfflineSnapshot(
+    val context: PlaybackContext,
+    val contextOrder: List<Song>,
+    val resumeIndex: Int,
+    val preserveExactRandomOrder: Boolean
+)
+
 enum class AdvanceReason {
     ENDED, SKIP
 }
@@ -146,9 +153,32 @@ class AudioController private constructor(private val context: Context) {
         }
     }
 
+    private var preOfflineSnapshot: PreOfflineSnapshot? = null
+    private var lastTransientRetrySongId: Int? = null
+
     init {
         restoreSavedState()
         observeNetworkState()
+    }
+
+    private fun capturePreOfflineSnapshotIfNeeded(resumeFromNext: Boolean = false) {
+        val state = _playbackState.value
+        val currentContext = state.context ?: return
+        if (isOfflineBackupContext(currentContext)) return
+
+        val baseIndex = state.contextIndex.coerceAtLeast(0)
+        val targetResumeIndex = if (resumeFromNext) {
+            (baseIndex + 1).coerceAtMost(state.contextOrder.size)
+        } else {
+            baseIndex.coerceAtMost(state.contextOrder.size)
+        }
+
+        preOfflineSnapshot = PreOfflineSnapshot(
+            context = currentContext,
+            contextOrder = state.contextOrder,
+            resumeIndex = targetResumeIndex,
+            preserveExactRandomOrder = state.shuffle
+        )
     }
 
     private fun observeNetworkState() {
@@ -157,52 +187,83 @@ class AudioController private constructor(private val context: Context) {
                 val state = _playbackState.value
                 val currentSong = state.currentSong
                 val currentContext = state.context
-                val contextName = currentContext?.name ?: ""
-                val contextUri = currentContext?.uri ?: ""
 
                 if (!isOnline) {
+                    if (currentContext != null && !isOfflineBackupContext(currentContext)) {
+                        capturePreOfflineSnapshotIfNeeded(resumeFromNext = false)
+                    }
                     if (state.isPlaying && currentSong != null && !isSongPlayableOffline(currentSong)) {
-                        // Immediately transition to available cached songs
-                        handleOfflineFallback(autoShuffle = state.shuffle)
+                        val hasBufferedAudio = try {
+                            player.isPlaying &&
+                                player.playbackState == Player.STATE_READY &&
+                                player.bufferedPosition > player.currentPosition + 1500L
+                        } catch (_: Exception) {
+                            false
+                        }
+                        if (!hasBufferedAudio) {
+                            // Immediately transition to available cached songs in the active order
+                            handleOfflineFallback(autoShuffle = state.shuffle, resumeFromNext = false)
+                        }
                     }
                 } else {
-                    if (contextName.equals("Last Session", ignoreCase = true) ||
-                        contextName.equals("Offline Backup", ignoreCase = true) ||
-                        contextUri.startsWith("alaktra:restored") ||
-                        contextUri.startsWith("alaktra:playlist:offline_backup")) {
-                        switchToNormalStream()
+                    if (isOfflineBackupContext(currentContext)) {
+                        restoreOnlineContextOrStream()
+                    } else if (isRestoredContext(currentContext)) {
+                        preOfflineSnapshot = null
+                        restoreOnlineContextOrStream()
+                    } else {
+                        preOfflineSnapshot = null
+                        if (currentSong != null) {
+                            preloadUpcomingTrack()
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun switchToNormalStream() {
+    private fun restoreOnlineContextOrStream() {
+        val snapshotToRestore = preOfflineSnapshot
         scope.launch(Dispatchers.IO) {
             val repo = MusicRepository(context)
-            val songs = repo.getSongs()
+            val needsCatalogSongs = snapshotToRestore == null ||
+                isRestoredContext(snapshotToRestore.context) ||
+                snapshotToRestore.context.uri == "alaktra:playlist:alaktra_stream"
+            val catalogSongs = if (needsCatalogSongs) {
+                try {
+                    repo.getSongs()
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+
             withContext(Dispatchers.Main) {
-                if (songs.isNotEmpty()) {
-                    val currentState = _playbackState.value
-                    val currentSongId = currentState.currentSong?.id
-                    val startIndex = if (currentSongId != null) {
-                        songs.indexOfFirst { it.id == currentSongId }.let { if (it >= 0) it else 0 }
-                    } else {
-                        0
+                if (!NetworkMonitor.isOnline(context)) return@withContext
+                val currentState = _playbackState.value
+                val currentContext = currentState.context
+                val activeSnapshot = preOfflineSnapshot ?: snapshotToRestore
+
+                if (isOfflineBackupContext(currentContext) && activeSnapshot != null) {
+                    val restoredState = restoreStateFromPreOfflineSnapshot(
+                        currentState = currentState,
+                        snapshot = activeSnapshot,
+                        freshCatalogSongs = catalogSongs
+                    )
+                    preOfflineSnapshot = null
+                    _playbackState.value = restoredState
+                    checkNearbyPinsLocationTracking(restoredState.context?.name)
+                    persistCurrentState()
+                    preloadUpcomingTrack()
+                } else if (isOfflineBackupContext(currentContext) || isRestoredContext(currentContext)) {
+                    if (catalogSongs.isNotEmpty()) {
+                        val upgradedState = upgradeToStreamState(currentState, catalogSongs)
+                        preOfflineSnapshot = null
+                        _playbackState.value = upgradedState
+                        persistCurrentState()
+                        preloadUpcomingTrack()
                     }
-                    val streamCtx = PlaybackContext(
-                        uri = "alaktra:playlist:alaktra_stream",
-                        type = ContextType.PLAYLIST,
-                        name = "Alaktra Stream",
-                        trackIds = songs.map { it.id },
-                        tracks = songs
-                    )
-                    val updatedState = currentState.copy(
-                        context = streamCtx,
-                        contextOrder = songs,
-                        contextIndex = startIndex
-                    )
-                    _playbackState.value = updatedState
                 }
             }
         }
@@ -213,51 +274,92 @@ class AudioController private constructor(private val context: Context) {
             val prefs = com.example.data.preferences.AuthPreferences(context)
             val lastSong = prefs.getLastPlayedSong()
             val savedQueue = prefs.getSavedQueue()
+            val savedContextInfo = prefs.getSavedPlaybackContext()
             val lastPos = prefs.getLastPlaybackPosition()
             val shuffle = prefs.getShuffleEnabled()
             val repeatStr = prefs.getRepeatModeName()
             val repeat = try { RepeatMode.valueOf(repeatStr) } catch (_: Exception) { RepeatMode.OFF }
             val recentIds = prefs.getRecentPlayedSongIds()
 
-            if (lastSong != null) {
-                val order = if (savedQueue.isNotEmpty()) savedQueue else listOf(lastSong)
-                val idx = order.indexOfFirst { it.id == lastSong.id }.let { if (it >= 0) it else 0 }
-                val initialContext = PlaybackContext(
-                    uri = "alaktra:restored",
-                    type = ContextType.PLAYLIST,
-                    name = "Last Session",
-                    trackIds = order.map { it.id },
-                    tracks = order
-                )
-                _playbackState.value = _playbackState.value.copy(
+            if (lastSong != null || savedQueue.isNotEmpty()) {
+                val targetSong = lastSong ?: savedQueue.first()
+                val rawOrder = if (savedQueue.isNotEmpty()) savedQueue else listOf(targetSong)
+
+                val initialContext = if (savedContextInfo != null) {
+                    val ctxType = try {
+                        ContextType.valueOf(savedContextInfo.typeName)
+                    } catch (_: Exception) {
+                        ContextType.PLAYLIST
+                    }
+                    PlaybackContext(
+                        uri = savedContextInfo.uri,
+                        type = ctxType,
+                        name = savedContextInfo.name,
+                        trackIds = savedContextInfo.tracks.map { it.id },
+                        tracks = savedContextInfo.tracks
+                    )
+                } else {
+                    PlaybackContext(
+                        uri = "alaktra:restored",
+                        type = ContextType.PLAYLIST,
+                        name = "Last Session",
+                        trackIds = rawOrder.map { it.id },
+                        tracks = rawOrder
+                    )
+                }
+
+                val order = if (shuffle) {
+                    val naturalIds = initialContext.tracks.map { it.id }
+                    val rawIds = rawOrder.map { it.id }
+                    val looksAccidentallySequential = initialContext.tracks.size >= 4 &&
+                        rawOrder.size >= 4 &&
+                        rawIds == naturalIds.take(rawOrder.size)
+                    if (looksAccidentallySequential) {
+                        val others = initialContext.tracks.filter { it.id != targetSong.id }
+                        listOf(targetSong) + ShuffleUtils.artistSpreadShuffle(others)
+                    } else {
+                        rawOrder
+                    }
+                } else {
+                    if (savedContextInfo != null && initialContext.tracks.isNotEmpty()) {
+                        initialContext.tracks
+                    } else {
+                        rawOrder
+                    }
+                }
+
+                val idx = order.indexOfFirst { it.id == targetSong.id }.let { if (it >= 0) it else 0 }
+                var restoredState = _playbackState.value.copy(
                     context = initialContext,
-                    currentSong = lastSong,
+                    currentSong = targetSong,
                     contextOrder = order,
                     contextIndex = idx,
                     currentPositionMs = lastPos,
-                    durationMs = (lastSong.duration * 1000).toLong(),
+                    durationMs = (targetSong.duration * 1000).toLong(),
                     isPlaying = false,
                     shuffle = shuffle,
                     repeat = repeat,
                     recentPlayedSongIds = recentIds
                 )
-                extractPalette(lastSong.coverUrl, lastSong.dominantColorHex, lastSong.id)
+                restoredState = ensureContextBuffer(restoredState)
+                _playbackState.value = restoredState
+                extractPalette(targetSong.coverUrl, targetSong.dominantColorHex, targetSong.id)
 
                 try {
-                    val uri = if (lastSong.localPath != null && File(lastSong.localPath).exists()) {
-                        Uri.fromFile(File(lastSong.localPath))
+                    val uri = if (targetSong.localPath != null && File(targetSong.localPath).exists()) {
+                        Uri.fromFile(File(targetSong.localPath))
                     } else {
-                        Uri.parse(lastSong.audioUrl)
+                        Uri.parse(targetSong.audioUrl)
                     }
                     val mediaMetadata = MediaMetadata.Builder()
-                        .setTitle(lastSong.title)
-                        .setArtist(lastSong.artist)
-                        .setArtworkUri(Uri.parse(lastSong.coverUrl))
+                        .setTitle(targetSong.title)
+                        .setArtist(targetSong.artist)
+                        .setArtworkUri(Uri.parse(targetSong.coverUrl))
                         .build()
                     val mediaItem = MediaItem.Builder()
                         .setUri(uri)
-                        .setMediaId(lastSong.id.toString())
-                        .setCustomCacheKey("song:${lastSong.id}")
+                        .setMediaId(targetSong.id.toString())
+                        .setCustomCacheKey("song:${targetSong.id}")
                         .setMediaMetadata(mediaMetadata)
                         .build()
                     player.setMediaItem(mediaItem)
@@ -268,55 +370,6 @@ class AudioController private constructor(private val context: Context) {
                     player.playWhenReady = false
                 } catch (e: Exception) {
                     Log.w("AudioController", "Failed to prepare player with restored song", e)
-                }
-            } else if (savedQueue.isNotEmpty()) {
-                val first = savedQueue.first()
-                val initialContext = PlaybackContext(
-                    uri = "alaktra:restored",
-                    type = ContextType.PLAYLIST,
-                    name = "Last Session",
-                    trackIds = savedQueue.map { it.id },
-                    tracks = savedQueue
-                )
-                _playbackState.value = _playbackState.value.copy(
-                    context = initialContext,
-                    currentSong = first,
-                    contextOrder = savedQueue,
-                    contextIndex = 0,
-                    currentPositionMs = lastPos,
-                    durationMs = (first.duration * 1000).toLong(),
-                    isPlaying = false,
-                    shuffle = shuffle,
-                    repeat = repeat,
-                    recentPlayedSongIds = recentIds
-                )
-                extractPalette(first.coverUrl, first.dominantColorHex, first.id)
-
-                try {
-                    val uri = if (first.localPath != null && File(first.localPath).exists()) {
-                        Uri.fromFile(File(first.localPath))
-                    } else {
-                        Uri.parse(first.audioUrl)
-                    }
-                    val mediaMetadata = MediaMetadata.Builder()
-                        .setTitle(first.title)
-                        .setArtist(first.artist)
-                        .setArtworkUri(Uri.parse(first.coverUrl))
-                        .build()
-                    val mediaItem = MediaItem.Builder()
-                        .setUri(uri)
-                        .setMediaId(first.id.toString())
-                        .setCustomCacheKey("song:${first.id}")
-                        .setMediaMetadata(mediaMetadata)
-                        .build()
-                    player.setMediaItem(mediaItem)
-                    player.prepare()
-                    if (lastPos > 0) {
-                        player.seekTo(lastPos)
-                    }
-                    player.playWhenReady = false
-                } catch (e: Exception) {
-                    Log.w("AudioController", "Failed to prepare player with restored queue first song", e)
                 }
             }
         } catch (e: Exception) {
@@ -334,7 +387,20 @@ class AudioController private constructor(private val context: Context) {
                 shuffle = state.shuffle,
                 repeatModeName = state.repeat.name
             )
-            if (state.contextOrder.isNotEmpty()) {
+            val ctx = state.context
+            if (!isOfflineBackupContext(ctx)) {
+                if (state.contextOrder.isNotEmpty()) {
+                    prefs.saveQueue(state.contextOrder)
+                }
+                if (ctx != null && !isRestoredContext(ctx) && ctx.tracks.isNotEmpty()) {
+                    prefs.savePlaybackContext(
+                        uri = ctx.uri,
+                        typeName = ctx.type.name,
+                        name = ctx.name,
+                        tracks = ctx.tracks
+                    )
+                }
+            } else if (preOfflineSnapshot == null && state.contextOrder.isNotEmpty()) {
                 prefs.saveQueue(state.contextOrder)
             }
             if (state.recentPlayedSongIds.isNotEmpty()) {
@@ -434,6 +500,47 @@ class AudioController private constructor(private val context: Context) {
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("AudioController", "Playback error: ${error.errorCodeName} (${error.errorCode}): ${error.message}")
+                val isOnline = NetworkMonitor.isOnline(context)
+                val state = _playbackState.value
+                val failedSong = state.currentSong
+
+                if (!isOnline) {
+                    exo.stop()
+                    exo.clearMediaItems()
+                    handleOfflineFallback(autoShuffle = state.shuffle, resumeFromNext = false)
+                    return
+                }
+
+                if (failedSong != null && lastTransientRetrySongId != failedSong.id) {
+                    lastTransientRetrySongId = failedSong.id
+                    val resumePos = exo.currentPosition.coerceAtLeast(state.currentPositionMs).coerceAtLeast(0L)
+                    try {
+                        val uri = if (failedSong.localPath != null && File(failedSong.localPath).exists()) {
+                            Uri.fromFile(File(failedSong.localPath))
+                        } else {
+                            Uri.parse(failedSong.audioUrl)
+                        }
+                        val mediaMetadata = MediaMetadata.Builder()
+                            .setTitle(failedSong.title)
+                            .setArtist(failedSong.artist)
+                            .setArtworkUri(Uri.parse(failedSong.coverUrl))
+                            .build()
+                        val mediaItem = MediaItem.Builder()
+                            .setUri(uri)
+                            .setMediaId(failedSong.id.toString())
+                            .setCustomCacheKey("song:${failedSong.id}")
+                            .setMediaMetadata(mediaMetadata)
+                            .build()
+                        exo.setMediaItem(mediaItem)
+                        exo.prepare()
+                        if (resumePos > 0L) {
+                            exo.seekTo(resumePos)
+                        }
+                        exo.play()
+                        return
+                    } catch (_: Exception) {}
+                }
+
                 exo.stop()
                 exo.clearMediaItems()
                 _playbackState.value = _playbackState.value.copy(isPlaying = false)
@@ -588,25 +695,72 @@ class AudioController private constructor(private val context: Context) {
         startIndex: Int = 0,
         autoShuffle: Boolean = false
     ) {
+        playContextInternal(
+            context = context,
+            startIndex = startIndex,
+            autoShuffle = autoShuffle,
+            clearPreOfflineSnapshot = true
+        )
+    }
+
+    private fun playContextInternal(
+        context: PlaybackContext,
+        startIndex: Int = 0,
+        autoShuffle: Boolean = false,
+        clearPreOfflineSnapshot: Boolean = true
+    ) {
         val songs = context.tracks
         if (songs.isEmpty()) return
+        val shouldShuffle = autoShuffle || _playbackState.value.shuffle
+        if (clearPreOfflineSnapshot) {
+            preOfflineSnapshot = null
+        }
+
         val isOnline = NetworkMonitor.isOnline(this.context)
         val validIndex = if (!isOnline) {
             val requested = songs.getOrNull(startIndex)
-            if (requested != null && isSongPlayableOffline(requested)) {
+            if (requested != null && isSongPlayableOffline(requested) && !(autoShuffle && startIndex == 0 && songs.size > 1)) {
                 startIndex.coerceIn(0, songs.size - 1)
             } else {
-                val firstPlayable = songs.indexOfFirst { isSongPlayableOffline(it) }
-                if (firstPlayable == -1) {
-                    playOfflineBackup(autoShuffle = autoShuffle)
+                val playableIndices = songs.indices.filter { isSongPlayableOffline(songs[it]) }
+                if (playableIndices.isEmpty()) {
+                    if (!isOfflineBackupContext(context)) {
+                        val fallbackSeedOrder = if (shouldShuffle) {
+                            val clampedStart = startIndex.coerceIn(0, songs.size - 1)
+                            val startTrack = songs[clampedStart]
+                            val others = songs.filterIndexed { i, _ -> i != clampedStart }
+                            listOf(startTrack) + ShuffleUtils.artistSpreadShuffle(others)
+                        } else {
+                            songs
+                        }
+                        _playbackState.value = _playbackState.value.copy(shuffle = shouldShuffle)
+                        preOfflineSnapshot = PreOfflineSnapshot(
+                            context = context,
+                            contextOrder = fallbackSeedOrder,
+                            resumeIndex = if (shouldShuffle) 0 else startIndex.coerceIn(0, songs.size - 1),
+                            preserveExactRandomOrder = shouldShuffle
+                        )
+                        playOfflineBackup(autoShuffle = shouldShuffle, isAutomaticFallback = true)
+                    }
                     return
                 }
-                firstPlayable
+                if (shouldShuffle) {
+                    if (requested != null && isSongPlayableOffline(requested) && !autoShuffle) {
+                        startIndex.coerceIn(0, songs.size - 1)
+                    } else {
+                        playableIndices.random()
+                    }
+                } else {
+                    playableIndices.first()
+                }
             }
         } else {
-            startIndex.coerceIn(0, songs.size - 1)
+            if (autoShuffle && startIndex == 0 && songs.size > 1 && isOfflineBackupContext(context)) {
+                songs.indices.random()
+            } else {
+                startIndex.coerceIn(0, songs.size - 1)
+            }
         }
-        val shouldShuffle = autoShuffle || _playbackState.value.shuffle
 
         val activeOrder = if (shouldShuffle) {
             val startSong = songs[validIndex]
@@ -737,30 +891,20 @@ class AudioController private constructor(private val context: Context) {
             return
         }
 
-        // Keep currentSong at index 0, and append all newly available songs in the 50m range (excluding currentSong)
-        val upcomingSongs = newSongs.filter { it.id != currentSong.id }
-        val newOrder = listOf(currentSong) + upcomingSongs
-
-        val updatedContext = state.context?.copy(
-            trackIds = newOrder.map { it.id },
-            tracks = newOrder
-        )
-
-        _playbackState.value = state.copy(
-            context = updatedContext,
-            contextOrder = newOrder,
-            contextIndex = 0
-        )
+        var updatedState = computeUpdatedNearbyPinsState(state, newSongs)
+        updatedState = ensureContextBuffer(updatedState)
+        _playbackState.value = updatedState
     }
 
     fun playSong(song: Song, source: String = "Now Playing") {
         val isOnline = NetworkMonitor.isOnline(context)
         if (!isOnline && !isSongPlayableOffline(song)) {
-            val nextPlayable = findNextPlayableOfflineIndex(_playbackState.value.contextIndex)
+            val state = _playbackState.value
+            val nextPlayable = findNextPlayableOfflineIndex(state.contextIndex + 1)
             if (nextPlayable != -1) {
                 playSongAtIndex(nextPlayable)
             } else {
-                playOfflineBackup()
+                playOfflineBackup(autoShuffle = state.shuffle, isAutomaticFallback = true)
             }
             return
         }
@@ -786,9 +930,10 @@ class AudioController private constructor(private val context: Context) {
     private fun playSongDirectly(song: Song, pushToHistory: Boolean = false) {
         val isOnline = NetworkMonitor.isOnline(context)
         if (!isOnline && !isSongPlayableOffline(song)) {
-            handleOfflineFallback()
+            handleOfflineFallback(autoShuffle = _playbackState.value.shuffle, resumeFromNext = false)
             return
         }
+        lastTransientRetrySongId = null
         val state = _playbackState.value
         val updatedHistory = if (pushToHistory && state.currentSong != null) {
             val wasContext = state.contextOrder.getOrNull(state.contextIndex)?.id == state.currentSong.id
@@ -849,17 +994,26 @@ class AudioController private constructor(private val context: Context) {
         val song = state.contextOrder[index]
         val isOnline = NetworkMonitor.isOnline(context)
         if (!isOnline && !isSongPlayableOffline(song)) {
-            // Instantly skip forward to the next fully cached song in the playlist
+            // Instantly skip forward to the next fully cached song in the playlist while preserving unplayed random tracks
             val nextPlayable = findNextPlayableOfflineIndex(index + 1)
             if (nextPlayable != -1 && nextPlayable != index) {
-                playSongAtIndex(nextPlayable)
+                val relocatedState = relocateOfflinePlayableInShuffleOrder(
+                    state = state,
+                    desiredSlotIndex = index,
+                    playableIndex = nextPlayable
+                )
+                if (relocatedState !== state) {
+                    _playbackState.value = relocatedState
+                }
+                playSongAtIndex(relocatedState.contextIndex)
                 return
             }
             // Context has no cached songs: switch seamlessly to Offline Backup
-            playOfflineBackup(autoShuffle = state.shuffle)
+            playOfflineBackup(autoShuffle = state.shuffle, isAutomaticFallback = true, resumeFromNext = false)
             return
         }
 
+        lastTransientRetrySongId = null
         val updatedRecentPlayed = addToRecentPlayedHistory(song.id, state.recentPlayedSongIds)
         _playbackState.value = state.copy(
             currentSong = song,
@@ -1097,13 +1251,14 @@ class AudioController private constructor(private val context: Context) {
             val offlineQueueIndex = state.userQueue.indexOfFirst { isSongPlayableOffline(it) }
             if (offlineQueueIndex != -1) {
                 val nextSong = state.userQueue[offlineQueueIndex]
-                val remainingUserQueue = state.userQueue.drop(offlineQueueIndex + 1)
+                val remainingUserQueue = state.userQueue.filterIndexed { idx, _ -> idx != offlineQueueIndex }
                 _playbackState.value = state.copy(userQueue = remainingUserQueue)
                 playSongDirectly(nextSong, pushToHistory = false)
                 return
             }
 
-            val nextPlayableIndex = findNextPlayableOfflineIndex(state.contextIndex + 1)
+            val desiredSlot = state.contextIndex + 1
+            val nextPlayableIndex = findNextPlayableOfflineIndex(desiredSlot)
             if (nextPlayableIndex != -1 && nextPlayableIndex != state.contextIndex) {
                 val outgoingTrack = state.currentSong
                 val wasContext = outgoingTrack != null && state.contextOrder.getOrNull(state.contextIndex)?.id == outgoingTrack.id
@@ -1112,18 +1267,22 @@ class AudioController private constructor(private val context: Context) {
                 } else {
                     state.history
                 }
-                var updatedState = state.copy(
-                    contextIndex = nextPlayableIndex,
-                    history = updatedHistory
+                var updatedState = relocateOfflinePlayableInShuffleOrder(
+                    state = state.copy(history = updatedHistory),
+                    desiredSlotIndex = desiredSlot,
+                    playableIndex = nextPlayableIndex
                 )
                 updatedState = ensureContextBuffer(updatedState)
                 _playbackState.value = updatedState
+                if (!isOfflineBackupContext(updatedState.context)) {
+                    capturePreOfflineSnapshotIfNeeded(resumeFromNext = false)
+                }
                 playSongAtIndex(updatedState.contextIndex)
                 return
             }
 
             // Current queue exhausted for offline: switch seamlessly to Offline Backup (cache memory)
-            handleOfflineFallback(autoShuffle = state.shuffle)
+            handleOfflineFallback(autoShuffle = state.shuffle, resumeFromNext = true)
             return
         }
 
@@ -1339,8 +1498,12 @@ class AudioController private constructor(private val context: Context) {
      * to the next available cached song in the queue or load the full
      * Offline Backup (cached playlist) so playback never stops.
      */
-    fun handleOfflineFallback(autoShuffle: Boolean = false) {
+    fun handleOfflineFallback(
+        autoShuffle: Boolean = _playbackState.value.shuffle,
+        resumeFromNext: Boolean = false
+    ) {
         val state = _playbackState.value
+        val shouldShuffle = autoShuffle || state.shuffle
 
         // 1. Check user queue first
         val cachedUserQueueIndex = state.userQueue.indexOfFirst { isSongPlayableOffline(it) }
@@ -1350,24 +1513,54 @@ class AudioController private constructor(private val context: Context) {
         }
 
         // 2. Check forward in contextOrder
-        val nextPlayableIndex = findNextPlayableOfflineIndex(state.contextIndex + 1)
+        val desiredSlot = (state.contextIndex + 1).coerceAtLeast(0)
+        val nextPlayableIndex = findNextPlayableOfflineIndex(desiredSlot)
         if (nextPlayableIndex != -1 && nextPlayableIndex != state.contextIndex) {
-            playSongAtIndex(nextPlayableIndex)
+            val relocatedState = relocateOfflinePlayableInShuffleOrder(
+                state = state,
+                desiredSlotIndex = desiredSlot,
+                playableIndex = nextPlayableIndex
+            )
+            if (relocatedState !== state) {
+                _playbackState.value = relocatedState
+            }
+            if (!isOfflineBackupContext(relocatedState.context)) {
+                capturePreOfflineSnapshotIfNeeded(resumeFromNext = false)
+            }
+            playSongAtIndex(relocatedState.contextIndex)
             return
         }
 
         // 3. Current queue exhausted: switch silently to cached songs from background memory
-        playOfflineBackup(autoShuffle = autoShuffle)
+        playOfflineBackup(
+            autoShuffle = shouldShuffle,
+            isAutomaticFallback = true,
+            resumeFromNext = resumeFromNext
+        )
     }
 
     /**
      * Seamlessly starts background playback of songs stored in the cache memory / downloads.
      */
-    fun playOfflineBackup(autoShuffle: Boolean = false) {
+    fun playOfflineBackup(
+        autoShuffle: Boolean = _playbackState.value.shuffle,
+        isAutomaticFallback: Boolean = false,
+        resumeFromNext: Boolean = false
+    ) {
+        if (isAutomaticFallback) {
+            capturePreOfflineSnapshotIfNeeded(resumeFromNext = resumeFromNext)
+        } else {
+            preOfflineSnapshot = null
+        }
+        val shouldShuffle = autoShuffle || _playbackState.value.shuffle
         scope.launch(Dispatchers.IO) {
             val repo = MusicRepository(context)
             val offlineSongs = repo.getOfflineBackupSongs()
             withContext(Dispatchers.Main) {
+                if (isAutomaticFallback && NetworkMonitor.isOnline(context)) {
+                    // Network already recovered while loading offline backup; keep or restore online queue
+                    return@withContext
+                }
                 if (offlineSongs.isNotEmpty()) {
                     val offlineCtx = PlaybackContext(
                         uri = "alaktra:playlist:offline_backup",
@@ -1376,7 +1569,18 @@ class AudioController private constructor(private val context: Context) {
                         trackIds = offlineSongs.map { it.id },
                         tracks = offlineSongs
                     )
-                    playContext(offlineCtx, startIndex = 0, autoShuffle = autoShuffle)
+                    val effectiveShuffle = shouldShuffle || _playbackState.value.shuffle
+                    val startIdx = if (effectiveShuffle && offlineSongs.size > 1) {
+                        offlineSongs.indices.random()
+                    } else {
+                        0
+                    }
+                    playContextInternal(
+                        context = offlineCtx,
+                        startIndex = startIdx,
+                        autoShuffle = effectiveShuffle,
+                        clearPreOfflineSnapshot = !isAutomaticFallback
+                    )
                 }
             }
         }
@@ -1395,62 +1599,7 @@ class AudioController private constructor(private val context: Context) {
      *   - position preserved; only the neighbours change
      */
     fun ensureContextBuffer(state: PlaybackState): PlaybackState {
-        val contextTracks = state.context?.tracks ?: state.contextOrder
-        if (contextTracks.isEmpty()) return state
-
-        // When repeat context is active, maintain at least 30 upcoming tracks ahead of contextIndex
-        if (state.repeat != RepeatMode.CONTEXT) {
-            return state
-        }
-
-        var order = state.contextOrder.toMutableList()
-        var cIndex = state.contextIndex.coerceAtLeast(0)
-
-        if (order.isEmpty()) {
-            val seed = if (state.shuffle) {
-                ShuffleUtils.artistSpreadShuffle(contextTracks)
-            } else {
-                contextTracks
-            }
-            order.addAll(seed)
-            cIndex = 0
-        }
-
-        val targetUpcoming = 30
-        var upcoming = (order.size - 1) - cIndex
-
-        while (upcoming < targetUpcoming) {
-            if (state.shuffle) {
-                // Loop All + Shuffle = continuous random stream
-                // Pick a random song from contextTracks, avoiding immediate back-to-back duplicate if context has > 1 song
-                val lastId = order.lastOrNull()?.id
-                val candidates = if (contextTracks.size > 1 && lastId != null) {
-                    val filtered = contextTracks.filter { it.id != lastId }
-                    if (filtered.isNotEmpty()) filtered else contextTracks
-                } else {
-                    contextTracks
-                }
-                val selectedSong = selectShuffleCandidate(candidates, state.recentPlayedSongIds)
-                order.add(selectedSong)
-                upcoming += 1
-            } else {
-                // Loop All + Shuffle OFF = repeat the normal playlist order
-                order.addAll(contextTracks)
-                upcoming += contextTracks.size
-            }
-        }
-
-        // Keep order bounded so memory does not grow unbounded over long sessions
-        if (cIndex > 40) {
-            val trimCount = cIndex - 10
-            order = order.drop(trimCount).toMutableList()
-            cIndex = 10
-        }
-
-        return state.copy(
-            contextOrder = order,
-            contextIndex = cIndex
-        )
+        return ensureContextBufferStatic(state)
     }
 
     fun ensureBuffer() {
@@ -1465,7 +1614,15 @@ class AudioController private constructor(private val context: Context) {
         val newShuffle = forceEnable ?: !state.shuffle
         val naturalTracks = state.context?.tracks ?: state.contextOrder
 
-        if (naturalTracks.isEmpty()) return
+        if (!newShuffle) {
+            preOfflineSnapshot = preOfflineSnapshot?.copy(preserveExactRandomOrder = false)
+        }
+
+        if (naturalTracks.isEmpty()) {
+            _playbackState.value = state.copy(shuffle = newShuffle)
+            persistCurrentState()
+            return
+        }
 
         val currentSong = state.currentSong
         var newState = if (newShuffle) {
@@ -1700,6 +1857,8 @@ class AudioController private constructor(private val context: Context) {
     }
 
     fun resetForLogout() {
+        preOfflineSnapshot = null
+        lastTransientRetrySongId = null
         player.stop()
         player.clearMediaItems()
         _playbackState.value = PlaybackState()
@@ -1959,6 +2118,313 @@ class AudioController private constructor(private val context: Context) {
                 // Accept candidate
                 candidate
             }
+        }
+
+        fun isOfflineBackupContext(context: PlaybackContext?): Boolean {
+            if (context == null) return false
+            return context.name.equals("Offline Backup", ignoreCase = true) ||
+                context.uri.startsWith("alaktra:playlist:offline_backup")
+        }
+
+        fun isRestoredContext(context: PlaybackContext?): Boolean {
+            if (context == null) return false
+            return context.name.equals("Last Session", ignoreCase = true) ||
+                context.uri.startsWith("alaktra:restored")
+        }
+
+        /**
+         * When offline and skipping forward over uncached tracks in a shuffled queue,
+         * relocate the next playable track into [desiredSlotIndex] rather than jumping
+         * contextIndex past the uncached tracks. That way, when internet returns, none
+         * of the unplayed random tracks are lost or skipped over.
+         */
+        fun relocateOfflinePlayableInShuffleOrder(
+            state: PlaybackState,
+            desiredSlotIndex: Int,
+            playableIndex: Int
+        ): PlaybackState {
+            val order = state.contextOrder
+            if (playableIndex !in order.indices) return state
+            if (!state.shuffle) {
+                return state.copy(contextIndex = playableIndex)
+            }
+            val clampedDesired = desiredSlotIndex.coerceIn(0, order.size - 1)
+            return if (playableIndex > clampedDesired) {
+                val mutable = order.toMutableList()
+                val playableTrack = mutable.removeAt(playableIndex)
+                mutable.add(clampedDesired, playableTrack)
+                state.copy(
+                    contextOrder = mutable,
+                    contextIndex = clampedDesired
+                )
+            } else {
+                state.copy(contextIndex = playableIndex)
+            }
+        }
+
+        fun ensureContextBufferStatic(state: PlaybackState): PlaybackState {
+            val contextTracks = state.context?.tracks ?: state.contextOrder
+            if (contextTracks.isEmpty()) return state
+
+            if (state.repeat != RepeatMode.CONTEXT) {
+                return state
+            }
+
+            var order = state.contextOrder.toMutableList()
+            var cIndex = state.contextIndex.coerceAtLeast(0)
+
+            if (order.isEmpty()) {
+                val seed = if (state.shuffle) {
+                    ShuffleUtils.artistSpreadShuffle(contextTracks)
+                } else {
+                    contextTracks
+                }
+                order.addAll(seed)
+                cIndex = 0
+            }
+
+            val targetUpcoming = 30
+            var upcoming = (order.size - 1) - cIndex
+
+            while (upcoming < targetUpcoming) {
+                if (state.shuffle) {
+                    val lastId = order.lastOrNull()?.id
+                    val candidates = if (contextTracks.size > 1 && lastId != null) {
+                        val filtered = contextTracks.filter { it.id != lastId }
+                        if (filtered.isNotEmpty()) filtered else contextTracks
+                    } else {
+                        contextTracks
+                    }
+                    val selectedSong = selectShuffleCandidate(candidates, state.recentPlayedSongIds)
+                    order.add(selectedSong)
+                    upcoming += 1
+                } else {
+                    order.addAll(contextTracks)
+                    upcoming += contextTracks.size
+                }
+            }
+
+            if (cIndex > 40) {
+                val trimCount = cIndex - 10
+                order = order.drop(trimCount).toMutableList()
+                cIndex = 10
+            }
+
+            return state.copy(
+                contextOrder = order,
+                contextIndex = cIndex
+            )
+        }
+
+        /**
+         * Restores playback context and queue order when reconnecting to the internet
+         * after an automatic Offline Backup fallback:
+         * - If shuffle is ON and was not turned off by the user, restores the exact pre-offline
+         *   random queue anchored seamlessly around [currentState.currentSong].
+         * - If shuffle was turned ON by the user while offline, shuffles the restored context.
+         * - If shuffle was turned OFF by the user (offline or online), restores natural sequential order.
+         */
+        fun restoreStateFromPreOfflineSnapshot(
+            currentState: PlaybackState,
+            snapshot: PreOfflineSnapshot,
+            freshCatalogSongs: List<Song> = emptyList()
+        ): PlaybackState {
+            val targetContext = if (isRestoredContext(snapshot.context) && freshCatalogSongs.isNotEmpty()) {
+                PlaybackContext(
+                    uri = "alaktra:playlist:alaktra_stream",
+                    type = ContextType.PLAYLIST,
+                    name = "Alaktra Stream",
+                    trackIds = freshCatalogSongs.map { it.id },
+                    tracks = freshCatalogSongs
+                )
+            } else if (snapshot.context.uri == "alaktra:playlist:alaktra_stream" && freshCatalogSongs.isNotEmpty()) {
+                snapshot.context.copy(
+                    trackIds = freshCatalogSongs.map { it.id },
+                    tracks = freshCatalogSongs
+                )
+            } else {
+                snapshot.context
+            }
+
+            val naturalTracks = targetContext.tracks.ifEmpty { snapshot.contextOrder }
+            val currSong = currentState.currentSong
+
+            val (restoredOrder, restoredIndex) = if (currentState.shuffle) {
+                if (snapshot.preserveExactRandomOrder && snapshot.contextOrder.isNotEmpty()) {
+                    val naturalById = naturalTracks.associateBy { it.id }
+                    val refreshedSavedOrder = snapshot.contextOrder.map { naturalById[it.id] ?: it }
+                    val existingIds = refreshedSavedOrder.mapTo(HashSet()) { it.id }
+                    val missingTracks = naturalTracks.filter { it.id !in existingIds }
+                    val fullRandomOrder = if (missingTracks.isNotEmpty()) {
+                        refreshedSavedOrder + ShuffleUtils.artistSpreadShuffle(missingTracks)
+                    } else {
+                        refreshedSavedOrder
+                    }
+
+                    if (currSong == null) {
+                        val idx = snapshot.resumeIndex.coerceIn(0, (fullRandomOrder.size - 1).coerceAtLeast(0))
+                        fullRandomOrder to idx
+                    } else if (snapshot.resumeIndex in fullRandomOrder.indices &&
+                        fullRandomOrder[snapshot.resumeIndex].id == currSong.id
+                    ) {
+                        fullRandomOrder to snapshot.resumeIndex
+                    } else {
+                        val clampedResume = snapshot.resumeIndex.coerceIn(0, fullRandomOrder.size)
+                        val before = fullRandomOrder.take(clampedResume).filter { it.id != currSong.id }
+                        val after = fullRandomOrder.drop(clampedResume).filter { it.id != currSong.id }
+                        val effectiveAfter = if (after.isEmpty() && naturalTracks.size > 1) {
+                            ShuffleUtils.artistSpreadShuffle(naturalTracks.filter { it.id != currSong.id })
+                        } else {
+                            after
+                        }
+                        (before + listOf(currSong) + effectiveAfter) to before.size
+                    }
+                } else {
+                    if (currSong != null && naturalTracks.isNotEmpty()) {
+                        val others = naturalTracks.filter { it.id != currSong.id }
+                        (listOf(currSong) + ShuffleUtils.artistSpreadShuffle(others)) to 0
+                    } else {
+                        ShuffleUtils.artistSpreadShuffle(naturalTracks) to 0
+                    }
+                }
+            } else {
+                if (currSong != null && naturalTracks.isNotEmpty()) {
+                    val naturalIdx = naturalTracks.indexOfFirst { it.id == currSong.id }
+                    if (naturalIdx != -1) {
+                        naturalTracks to naturalIdx
+                    } else {
+                        (listOf(currSong) + naturalTracks) to 0
+                    }
+                } else {
+                    val idx = snapshot.resumeIndex.coerceIn(0, (naturalTracks.size - 1).coerceAtLeast(0))
+                    naturalTracks to idx
+                }
+            }
+
+            val updated = currentState.copy(
+                context = targetContext,
+                contextOrder = restoredOrder,
+                contextIndex = restoredIndex,
+                autoplayTracks = emptyList()
+            )
+            return ensureContextBufferStatic(updated)
+        }
+
+        /**
+         * Upgrades a Last Session or standalone Offline Backup state to the online Alaktra Stream
+         * while strictly honoring [currentState.shuffle].
+         */
+        fun upgradeToStreamState(
+            currentState: PlaybackState,
+            songs: List<Song>
+        ): PlaybackState {
+            if (songs.isEmpty()) return currentState
+
+            val streamCtx = PlaybackContext(
+                uri = "alaktra:playlist:alaktra_stream",
+                type = ContextType.PLAYLIST,
+                name = "Alaktra Stream",
+                trackIds = songs.map { it.id },
+                tracks = songs
+            )
+            val currSong = currentState.currentSong
+
+            val (newOrder, newIndex) = if (currentState.shuffle) {
+                val songsById = songs.associateBy { it.id }
+                val existingOrder = currentState.contextOrder
+                val looksSequentialPrefix = songs.size >= 4 &&
+                    existingOrder.size >= 4 &&
+                    existingOrder.map { it.id } == songs.take(existingOrder.size).map { it.id }
+
+                if (isRestoredContext(currentState.context) && existingOrder.size > 1 && !looksSequentialPrefix) {
+                    val preserved = existingOrder.map { songsById[it.id] ?: it }
+                    val preservedIds = preserved.mapTo(HashSet()) { it.id }
+                    val missing = songs.filter { it.id !in preservedIds }
+                    val combined = if (missing.isNotEmpty()) {
+                        preserved + ShuffleUtils.artistSpreadShuffle(missing)
+                    } else {
+                        preserved
+                    }
+                    if (currSong != null) {
+                        val idx = combined.indexOfFirst { it.id == currSong.id }
+                        if (idx != -1) {
+                            combined to idx
+                        } else {
+                            (listOf(currSong) + combined) to 0
+                        }
+                    } else {
+                        val idx = currentState.contextIndex.coerceIn(0, combined.size - 1)
+                        combined to idx
+                    }
+                } else {
+                    if (currSong != null) {
+                        val others = songs.filter { it.id != currSong.id }
+                        (listOf(currSong) + ShuffleUtils.artistSpreadShuffle(others)) to 0
+                    } else {
+                        ShuffleUtils.artistSpreadShuffle(songs) to 0
+                    }
+                }
+            } else {
+                if (currSong != null) {
+                    val idx = songs.indexOfFirst { it.id == currSong.id }
+                    if (idx != -1) {
+                        songs to idx
+                    } else {
+                        (listOf(currSong) + songs) to 0
+                    }
+                } else {
+                    songs to 0
+                }
+            }
+
+            val updated = currentState.copy(
+                context = streamCtx,
+                contextOrder = newOrder,
+                contextIndex = newIndex,
+                autoplayTracks = emptyList()
+            )
+            return ensureContextBufferStatic(updated)
+        }
+
+        /**
+         * Updates Nearby Pins queue while preserving active shuffle order when shuffle is enabled.
+         */
+        fun computeUpdatedNearbyPinsState(
+            state: PlaybackState,
+            newSongs: List<Song>
+        ): PlaybackState {
+            val currentSong = state.currentSong ?: return state
+            val upcomingCandidates = newSongs.filter { it.id != currentSong.id }
+            val naturalTracks = if (newSongs.any { it.id == currentSong.id }) {
+                newSongs
+            } else {
+                listOf(currentSong) + upcomingCandidates
+            }
+
+            val newOrder = if (state.shuffle) {
+                val candidateById = upcomingCandidates.associateBy { it.id }
+                val preservedUpcoming = state.contextOrder
+                    .drop((state.contextIndex + 1).coerceAtLeast(0))
+                    .mapNotNull { candidateById[it.id] }
+                    .distinctBy { it.id }
+                val preservedIds = preservedUpcoming.mapTo(HashSet()) { it.id }
+                val newlyAdded = upcomingCandidates.filter { it.id !in preservedIds }
+                val shuffledNew = ShuffleUtils.artistSpreadShuffle(newlyAdded)
+                listOf(currentSong) + preservedUpcoming + shuffledNew
+            } else {
+                listOf(currentSong) + upcomingCandidates
+            }
+
+            val updatedContext = state.context?.copy(
+                trackIds = naturalTracks.map { it.id },
+                tracks = naturalTracks
+            )
+
+            return state.copy(
+                context = updatedContext,
+                contextOrder = newOrder,
+                contextIndex = 0
+            )
         }
     }
 }

@@ -96,6 +96,8 @@ fun SignupScreen(
                             )
                         }
                     },
+                    expandedHeight = 52.dp,
+                    windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(top = 8.dp)),
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
                 )
             },
@@ -104,12 +106,12 @@ fun SignupScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(top = padding.calculateTopPadding())
                 .padding(horizontal = 24.dp)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedTextField(
                 value = username,
@@ -407,18 +409,22 @@ fun SignupScreen(
             TextButton(onClick = onNavigateToLogin) {
                 Text(text = "Already have an account? Sign In", color = AlaktraMint)
             }
+
+            Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+            Spacer(modifier = Modifier.height(36.dp))
         }
     }
 
-    // Bottom navigation gradient scrim (opaque at bottom to transparent at top)
+    // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     Box(
         modifier = Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .height(96.dp)
+            .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color.Transparent, AlaktraBackground)
+                    colors = listOf(Color.Transparent, Color.Black)
                 )
             )
     )

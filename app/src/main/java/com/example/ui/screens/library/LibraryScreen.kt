@@ -54,12 +54,12 @@ fun LibraryScreen(
     }
 
     Scaffold(
-        containerColor = AlaktraBackground
-    ) { padding ->
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { _ ->
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+                .fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
@@ -73,7 +73,7 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 10.dp)
             ) {
                 Text(
                     text = "Your Library",

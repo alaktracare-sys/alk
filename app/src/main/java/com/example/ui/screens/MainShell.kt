@@ -4,12 +4,16 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -34,8 +38,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.AudioController
@@ -54,6 +60,7 @@ import com.example.ui.screens.profile.FullListeningHistorySheet
 import com.example.ui.screens.profile.ProfileScreen
 import com.example.ui.screens.search.SearchScreen
 import com.example.ui.screens.pins.LocationPinsScreen
+import com.example.ui.screens.pins.PinsSessionCache
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -83,9 +90,16 @@ fun MainShell(
     var availablePlaylists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
-    val playbackState by audioController.playbackState.collectAsState()
+    val playbackStateHolder = audioController.playbackState.collectAsState()
+    val hasCurrentSong by remember {
+        derivedStateOf { playbackStateHolder.value.currentSong != null }
+    }
     val isOnline by remember { com.example.util.NetworkMonitor.observeNetwork(context) }
         .collectAsState(initial = com.example.util.NetworkMonitor.isOnline(context))
+
+    LaunchedEffect(Unit) {
+        PinsSessionCache.prewarm(context, repository)
+    }
 
     LaunchedEffect(isOnline) {
         if (isOnline && repository.authPreferences.hasPendingOfflineActions()) {
@@ -156,19 +170,6 @@ fun MainShell(
             .fillMaxSize()
             .background(AlaktraBackground)
     ) {
-        // Bottom navigation gradient scrim (opaque at bottom to transparent at top)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(96.dp)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, AlaktraBackground)
-                    )
-                )
-        )
-
         Scaffold(
             containerColor = Color.Transparent
         ) { padding ->
@@ -176,6 +177,7 @@ fun MainShell(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = padding.calculateTopPadding())
+                    .consumeWindowInsets(PaddingValues(top = padding.calculateTopPadding()))
             ) {
                 if (useNavRail && !showFullPlayer && currentScreen in screensWithBottomNav) {
                     NavigationRail(
@@ -288,9 +290,12 @@ fun MainShell(
                         NavigationRailItem(
                             selected = currentTab == 3 && currentScreen == Screen.PINS,
                             onClick = {
-                                currentTab = 3
-                                currentScreen = Screen.PINS
-                                pinsRefreshTrigger++
+                                if (currentScreen == Screen.PINS && currentTab == 3) {
+                                    pinsRefreshTrigger++
+                                } else {
+                                    currentTab = 3
+                                    currentScreen = Screen.PINS
+                                }
                             },
                             icon = {
                                 Icon(
@@ -328,45 +333,27 @@ fun MainShell(
                         AnimatedContent(
                             targetState = currentScreen,
                             transitionSpec = {
-                                val isForward = (targetState == Screen.PLAYLIST || targetState == Screen.PROFILE || targetState == Screen.EQUALIZER || targetState == Screen.ADD_SONGS) &&
-                                        (initialState == Screen.HOME || initialState == Screen.SEARCH || initialState == Screen.LIBRARY)
-                                val isBackward = (initialState == Screen.PLAYLIST || initialState == Screen.PROFILE || initialState == Screen.EQUALIZER || initialState == Screen.ADD_SONGS) &&
-                                        (targetState == Screen.HOME || targetState == Screen.SEARCH || targetState == Screen.LIBRARY)
-
-                                when {
-                                    isForward -> {
-                                        (slideInHorizontally(
-                                            initialOffsetX = { (it * 0.12f).toInt() },
-                                            animationSpec = tween(280, easing = FastOutSlowInEasing)
-                                        ) + fadeIn(tween(240))).togetherWith(
-                                            slideOutHorizontally(
-                                                targetOffsetX = { (-it * 0.12f).toInt() },
-                                                animationSpec = tween(240, easing = FastOutSlowInEasing)
-                                            ) + fadeOut(tween(200))
+                                val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                                (slideInHorizontally(
+                                    initialOffsetX = { (it * 0.2f * direction).toInt() },
+                                    animationSpec = spring(
+                                        dampingRatio = 0.82f,
+                                        stiffness = 320f
+                                    )
+                                ) + fadeIn(animationSpec = tween(200)) + scaleIn(
+                                    initialScale = 0.95f,
+                                    animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)
+                                )).togetherWith(
+                                    slideOutHorizontally(
+                                        targetOffsetX = { (-it * 0.2f * direction).toInt() },
+                                        animationSpec = spring(
+                                            dampingRatio = 0.82f,
+                                            stiffness = 320f
                                         )
-                                    }
-                                    isBackward -> {
-                                        (slideInHorizontally(
-                                            initialOffsetX = { (-it * 0.12f).toInt() },
-                                            animationSpec = tween(260, easing = FastOutSlowInEasing)
-                                        ) + fadeIn(tween(240))).togetherWith(
-                                            slideOutHorizontally(
-                                                targetOffsetX = { (it * 0.12f).toInt() },
-                                                animationSpec = tween(240, easing = FastOutSlowInEasing)
-                                            ) + fadeOut(tween(200))
-                                        )
-                                    }
-                                    else -> {
-                                        (fadeIn(tween(200)) + scaleIn(
-                                            initialScale = 0.985f,
-                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                        )).togetherWith(
-                                            fadeOut(tween(160))
-                                        )
-                                    }
-                                }
+                                    ) + fadeOut(animationSpec = tween(180))
+                                ).using(SizeTransform(clip = false))
                             },
-                            label = "ScreenTransition",
+                            label = "PinterestScreenTransition",
                             modifier = Modifier.fillMaxSize()
                         ) { targetScreen ->
                             when (targetScreen) {
@@ -479,8 +466,27 @@ fun MainShell(
             }
         }
 
+        // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
+        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val bottomScrimHeight = if (hasBottomBar) {
+            navBarBottom + 84.dp
+        } else {
+            (navBarBottom + 48.dp).coerceAtLeast(72.dp)
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(bottomScrimHeight)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.Transparent, Color.Black)
+                    )
+                )
+        )
+
         // 🎵 Apple Music Style Floating Dock (Floating MiniPlayer + Circular Translucent Capsule Navigation Bar)
-        val showMiniPlayer = !showFullPlayer && playbackState.currentSong != null && currentScreen in screensWithBottomNav
+        val showMiniPlayer = !showFullPlayer && hasCurrentSong && currentScreen in screensWithBottomNav
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -494,13 +500,14 @@ fun MainShell(
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(tween(200)),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(tween(160))
             ) {
+                val miniPlaybackState = playbackStateHolder.value
                 MiniPlayer(
-                    playbackState = playbackState,
+                    playbackState = miniPlaybackState,
                     onTogglePlay = { audioController.togglePlayPause() },
                     onNext = { audioController.next() },
                     onPrevious = { audioController.previous() },
                     onLikeToggle = {
-                        playbackState.currentSong?.let { song ->
+                        miniPlaybackState.currentSong?.let { song ->
                             scope.launch {
                                 val isLiked = repository.toggleLike(song)
                                 audioController.updateSongLiked(song.id, isLiked)
@@ -537,74 +544,173 @@ fun MainShell(
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
                     tonalElevation = 0.dp
                 ) {
-                    Row(
+                    val isHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
+                        (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0))
+
+                    val isSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1)
+
+                    val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2)
+
+                    val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3)
+
+                    val activeIndex = when {
+                        isHomeSelected -> 0
+                        isSearchSelected -> 1
+                        isLibrarySelected -> 2
+                        isPinsSelected -> 3
+                        else -> 0
+                    }
+
+                    val animatedIndex by animateFloatAsState(
+                        targetValue = activeIndex.toFloat(),
+                        animationSpec = spring(
+                            dampingRatio = 0.80f,
+                            stiffness = 280f
+                        ),
+                        label = "gel_pill_slide"
+                    )
+
+                    Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.CenterStart
                     ) {
-                        val isHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
-                            (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
-                            (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0))
+                        // The selected tab gets a wider slot (it must fit icon + label);
+                        // the other tabs share the rest. The SAME weights drive both the Row
+                        // and the pill, so the pill always sits exactly behind the selected tab.
+                        val selectedWeight = 1.7f
+                        val idx = animatedIndex.coerceIn(0f, 3f)
+                        val w0 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 0f)).coerceIn(0f, 1f)
+                        val w1 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 1f)).coerceIn(0f, 1f)
+                        val w2 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 2f)).coerceIn(0f, 1f)
+                        val w3 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 3f)).coerceIn(0f, 1f)
+                        val weightSum = w0 + w1 + w2 + w3
 
-                        val isSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
-                            (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1)
+                        fun weightAt(i: Int): Float = when (i) {
+                            0 -> w0
+                            1 -> w1
+                            2 -> w2
+                            else -> w3
+                        }
 
-                        val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
-                            (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2)
+                        fun slotStart(i: Int): Float = when (i) {
+                            0 -> 0f
+                            1 -> w0
+                            2 -> w0 + w1
+                            else -> w0 + w1 + w2
+                        }
 
-                        val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
-                            (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3)
+                        val from = idx.toInt().coerceIn(0, 3)
+                        val to = (from + 1).coerceAtMost(3)
+                        val fraction = idx - from
 
-                        CapsuleNavItem(
-                            selected = isHomeSelected,
-                            onClick = {
-                                currentTab = 0
-                                currentScreen = Screen.HOME
-                            },
-                            icon = Icons.Outlined.Home,
-                            selectedIcon = Icons.Default.Home,
-                            label = "Home"
+                        val startW = slotStart(from) * (1f - fraction) + slotStart(to) * fraction
+                        val endW = (slotStart(from) + weightAt(from)) * (1f - fraction) +
+                            (slotStart(to) + weightAt(to)) * fraction
+
+                        // Sliding green pill (single-pass layout without SubcomposeLayout)
+                        Box(
+                            modifier = Modifier
+                                .layout { measurable, constraints ->
+                                    val totalWidthPx = constraints.maxWidth.toFloat()
+                                    val unitWidthPx = totalWidthPx / weightSum
+                                    val insetPx = 2.dp.toPx()
+                                    val pillOffsetPx = (unitWidthPx * startW + insetPx).toInt()
+                                    val pillWidthPx = (unitWidthPx * (endW - startW) - insetPx * 2f).toInt().coerceAtLeast(0)
+                                    val pillHeightPx = 46.dp.roundToPx().coerceAtMost(constraints.maxHeight)
+                                    val placeable = measurable.measure(
+                                        Constraints.fixed(pillWidthPx, pillHeightPx)
+                                    )
+                                    layout(constraints.maxWidth, constraints.maxHeight) {
+                                        placeable.placeRelative(
+                                            x = pillOffsetPx,
+                                            y = ((constraints.maxHeight - pillHeightPx) / 2).coerceAtLeast(0)
+                                        )
+                                    }
+                                }
+                                .clip(RoundedCornerShape(23.dp))
+                                .background(AlaktraMint.copy(alpha = 0.22f))
+                                .border(1.dp, AlaktraMint.copy(alpha = 0.45f), RoundedCornerShape(23.dp))
                         )
 
-                        CapsuleNavItem(
-                            selected = isSearchSelected,
-                            onClick = {
-                                currentTab = 1
-                                currentScreen = Screen.SEARCH
-                            },
-                            icon = Icons.Outlined.Search,
-                            selectedIcon = Icons.Default.Search,
-                            label = "Search"
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CapsuleNavItem(
+                                selected = isHomeSelected,
+                                onClick = {
+                                    if (currentScreen != Screen.HOME || currentTab != 0) {
+                                        currentTab = 0
+                                        currentScreen = Screen.HOME
+                                    }
+                                },
+                                icon = Icons.Outlined.Home,
+                                selectedIcon = Icons.Default.Home,
+                                label = "Home",
+                                modifier = Modifier.weight(w0)
+                            )
 
-                        CapsuleNavItem(
-                            selected = isLibrarySelected,
-                            onClick = {
-                                currentTab = 2
-                                currentScreen = Screen.LIBRARY
-                            },
-                            icon = Icons.Outlined.LibraryMusic,
-                            selectedIcon = Icons.Default.LibraryMusic,
-                            label = "Library"
-                        )
+                            CapsuleNavItem(
+                                selected = isSearchSelected,
+                                onClick = {
+                                    if (currentScreen != Screen.SEARCH || currentTab != 1) {
+                                        currentTab = 1
+                                        currentScreen = Screen.SEARCH
+                                    }
+                                },
+                                icon = Icons.Outlined.Search,
+                                selectedIcon = Icons.Default.Search,
+                                label = "Search",
+                                modifier = Modifier.weight(w1)
+                            )
 
-                        CapsuleNavItem(
-                            selected = isPinsSelected,
-                            onClick = {
-                                currentTab = 3
-                                currentScreen = Screen.PINS
-                                pinsRefreshTrigger++
-                            },
-                            icon = Icons.Outlined.Place,
-                            selectedIcon = Icons.Default.Place,
-                            label = "Pins"
-                        )
+                            CapsuleNavItem(
+                                selected = isLibrarySelected,
+                                onClick = {
+                                    if (currentScreen != Screen.LIBRARY || currentTab != 2) {
+                                        currentTab = 2
+                                        currentScreen = Screen.LIBRARY
+                                    }
+                                },
+                                icon = Icons.Outlined.LibraryMusic,
+                                selectedIcon = Icons.Default.LibraryMusic,
+                                label = "Library",
+                                modifier = Modifier.weight(w2)
+                            )
+
+                            CapsuleNavItem(
+                                selected = isPinsSelected,
+                                onClick = {
+                                    if (currentScreen == Screen.PINS && currentTab == 3) {
+                                        pinsRefreshTrigger++
+                                    } else {
+                                        currentTab = 3
+                                        currentScreen = Screen.PINS
+                                    }
+                                },
+                                icon = Icons.Outlined.Place,
+                                selectedIcon = Icons.Default.Place,
+                                label = "Pins",
+                                modifier = Modifier.weight(w3)
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // Pre-composite the active song's small shape wallpaper on a background CPU thread
+        // (0 GPU VRAM used while closed, instant cache hit on Frame 1 when PlayerScreen opens)
+        SongShapePrewarmer(
+            context = context,
+            playbackStateHolder = playbackStateHolder
+        )
 
         // Full Screen Player Modal / Overlay
         AnimatedVisibility(
@@ -613,18 +719,21 @@ fun MainShell(
             enter = slideInVertically(initialOffsetY = { it }),
             exit = slideOutVertically(targetOffsetY = { it })
         ) {
+            val playerPlaybackState by remember {
+                derivedStateOf { playbackStateHolder.value.copy(currentPositionMs = 0L) }
+            }
             val downloadProgressMap by repository.downloadManager.downloadProgress.collectAsState()
-            var isDownloaded by remember(playbackState.currentSong?.id) { mutableStateOf(false) }
-            LaunchedEffect(playbackState.currentSong?.id) {
-                playbackState.currentSong?.let { s ->
+            var isDownloaded by remember(playerPlaybackState.currentSong?.id) { mutableStateOf(false) }
+            LaunchedEffect(playerPlaybackState.currentSong?.id) {
+                playerPlaybackState.currentSong?.let { s ->
                     isDownloaded = repository.downloadManager.isDownloaded(s.id)
                 }
             }
-            val currentDownloadProgress = playbackState.currentSong?.let { downloadProgressMap[it.id] }
+            val currentDownloadProgress = playerPlaybackState.currentSong?.let { downloadProgressMap[it.id] }
 
             PlayerScreen(
                 audioController = audioController,
-                playbackState = playbackState,
+                playbackState = playerPlaybackState,
                 isDownloaded = isDownloaded,
                 downloadProgress = currentDownloadProgress,
                 onNavigateToEqualizer = {
@@ -632,7 +741,7 @@ fun MainShell(
                     currentScreen = Screen.EQUALIZER
                 },
                 onToggleDownload = {
-                    playbackState.currentSong?.let { song ->
+                    playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
                             if (isDownloaded) {
                                 repository.downloadManager.removeDownload(song.id)
@@ -647,7 +756,7 @@ fun MainShell(
                     }
                 },
                 onAddToPlaylist = {
-                    playbackState.currentSong?.let { song ->
+                    playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
                             availablePlaylists = repository.getPlaylists()
                             songForPlaylistSelection = song
@@ -656,7 +765,7 @@ fun MainShell(
                 },
                 onClose = { showFullPlayer = false },
                 onLikeToggle = {
-                    playbackState.currentSong?.let { song ->
+                    playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
                             val isLiked = repository.toggleLike(song)
                             audioController.updateSongLiked(song.id, isLiked)
@@ -753,18 +862,34 @@ private fun CapsuleNavItem(
 ) {
     val activeColor = AlaktraMint
     val inactiveColor = Color.White.copy(alpha = 0.60f)
-    val pillBg by animateColorAsState(
-        targetValue = if (selected) activeColor.copy(alpha = 0.16f) else Color.Transparent,
-        animationSpec = tween(220),
-        label = "pill_bg"
+
+    val scale by animateFloatAsState(
+        targetValue = if (selected) 1.12f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.75f,
+            stiffness = 280f
+        ),
+        label = "icon_scale"
+    )
+
+    val textAlpha by animateFloatAsState(
+        targetValue = if (selected) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = 260f
+        ),
+        label = "text_alpha"
     )
 
     Box(
         modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(24.dp))
-            .background(pillBg)
             .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 6.dp),
+            .padding(vertical = 8.dp, horizontal = 4.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -775,21 +900,23 @@ private fun CapsuleNavItem(
                 imageVector = if (selected) selectedIcon else icon,
                 contentDescription = label,
                 tint = if (selected) activeColor else inactiveColor,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(22.dp)
             )
-            AnimatedVisibility(
-                visible = selected,
-                enter = fadeIn(tween(200)) + expandHorizontally(tween(200)),
-                exit = fadeOut(tween(150)) + shrinkHorizontally(tween(150))
-            ) {
-                Row {
-                    Spacer(modifier = Modifier.width(4.dp))
+            if (textAlpha > 0.01f) {
+                Row(
+                    modifier = Modifier.graphicsLayer {
+                        alpha = textAlpha
+                        scaleX = textAlpha
+                    }
+                ) {
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = label,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = activeColor,
-                        maxLines = 1
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -797,4 +924,24 @@ private fun CapsuleNavItem(
     }
 }
 
-
+@Composable
+private fun SongShapePrewarmer(
+    context: android.content.Context,
+    playbackStateHolder: State<com.example.audio.PlaybackState>
+) {
+    val prewarmTarget by remember {
+        derivedStateOf {
+            val s = playbackStateHolder.value
+            val song = s.currentSong ?: return@derivedStateOf null
+            Triple(song.id, song.title, s.dominantColor)
+        }
+    }
+    LaunchedEffect(prewarmTarget) {
+        val (id, title, dominantColor) = prewarmTarget ?: return@LaunchedEffect
+        com.example.ui.screens.player.ShapeAtlas.prewarmWallpaper(
+            context = context,
+            seedKey = "${id}_${title}",
+            palette = com.example.ui.screens.player.buildShapePalette(dominantColor)
+        )
+    }
+}

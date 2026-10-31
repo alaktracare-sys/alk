@@ -129,6 +129,33 @@ class MusicRepository(private val context: Context) {
     @Volatile
     private var apiInstance: MusicApiService? = null
 
+    @Volatile
+    var lastPinSyncOffline: Boolean = false
+        private set
+
+    @Volatile
+    private var lastUnreachableAtMs: Long = 0L
+
+    @Volatile
+    private var lastUnreachableUrl: String = ""
+
+    private fun shouldSkipUnreachableServer(forceNetwork: Boolean): Boolean {
+        if (forceNetwork) return false
+        val url = authPreferences.getServerBaseUrl()
+        val elapsed = System.currentTimeMillis() - lastUnreachableAtMs
+        return lastUnreachableAtMs > 0L && url == lastUnreachableUrl && elapsed in 0 until UNREACHABLE_COOLDOWN_MS
+    }
+
+    private fun markServerUnreachable() {
+        lastUnreachableUrl = authPreferences.getServerBaseUrl()
+        lastUnreachableAtMs = System.currentTimeMillis()
+    }
+
+    private fun markServerReachable() {
+        lastUnreachableAtMs = 0L
+        lastUnreachableUrl = ""
+    }
+
     private val api: MusicApiService
         get() {
             val currentUrl = authPreferences.getServerBaseUrl()
@@ -160,10 +187,10 @@ class MusicRepository(private val context: Context) {
         val client = OkHttpClient.Builder()
             .cache(httpCache)
             .addInterceptor(logging)
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
+            .retryOnConnectionFailure(false)
             .build()
 
         val normalized = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
@@ -206,6 +233,8 @@ class MusicRepository(private val context: Context) {
 
     fun updateServerUrl(newUrl: String) {
         authPreferences.setServerBaseUrl(newUrl)
+        markServerReachable()
+        lastPinSyncOffline = false
         synchronized(this) {
             cachedBaseUrl = authPreferences.getServerBaseUrl()
             apiInstance = buildApiService(cachedBaseUrl)
@@ -406,33 +435,38 @@ class MusicRepository(private val context: Context) {
         val cachedEntities = songDao.getAllCachedSongs()
         val localSongs = cachedEntities.map { it.toSong().copy(isLiked = likedIds.contains(it.id)) }
 
-        try {
-            val response = api.getSongs()
-            if (response.code() == 304) {
-                authPreferences.setLastSyncTime("songs")
-                if (localSongs.isNotEmpty()) {
-                    return@withContext attachLocalPaths(localSongs)
+        if (!shouldSkipUnreachableServer(forceRefresh) && com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val response = api.getSongs()
+                markServerReachable()
+                if (response.code() == 304) {
+                    authPreferences.setLastSyncTime("songs")
+                    if (localSongs.isNotEmpty()) {
+                        return@withContext attachLocalPaths(localSongs)
+                    }
+                } else if (response.isSuccessful && response.body() != null) {
+                    val remoteSongs = response.body()!!.map { dto ->
+                        Song(
+                            id = dto.id,
+                            title = dto.title ?: "Untitled Track",
+                            artist = dto.artist ?: "Unknown Artist",
+                            audioUrl = sanitizeUrl(dto.audioUrl),
+                            coverUrl = sanitizeUrl(dto.coverUrl),
+                            duration = dto.duration,
+                            isLiked = likedIds.contains(dto.id),
+                            dominantColorHex = dto.dominantColor
+                        )
+                    }
+                    apiCacheManager.putFeed("home_feed", remoteSongs)
+                    songDao.insertCachedSongs(remoteSongs.map { SongEntity.fromSong(it) })
+                    authPreferences.setLastSyncTime("songs")
+                    return@withContext attachLocalPaths(remoteSongs)
                 }
-            } else if (response.isSuccessful && response.body() != null) {
-                val remoteSongs = response.body()!!.map { dto ->
-                    Song(
-                        id = dto.id,
-                        title = dto.title ?: "Untitled Track",
-                        artist = dto.artist ?: "Unknown Artist",
-                        audioUrl = sanitizeUrl(dto.audioUrl),
-                        coverUrl = sanitizeUrl(dto.coverUrl),
-                        duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id),
-                        dominantColorHex = dto.dominantColor
-                    )
-                }
-                apiCacheManager.putFeed("home_feed", remoteSongs)
-                songDao.insertCachedSongs(remoteSongs.map { SongEntity.fromSong(it) })
-                authPreferences.setLastSyncTime("songs")
-                return@withContext attachLocalPaths(remoteSongs)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) markServerUnreachable()
+                // Network is unavailable or server error: continue using local cached songs
             }
-        } catch (_: Exception) {
-            // Network is unavailable or server error: continue using local cached songs
         }
 
         // 3. Return local cached songs if available
@@ -1327,6 +1361,41 @@ class MusicRepository(private val context: Context) {
                             ok
                         } else false
                     }
+                    "create_pin" -> {
+                        val userId = action.optInt("userId", getEffectiveUserId())
+                        val songId = action.getInt("songId")
+                        val lat = action.getDouble("latitude")
+                        val lng = action.getDouble("longitude")
+                        val imagePath = action.optString("imagePath", "")
+                        val tempPinId = action.optInt("tempPinId", 0)
+                        val imageFile = File(imagePath)
+                        if (!imageFile.exists()) {
+                            true
+                        } else {
+                            val userIdBody = userId.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                            val songIdBody = songId.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                            val latBody = lat.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                            val lngBody = lng.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                            val reqFile = RequestBody.create("image/*".toMediaTypeOrNull(), imageFile)
+                            val body = MultipartBody.Part.createFormData("image", imageFile.name, reqFile)
+                            val resp = api.createPin(userIdBody, songIdBody, latBody, lngBody, body)
+                            if (resp.isSuccessful && resp.body() != null) {
+                                val dto = resp.body()!!
+                                val updatedPins = authPreferences.getCachedPins().map { p ->
+                                    if (p.id == tempPinId) {
+                                        p.copy(
+                                            id = dto.id,
+                                            imageUrl = if (!dto.imageUrl.isNullOrBlank()) sanitizeUrl(dto.imageUrl) else p.imageUrl,
+                                            createdAt = dto.createdAt ?: p.createdAt
+                                        )
+                                    } else p
+                                }
+                                authPreferences.saveCachedPins(updatedPins)
+                                successCount++
+                                true
+                            } else false
+                        }
+                    }
                     else -> true
                 }
             } catch (_: Exception) {
@@ -1501,11 +1570,48 @@ class MusicRepository(private val context: Context) {
         }
     }
 
-    suspend fun getNearbyPins(lat: Double, lng: Double): List<LocationPin> = withContext(Dispatchers.IO) {
+    private fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return Math.round(r * c * 10.0) / 10.0
+    }
+
+    suspend fun getCachedNearbyPins(lat: Double, lng: Double): List<LocationPin> = withContext(Dispatchers.IO) {
+        val cached = authPreferences.getCachedPins()
+        if (cached.isEmpty()) return@withContext emptyList()
+        val likedIds = authPreferences.getLikedSongIds()
+        val matched = cached.mapNotNull { pin ->
+            val dist = calculateDistanceMeters(lat, lng, pin.latitude, pin.longitude)
+            if (dist <= 50.0) {
+                pin.copy(
+                    distanceMeters = dist,
+                    song = pin.song.copy(isLiked = likedIds.contains(pin.song.id))
+                )
+            } else null
+        }.sortedBy { it.distanceMeters }
+        if (matched.isEmpty()) return@withContext emptyList()
+        val enrichedSongs = attachLocalPaths(matched.map { it.song })
+        matched.mapIndexed { index, pin -> pin.copy(song = enrichedSongs[index]) }
+    }
+
+    suspend fun getNearbyPins(lat: Double, lng: Double, forceRefresh: Boolean = false): List<LocationPin> = withContext(Dispatchers.IO) {
+        if (!com.example.util.NetworkMonitor.isOnline(context) || shouldSkipUnreachableServer(forceRefresh)) {
+            lastPinSyncOffline = true
+            return@withContext getCachedNearbyPins(lat, lng)
+        }
+
         try {
             val resp = api.getNearbyPins(lat, lng)
+            markServerReachable()
             if (resp.isSuccessful && resp.body() != null) {
-                return@withContext resp.body()!!.map { dto ->
+                lastPinSyncOffline = false
+                val likedIds = authPreferences.getLikedSongIds()
+                val rawRemotePins = resp.body()!!.map { dto ->
                     val songDto = dto.song
                     val songId = songDto?.id ?: dto.songId
                     val rawAudio = songDto?.audioUrl
@@ -1514,68 +1620,155 @@ class MusicRepository(private val context: Context) {
                     } else {
                         "${authPreferences.getServerBaseUrl().trimEnd('/')}/songs/$songId/stream"
                     }
-                    val song = Song(
+                    val baseSong = Song(
                         id = songId,
                         title = songDto?.title ?: "Pinned Track",
                         artist = songDto?.artist ?: "Unknown",
                         audioUrl = resolvedAudioUrl,
                         coverUrl = sanitizeUrl(songDto?.coverUrl ?: ""),
                         duration = songDto?.duration ?: 0.0,
+                        isLiked = likedIds.contains(songId),
                         dominantColorHex = songDto?.dominantColor
                     )
+                    val resolvedImage = if (!dto.imageUrl.isNullOrBlank()) sanitizeUrl(dto.imageUrl) else ""
                     LocationPin(
                         id = dto.id,
                         userId = dto.userId,
                         songId = dto.songId,
                         latitude = dto.latitude,
                         longitude = dto.longitude,
-                        distanceMeters = dto.distanceMeters,
-                        imageUrl = dto.imageUrl ?: "",
+                        distanceMeters = Math.round(dto.distanceMeters * 10.0) / 10.0,
+                        imageUrl = resolvedImage,
                         createdAt = dto.createdAt ?: "",
-                        song = song
+                        song = baseSong
                     )
                 }
+                val enrichedSongs = if (rawRemotePins.isNotEmpty()) {
+                    attachLocalPaths(rawRemotePins.map { it.song })
+                } else {
+                    emptyList()
+                }
+                val remotePins = rawRemotePins.mapIndexed { index, pin ->
+                    pin.copy(song = enrichedSongs[index])
+                }
+
+                // Preserve any unsynced local pins (id < 0) alongside fresh server pins
+                val existingCached = authPreferences.getCachedPins()
+                val pendingLocalPins = existingCached.filter { it.id < 0 }
+                val otherDistantCached = existingCached.filter { cached ->
+                    cached.id > 0 && remotePins.none { it.id == cached.id } &&
+                        calculateDistanceMeters(lat, lng, cached.latitude, cached.longitude) > 50.0
+                }
+                authPreferences.saveCachedPins(pendingLocalPins + remotePins + otherDistantCached)
+
+                val nearbyPending = pendingLocalPins.mapNotNull { pin ->
+                    val dist = calculateDistanceMeters(lat, lng, pin.latitude, pin.longitude)
+                    if (dist <= 50.0) pin.copy(distanceMeters = dist) else null
+                }
+                return@withContext (nearbyPending + remotePins).sortedBy { it.distanceMeters }
             }
         } catch (e: Exception) {
-            android.util.Log.e("MusicRepository", "Error fetching nearby pins", e)
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) markServerUnreachable()
+            lastPinSyncOffline = true
+            android.util.Log.w("MusicRepository", "Nearby pins unavailable (${authPreferences.getServerBaseUrl()}): ${e.message}")
         }
-        emptyList()
+        getCachedNearbyPins(lat, lng)
     }
 
     suspend fun createPin(songId: Int, lat: Double, lng: Double, imageFile: File): LocationPin? = withContext(Dispatchers.IO) {
-        val user = authPreferences.getUser() ?: return@withContext null
-        try {
-            val userIdBody = RequestBody.create("text/plain".toMediaTypeOrNull(), user.id.toString())
-            val songIdBody = RequestBody.create("text/plain".toMediaTypeOrNull(), songId.toString())
-            val latBody = RequestBody.create("text/plain".toMediaTypeOrNull(), lat.toString())
-            val lngBody = RequestBody.create("text/plain".toMediaTypeOrNull(), lng.toString())
+        val userId = getEffectiveUserId()
+        val knownSong = getCachedSongs().find { it.id == songId }
+            ?: Song(
+                id = songId,
+                title = "Pinned Track",
+                artist = "Unknown",
+                audioUrl = "${authPreferences.getServerBaseUrl().trimEnd('/')}/songs/$songId/stream",
+                coverUrl = ""
+            )
 
-            val reqFile = RequestBody.create("image/*".toMediaTypeOrNull(), imageFile)
-            val body = MultipartBody.Part.createFormData("image", imageFile.name, reqFile)
+        if (com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val userIdBody = userId.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                val songIdBody = songId.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                val latBody = lat.toString().toRequestBody("text/plain".toMediaTypeOrNull())
+                val lngBody = lng.toString().toRequestBody("text/plain".toMediaTypeOrNull())
 
-            val resp = api.createPin(userIdBody, songIdBody, latBody, lngBody, body)
-            if (resp.isSuccessful && resp.body() != null) {
-                val dto = resp.body()!!
-                return@withContext LocationPin(
-                    id = dto.id,
-                    userId = dto.userId,
-                    songId = dto.songId,
-                    latitude = dto.latitude,
-                    longitude = dto.longitude,
-                    distanceMeters = 0.0,
-                    imageUrl = dto.imageUrl ?: "",
-                    createdAt = dto.createdAt ?: "",
-                    song = Song(id = songId, title = "Pinned Track", artist = "", audioUrl = "", coverUrl = "")
-                )
+                val reqFile = RequestBody.create("image/*".toMediaTypeOrNull(), imageFile)
+                val body = MultipartBody.Part.createFormData("image", imageFile.name, reqFile)
+
+                val resp = api.createPin(userIdBody, songIdBody, latBody, lngBody, body)
+                markServerReachable()
+                if (resp.isSuccessful && resp.body() != null) {
+                    lastPinSyncOffline = false
+                    val dto = resp.body()!!
+                    val createdPin = LocationPin(
+                        id = dto.id,
+                        userId = dto.userId,
+                        songId = dto.songId,
+                        latitude = dto.latitude,
+                        longitude = dto.longitude,
+                        distanceMeters = 0.0,
+                        imageUrl = if (!dto.imageUrl.isNullOrBlank()) sanitizeUrl(dto.imageUrl) else imageFile.toURI().toString(),
+                        createdAt = dto.createdAt ?: "",
+                        song = knownSong
+                    )
+                    val updated = listOf(createdPin) + authPreferences.getCachedPins().filter { it.id != createdPin.id }
+                    authPreferences.saveCachedPins(updated)
+                    return@withContext createdPin
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) markServerUnreachable()
+                lastPinSyncOffline = true
+                android.util.Log.w("MusicRepository", "Server unreachable while creating pin; saving locally: ${e.message}")
             }
-        } catch (e: Exception) {
-            android.util.Log.e("MusicRepository", "Error creating location pin", e)
+        } else {
+            lastPinSyncOffline = true
         }
-        null
+
+        // Offline / unreachable server fallback: persist photo locally and queue sync
+        return@withContext try {
+            val pinsDir = File(context.filesDir, "local_pins").apply { mkdirs() }
+            val persistentFile = File(pinsDir, "pin_${System.currentTimeMillis()}.jpg")
+            imageFile.copyTo(persistentFile, overwrite = true)
+
+            val tempPinId = -((System.currentTimeMillis() % 900000 + 100000).toInt())
+            val localPin = LocationPin(
+                id = tempPinId,
+                userId = userId,
+                songId = songId,
+                latitude = lat,
+                longitude = lng,
+                distanceMeters = 0.0,
+                imageUrl = persistentFile.toURI().toString(),
+                createdAt = System.currentTimeMillis().toString(),
+                song = knownSong
+            )
+            val updated = listOf(localPin) + authPreferences.getCachedPins()
+            authPreferences.saveCachedPins(updated)
+
+            val action = JSONObject().apply {
+                put("type", "create_pin")
+                put("userId", userId)
+                put("songId", songId)
+                put("latitude", lat)
+                put("longitude", lng)
+                put("imagePath", persistentFile.absolutePath)
+                put("tempPinId", tempPinId)
+                put("timestamp", System.currentTimeMillis())
+            }
+            authPreferences.addOfflineAction(action)
+            localPin
+        } catch (e: Exception) {
+            android.util.Log.w("MusicRepository", "Failed to save offline pin locally: ${e.message}")
+            null
+        }
     }
 
     companion object {
         const val KEY_HISTORY_SYNC = "history_sync"
+        private const val UNREACHABLE_COOLDOWN_MS = 10_000L
     }
 }
 
