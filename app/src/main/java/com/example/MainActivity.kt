@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.example.data.fuse.FuseCodeCodec
 import com.example.ui.screens.MainShell
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.screens.auth.SignupScreen
@@ -22,6 +24,21 @@ enum class AuthDestination {
 }
 
 class MainActivity : ComponentActivity() {
+    private var pendingFuseCodeState by mutableStateOf<String?>(null)
+
+    private fun extractFuseCodeFromIntent(intent: Intent?): String? {
+        val dataString = intent?.dataString ?: return null
+        return FuseCodeCodec.extractCode(dataString)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractFuseCodeFromIntent(intent)?.let { code ->
+            pendingFuseCodeState = code
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -39,6 +56,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        extractFuseCodeFromIntent(intent)?.let { code ->
+            pendingFuseCodeState = code
+        }
+
         val app = application as AlreadyApp
         val repository = app.repository
         val audioController = app.audioController
@@ -46,7 +67,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             AlaktraTheme {
                 val initialAuth = remember {
-                    if (repository.authPreferences.isLoggedIn()) {
+                    if (repository.authPreferences.isLoggedIn() || pendingFuseCodeState != null) {
                         AuthDestination.MAIN
                     } else {
                         AuthDestination.WELCOME
@@ -85,6 +106,8 @@ class MainActivity : ComponentActivity() {
                         MainShell(
                             repository = repository,
                             audioController = audioController,
+                            pendingFuseJoinCode = pendingFuseCodeState,
+                            onConsumePendingFuseJoinCode = { pendingFuseCodeState = null },
                             onLogout = { currentDestination = AuthDestination.WELCOME }
                         )
                     }

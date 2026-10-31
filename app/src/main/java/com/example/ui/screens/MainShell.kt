@@ -53,6 +53,7 @@ import com.example.ui.responsive.rememberWindowSizeInfo
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.library.LibraryScreen
 import com.example.ui.screens.equalizer.EqualizerScreen
+import com.example.ui.screens.fuse.FuseScreen
 import com.example.ui.screens.player.PlayerScreen
 import com.example.ui.screens.playlist.AddSongToPlaylistScreen
 import com.example.ui.screens.playlist.PlaylistScreen
@@ -65,7 +66,7 @@ import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
 enum class Screen {
-    HOME, SEARCH, LIBRARY, PINS, PLAYLIST, ADD_SONGS, PROFILE, EQUALIZER, HISTORY
+    HOME, SEARCH, LIBRARY, PINS, PLAYLIST, ADD_SONGS, FUSE, PROFILE, EQUALIZER, HISTORY
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,6 +74,8 @@ enum class Screen {
 fun MainShell(
     repository: MusicRepository,
     audioController: AudioController,
+    pendingFuseJoinCode: String? = null,
+    onConsumePendingFuseJoinCode: () -> Unit = {},
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -110,6 +113,14 @@ fun MainShell(
         }
     }
 
+    LaunchedEffect(pendingFuseJoinCode) {
+        if (!pendingFuseJoinCode.isNullOrBlank()) {
+            showFullPlayer = false
+            currentTab = 2
+            currentScreen = Screen.FUSE
+        }
+    }
+
     val navigateBackFromPlaylist: () -> Unit = {
         currentScreen = playlistOriginScreen
         currentTab = playlistOriginTab
@@ -121,6 +132,10 @@ fun MainShell(
             showFullPlayer -> showFullPlayer = false
             currentScreen == Screen.ADD_SONGS -> currentScreen = Screen.PLAYLIST
             currentScreen == Screen.PLAYLIST -> navigateBackFromPlaylist()
+            currentScreen == Screen.FUSE -> {
+                currentTab = 2
+                currentScreen = Screen.LIBRARY
+            }
             currentScreen == Screen.HISTORY -> {
                 currentScreen = Screen.HOME
                 currentTab = 0
@@ -141,7 +156,10 @@ fun MainShell(
     }
 
     fun openPlaylist(id: Int, name: String) {
-        if (currentScreen != Screen.PLAYLIST && currentScreen != Screen.ADD_SONGS) {
+        if (currentScreen == Screen.FUSE) {
+            playlistOriginScreen = Screen.LIBRARY
+            playlistOriginTab = 2
+        } else if (currentScreen != Screen.PLAYLIST && currentScreen != Screen.ADD_SONGS) {
             playlistOriginScreen = currentScreen
             playlistOriginTab = currentTab
         }
@@ -159,6 +177,7 @@ fun MainShell(
         Screen.LIBRARY,
         Screen.PINS,
         Screen.PLAYLIST,
+        Screen.FUSE,
         Screen.PROFILE,
         Screen.EQUALIZER,
         Screen.HISTORY
@@ -393,7 +412,11 @@ fun MainShell(
                                         repository = repository,
                                         onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
                                         onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
-                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") }
+                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
+                                        onNavigateToFuse = {
+                                            currentTab = 2
+                                            currentScreen = Screen.FUSE
+                                        }
                                     )
                                 }
 
@@ -421,6 +444,19 @@ fun MainShell(
                                         playlistId = activePlaylistId,
                                         repository = repository,
                                         onBack = { currentScreen = Screen.PLAYLIST }
+                                    )
+                                }
+
+                                Screen.FUSE -> {
+                                    FuseScreen(
+                                        repository = repository,
+                                        initialJoinCode = pendingFuseJoinCode,
+                                        onConsumedInitialJoinCode = onConsumePendingFuseJoinCode,
+                                        onBack = {
+                                            currentTab = 2
+                                            currentScreen = Screen.LIBRARY
+                                        },
+                                        onOpenPlaylist = { id, name -> openPlaylist(id, name) }
                                     )
                                 }
 
@@ -552,6 +588,7 @@ fun MainShell(
                         (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1)
 
                     val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
+                        currentScreen == Screen.FUSE ||
                         (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2)
 
                     val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||

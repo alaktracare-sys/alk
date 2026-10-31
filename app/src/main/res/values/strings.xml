@@ -1,3 +1,22 @@
 <resources>
     <string name="app_name">Alaktra</string>
+    <string name="library_title">Your Library</string>
+    <string name="library_add_options">Create Playlist or Fuse</string>
+    <string name="menu_create_playlist">Create Playlist</string>
+    <string name="menu_create_fuse">Create Fuse</string>
+    <string name="fuse_title">Create Fuse</string>
+    <string name="fuse_subtitle">Blend up to 30 shared tracks from both libraries</string>
+    <string name="fuse_temp_code_label">TEMPORARY FUSE CODE</string>
+    <string name="fuse_copy_code">Copy Code</string>
+    <string name="fuse_send_link">Send Link</string>
+    <string name="fuse_idle_heading">Start a New Fuse</string>
+    <string name="fuse_idle_body">Generate a 5-minute temporary code and shareable link to blend up to 30 common songs with another listener.</string>
+    <string name="fuse_start_button">Create Fuse</string>
+    <string name="fuse_join_heading">Have a Fuse code?</string>
+    <string name="fuse_join_placeholder">Enter code or paste link</string>
+    <string name="fuse_join_action">Join Fuse</string>
+    <string name="fuse_expired_title">Fuse Expired</string>
+    <string name="fuse_expired_body">No one joined within 5 minutes, so this Fuse was automatically deleted.</string>
+    <string name="fuse_create_new">Create New Fuse</string>
+    <string name="fuse_open_playlist">Open Fuse Playlist</string>
 </resources>

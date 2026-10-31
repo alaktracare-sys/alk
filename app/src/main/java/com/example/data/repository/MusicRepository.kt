@@ -36,11 +36,17 @@ import com.example.data.remote.cache.ApiCacheManager
 import com.example.data.remote.cache.OkHttpCacheInterceptor
 import com.example.data.remote.cache.OfflineCacheInterceptor
 import com.example.data.remote.cache.NetworkCacheInterceptor
+import com.example.data.fuse.FuseCodeCodec
+import com.example.data.fuse.FuseJoinResult
+import com.example.data.fuse.FusePollStatus
+import com.example.data.fuse.FuseSession
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MusicRepository(private val context: Context) {
@@ -51,6 +57,13 @@ class MusicRepository(private val context: Context) {
     private val songDao = appDatabase.songDao()
     private val playlistDao = appDatabase.playlistDao()
     private val userDao = appDatabase.userDao()
+    private val repoScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    @Volatile
+    private var activeFuseSession: FuseSession? = null
+
+    @Volatile
+    private var activeFuseExpiryJob: Job? = null
 
     init {
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
@@ -93,7 +106,7 @@ class MusicRepository(private val context: Context) {
     }
     val cachedUserFlow: Flow<User?> = userDao.getUserFlow(getEffectiveUserId()).map { it?.toUser() }
     val cachedPlaylistsFlow: Flow<List<Playlist>> = playlistDao.getUserPlaylistsFlow(getEffectiveUserId()).map { list ->
-        list.map { it.toPlaylist() }
+        list.filter { !FuseCodeCodec.isPendingMarker(it.name) }.map { it.toPlaylist() }
     }
 
     suspend fun recordSongPlayed(song: Song, initialListenedSec: Long = 0L): Long {
@@ -749,12 +762,15 @@ class MusicRepository(private val context: Context) {
         if (!forceRefresh) {
             val inMemory = apiCacheManager.getUserPlaylists(userId)
             if (inMemory != null) {
-                return@withContext inMemory
+                return@withContext inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
             }
         }
 
         val localEntities = playlistDao.getUserPlaylists(userId)
-        val localPlaylists = localEntities.map { it.toPlaylist() }
+        val localCountById = localEntities.associate { it.id to it.songCount }
+        val localPlaylists = localEntities
+            .filter { !FuseCodeCodec.isPendingMarker(it.name) }
+            .map { it.toPlaylist() }
 
         val pendingDeletedIds = authPreferences.getOfflineQueue()
             .filter { it.optString("type") == "delete_playlist" }
@@ -771,16 +787,38 @@ class MusicRepository(private val context: Context) {
                     return@withContext activeLocal
                 }
             } else if (response.isSuccessful && response.body() != null) {
-                val userPlaylists = response.body()!!.filter { it.isSystem == 0 && !pendingDeletedIds.contains(it.id) }
+                val nowMs = System.currentTimeMillis()
+                val rawBody = response.body()!!
+
+                // Opportunistically clean up any expired pending Fuse markers on the server
+                val expiredMarkerIds = rawBody.mapNotNull { dto ->
+                    val marker = FuseCodeCodec.parsePendingMarker(dto.name)
+                    if (marker != null && marker.isExpired(nowMs)) dto.id else null
+                }
+                if (expiredMarkerIds.isNotEmpty()) {
+                    repoScope.launch {
+                        expiredMarkerIds.forEach { expiredId ->
+                            try { api.deletePlaylist(expiredId) } catch (_: Exception) {}
+                            try { playlistDao.deletePlaylist(expiredId) } catch (_: Exception) {}
+                        }
+                    }
+                }
+
+                val userPlaylists = rawBody.filter {
+                    it.isSystem == 0 &&
+                        !pendingDeletedIds.contains(it.id) &&
+                        !FuseCodeCodec.isPendingMarker(it.name)
+                }
                 val entities = userPlaylists.map { p ->
+                    val cleanName = p.name ?: "Playlist"
                     PlaylistEntity(
                         id = p.id,
                         userId = userId,
-                        name = p.name ?: "Playlist",
-                        description = "Playlist",
+                        name = cleanName,
+                        description = if (FuseCodeCodec.isFusePlaylistName(cleanName)) "Fuse Playlist" else "Playlist",
                         isSystem = false,
-                        songCount = 0,
-                        lastSyncedAt = System.currentTimeMillis()
+                        songCount = localCountById[p.id] ?: 0,
+                        lastSyncedAt = nowMs
                     )
                 }
                 playlistDao.insertPlaylists(entities)
@@ -802,10 +840,12 @@ class MusicRepository(private val context: Context) {
         val userId = getEffectiveUserId()
         val inMemory = apiCacheManager.getUserPlaylists(userId)
         if (inMemory != null && inMemory.isNotEmpty()) {
-            return@withContext inMemory
+            return@withContext inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
         }
         val localEntities = playlistDao.getUserPlaylists(userId)
-        val mapped = localEntities.map { it.toPlaylist() }
+        val mapped = localEntities
+            .filter { !FuseCodeCodec.isPendingMarker(it.name) }
+            .map { it.toPlaylist() }
         if (mapped.isNotEmpty()) {
             apiCacheManager.putUserPlaylists(userId, mapped)
         }
@@ -1764,6 +1804,492 @@ class MusicRepository(private val context: Context) {
             android.util.Log.w("MusicRepository", "Failed to save offline pin locally: ${e.message}")
             null
         }
+    }
+
+    // ==========================================
+    // FUSE (5-Minute Temporary Collaborative Blend)
+    // ==========================================
+
+    fun getFuseDisplayName(): String {
+        val user = authPreferences.getUser()
+        val candidate = user?.username?.trim()?.takeIf { it.isNotEmpty() }
+            ?: user?.name?.trim()?.takeIf { it.isNotEmpty() }
+        return candidate ?: "User ${getEffectiveUserId()}"
+    }
+
+    fun getActiveFuseSession(): FuseSession? {
+        val current = activeFuseSession ?: return null
+        if (current.isExpired()) {
+            repoScope.launch { expireOrDeleteFuseSession(current) }
+            return null
+        }
+        return current
+    }
+
+    suspend fun createFuseSession(forceNew: Boolean = false): Result<FuseSession> = withContext(Dispatchers.IO) {
+        val nowMs = System.currentTimeMillis()
+        val existing = activeFuseSession
+        if (!forceNew && existing != null && !existing.isExpired(nowMs) && existing.hostUserId == getEffectiveUserId()) {
+            return@withContext Result.success(existing)
+        }
+
+        if (existing != null) {
+            expireOrDeleteFuseSession(existing)
+        }
+
+        val hostUserId = getEffectiveUserId()
+        val hostName = getFuseDisplayName()
+        val code = FuseCodeCodec.generateCode(hostUserId)
+        val expiresAtMs = nowMs + FuseCodeCodec.FUSE_TTL_MS
+        val markerName = FuseCodeCodec.buildPendingMarkerName(code, expiresAtMs, hostName)
+
+        var createdId: Int? = null
+        if (com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val resp = api.createPlaylist(userId = hostUserId, name = markerName)
+                if (resp.isSuccessful && resp.body()?.id != null) {
+                    createdId = resp.body()!!.id!!
+                }
+            } catch (_: Exception) {}
+        }
+
+        val finalTempId = createdId ?: -((nowMs % 800000 + 150000).toInt())
+        if (finalTempId < 0) {
+            // Local fallback marker if offline
+            playlistDao.insertPlaylist(
+                PlaylistEntity(
+                    id = finalTempId,
+                    userId = hostUserId,
+                    name = markerName,
+                    description = "Pending Fuse",
+                    isSystem = false,
+                    songCount = 0,
+                    lastSyncedAt = nowMs
+                )
+            )
+        }
+
+        val session = FuseSession(
+            code = code,
+            hostUserId = hostUserId,
+            hostName = hostName,
+            tempPlaylistId = finalTempId,
+            createdAtMs = nowMs,
+            expiresAtMs = expiresAtMs
+        )
+        activeFuseSession = session
+        scheduleFuseAutoDeletion(session)
+        Result.success(session)
+    }
+
+    private fun scheduleFuseAutoDeletion(session: FuseSession) {
+        activeFuseExpiryJob?.cancel()
+        activeFuseExpiryJob = repoScope.launch {
+            val waitMs = (session.expiresAtMs - System.currentTimeMillis()).coerceAtLeast(0L) + 250L
+            delay(waitMs)
+            cleanupPendingFuseIfUnjoined(session)
+        }
+    }
+
+    private suspend fun cleanupPendingFuseIfUnjoined(session: FuseSession) = withContext(Dispatchers.IO) {
+        try {
+            if (session.tempPlaylistId > 0 && com.example.util.NetworkMonitor.isOnline(context)) {
+                val resp = api.getPlaylists(session.hostUserId)
+                if (resp.isSuccessful && resp.body() != null) {
+                    val serverMatch = resp.body()!!.find { it.id == session.tempPlaylistId }
+                    if (serverMatch != null && FuseCodeCodec.isPendingMarker(serverMatch.name)) {
+                        api.deletePlaylist(session.tempPlaylistId)
+                    } else if (serverMatch != null && !FuseCodeCodec.isPendingMarker(serverMatch.name)) {
+                        // Someone already joined right before expiry — keep the completed Fuse playlist!
+                        if (activeFuseSession?.code == session.code) {
+                            activeFuseSession = null
+                        }
+                        return@withContext
+                    }
+                } else {
+                    api.deletePlaylist(session.tempPlaylistId)
+                }
+            }
+        } catch (_: Exception) {}
+
+        val localPl = playlistDao.getPlaylistById(session.tempPlaylistId)
+        if (localPl != null && FuseCodeCodec.isPendingMarker(localPl.name)) {
+            playlistDao.deletePlaylist(session.tempPlaylistId)
+        }
+
+        if (activeFuseSession?.code == session.code) {
+            activeFuseSession = null
+        }
+    }
+
+    suspend fun expireOrDeleteFuseSession(session: FuseSession) = withContext(Dispatchers.IO) {
+        if (activeFuseSession?.code == session.code) {
+            activeFuseSession = null
+            activeFuseExpiryJob?.cancel()
+            activeFuseExpiryJob = null
+        }
+        cleanupPendingFuseIfUnjoined(session)
+    }
+
+    suspend fun pollFuseSession(session: FuseSession): FusePollStatus = withContext(Dispatchers.IO) {
+        val nowMs = System.currentTimeMillis()
+        if (session.isExpired(nowMs)) {
+            expireOrDeleteFuseSession(session)
+            return@withContext FusePollStatus.Expired
+        }
+
+        if (session.tempPlaylistId > 0 && com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val resp = api.getPlaylists(session.hostUserId)
+                if (resp.isSuccessful && resp.body() != null) {
+                    val target = resp.body()!!.find { it.id == session.tempPlaylistId }
+                    if (target == null) {
+                        if (activeFuseSession?.code == session.code) activeFuseSession = null
+                        return@withContext FusePollStatus.Expired
+                    }
+                    val currentName = target.name ?: ""
+                    if (!FuseCodeCodec.isPendingMarker(currentName) && currentName.isNotBlank()) {
+                        // User 2 joined and finalized the Fuse playlist!
+                        activeFuseSession = null
+                        activeFuseExpiryJob?.cancel()
+                        activeFuseExpiryJob = null
+
+                        val songs = getPlaylistSongs(session.tempPlaylistId, forceRefresh = true)
+                        val completedEntity = PlaylistEntity(
+                            id = session.tempPlaylistId,
+                            userId = session.hostUserId,
+                            name = currentName,
+                            description = "Fuse Playlist",
+                            isSystem = false,
+                            songCount = songs.size,
+                            lastSyncedAt = nowMs
+                        )
+                        playlistDao.insertPlaylist(completedEntity)
+                        playlistDao.setPlaylistSongs(
+                            session.tempPlaylistId,
+                            songs.map { SongEntity.fromSong(it, isLiked = it.isLiked) }
+                        )
+                        apiCacheManager.invalidateUserPlaylists(session.hostUserId)
+                        apiCacheManager.putPlaylistSongs(session.tempPlaylistId, songs)
+
+                        return@withContext FusePollStatus.Joined(
+                            playlist = completedEntity.toPlaylist(),
+                            songs = songs
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Also check local DB in case single-device / offline join happened
+        val localEntity = playlistDao.getPlaylistById(session.tempPlaylistId)
+        if (localEntity != null && !FuseCodeCodec.isPendingMarker(localEntity.name)) {
+            activeFuseSession = null
+            activeFuseExpiryJob?.cancel()
+            activeFuseExpiryJob = null
+            val songs = getCachedPlaylistSongs(session.tempPlaylistId)
+            return@withContext FusePollStatus.Joined(
+                playlist = localEntity.toPlaylist().copy(songCount = songs.size),
+                songs = songs
+            )
+        }
+
+        FusePollStatus.Waiting
+    }
+
+    suspend fun joinFuse(rawCodeOrLink: String): Result<FuseJoinResult> = withContext(Dispatchers.IO) {
+        val code = FuseCodeCodec.extractCode(rawCodeOrLink)
+            ?: return@withContext Result.failure(IllegalArgumentException("Enter a valid Fuse code or Fuse link."))
+
+        val hostUserId = FuseCodeCodec.decodeHostUserId(code)
+            ?: return@withContext Result.failure(IllegalArgumentException("Invalid Fuse code."))
+
+        val nowMs = System.currentTimeMillis()
+        val joinerUserId = getEffectiveUserId()
+        val joinerName = getFuseDisplayName()
+
+        var pendingPlaylistId: Int? = null
+        var hostName: String? = null
+        var expiresAtMs: Long = 0L
+        var hostServerPlaylists: List<ServerPlaylistDto> = emptyList()
+
+        if (com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val resp = api.getPlaylists(hostUserId)
+                if (resp.isSuccessful && resp.body() != null) {
+                    hostServerPlaylists = resp.body()!!
+                    for (dto in hostServerPlaylists) {
+                        val marker = FuseCodeCodec.parsePendingMarker(dto.name)
+                        if (marker != null && marker.code == code) {
+                            pendingPlaylistId = dto.id
+                            hostName = marker.hostName
+                            expiresAtMs = marker.expiresAtMs
+                            break
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback to local pending session if testing on same device or offline
+        if (pendingPlaylistId == null) {
+            val localActive = activeFuseSession
+            if (localActive != null && localActive.code == code) {
+                pendingPlaylistId = localActive.tempPlaylistId
+                hostName = localActive.hostName
+                expiresAtMs = localActive.expiresAtMs
+            } else {
+                val localCandidates = playlistDao.getUserPlaylists(hostUserId)
+                for (entity in localCandidates) {
+                    val marker = FuseCodeCodec.parsePendingMarker(entity.name)
+                    if (marker != null && marker.code == code) {
+                        pendingPlaylistId = entity.id
+                        hostName = marker.hostName
+                        expiresAtMs = marker.expiresAtMs
+                        break
+                    }
+                }
+            }
+        }
+
+        val targetHostPlaylistId = pendingPlaylistId
+            ?: return@withContext Result.failure(IllegalStateException("Fuse not found, already joined, or expired."))
+
+        if (nowMs >= expiresAtMs) {
+            // Enforce strict 5-minute TTL deletion
+            if (targetHostPlaylistId > 0) {
+                try { api.deletePlaylist(targetHostPlaylistId) } catch (_: Exception) {}
+            }
+            try { playlistDao.deletePlaylist(targetHostPlaylistId) } catch (_: Exception) {}
+            if (activeFuseSession?.code == code) {
+                activeFuseSession = null
+                activeFuseExpiryJob?.cancel()
+            }
+            return@withContext Result.failure(IllegalStateException("This Fuse expired after 5 minutes and was deleted."))
+        }
+
+        val resolvedHostName = (hostName ?: "User $hostUserId").trim().ifEmpty { "User $hostUserId" }
+        val fusePlaylistName = FuseCodeCodec.buildFusePlaylistName(resolvedHostName, joinerName)
+
+        // Gather all songs across Liked + normal custom playlists for User 1 and User 2
+        val user1Songs = if (hostUserId == joinerUserId) {
+            collectAllSongsForCurrentUser()
+        } else {
+            collectAllSongsForRemoteUser(hostUserId, hostServerPlaylists)
+        }
+        val user2Songs = collectAllSongsForCurrentUser()
+
+        val commonSongs = FuseCodeCodec.computeCommonFuseSongs(
+            user1Songs = user1Songs,
+            user2Songs = user2Songs,
+            maxSongs = FuseCodeCodec.MAX_FUSE_SONGS
+        )
+
+        // 1. Populate User 1's Fuse playlist first, then rename it atomically so User 1's poll sees all songs ready
+        if (targetHostPlaylistId > 0 && com.example.util.NetworkMonitor.isOnline(context)) {
+            for (song in commonSongs) {
+                try {
+                    api.addSongToPlaylist(playlistId = targetHostPlaylistId, songId = song.id)
+                } catch (_: Exception) {}
+            }
+            try {
+                api.renamePlaylist(
+                    playlistId = targetHostPlaylistId,
+                    userId = hostUserId,
+                    name = fusePlaylistName
+                )
+            } catch (_: Exception) {}
+        }
+
+        // 2. Make the playlist visible to User 2 as well (or reuse targetHostPlaylistId if same user)
+        val joinerPlaylist: Playlist = if (joinerUserId == hostUserId) {
+            val entity = PlaylistEntity(
+                id = targetHostPlaylistId,
+                userId = joinerUserId,
+                name = fusePlaylistName,
+                description = "Fuse Playlist",
+                isSystem = false,
+                songCount = commonSongs.size,
+                lastSyncedAt = System.currentTimeMillis()
+            )
+            playlistDao.insertPlaylist(entity)
+            playlistDao.setPlaylistSongs(
+                targetHostPlaylistId,
+                commonSongs.map { SongEntity.fromSong(it, isLiked = it.isLiked) }
+            )
+            if (activeFuseSession?.code == code) {
+                activeFuseSession = null
+                activeFuseExpiryJob?.cancel()
+            }
+            entity.toPlaylist()
+        } else {
+            val createdForJoiner = createPlaylist(fusePlaylistName)
+            if (createdForJoiner.id > 0 && com.example.util.NetworkMonitor.isOnline(context)) {
+                for (song in commonSongs) {
+                    try {
+                        api.addSongToPlaylist(playlistId = createdForJoiner.id, songId = song.id)
+                    } catch (_: Exception) {}
+                }
+            } else {
+                for (song in commonSongs) {
+                    val action = JSONObject().apply {
+                        put("type", "add_song")
+                        put("playlistId", createdForJoiner.id)
+                        put("songId", song.id)
+                        put("timestamp", System.currentTimeMillis())
+                    }
+                    authPreferences.addOfflineAction(action)
+                }
+            }
+            val updatedJoinerEntity = PlaylistEntity(
+                id = createdForJoiner.id,
+                userId = joinerUserId,
+                name = fusePlaylistName,
+                description = "Fuse Playlist",
+                isSystem = false,
+                songCount = commonSongs.size,
+                lastSyncedAt = System.currentTimeMillis()
+            )
+            playlistDao.insertPlaylist(updatedJoinerEntity)
+            playlistDao.setPlaylistSongs(
+                createdForJoiner.id,
+                commonSongs.map { SongEntity.fromSong(it, isLiked = it.isLiked) }
+            )
+            updatedJoinerEntity.toPlaylist()
+        }
+
+        apiCacheManager.invalidateUserPlaylists(joinerUserId)
+        apiCacheManager.putPlaylistSongs(joinerPlaylist.id, commonSongs)
+
+        Result.success(
+            FuseJoinResult(
+                playlist = joinerPlaylist,
+                songs = commonSongs,
+                hostName = resolvedHostName,
+                joinerName = joinerName
+            )
+        )
+    }
+
+    private suspend fun collectAllSongsForRemoteUser(
+        remoteUserId: Int,
+        preloadedPlaylists: List<ServerPlaylistDto>
+    ): List<Song> {
+        val songsById = LinkedHashMap<Int, Song>()
+        val currentLikedIds = authPreferences.getLikedSongIds()
+
+        // 1. Remote user's Liked Songs playlist
+        try {
+            val likedResp = api.getLikedPlaylist(remoteUserId)
+            val remoteLikedId = likedResp.body()?.playlistId
+            if (likedResp.isSuccessful && remoteLikedId != null) {
+                val likedSongsResp = api.getPlaylistSongs(remoteLikedId)
+                if (likedSongsResp.isSuccessful && likedSongsResp.body() != null) {
+                    for (dto in likedSongsResp.body()!!) {
+                        songsById.putIfAbsent(dto.id, mapDtoToSong(dto, currentLikedIds))
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Remote user's normal custom playlists
+        val normalPlaylists = (if (preloadedPlaylists.isNotEmpty()) {
+            preloadedPlaylists
+        } else {
+            try {
+                api.getPlaylists(remoteUserId).body().orEmpty()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }).filter { it.isSystem == 0 && !FuseCodeCodec.isPendingMarker(it.name) }
+
+        for (pl in normalPlaylists) {
+            try {
+                val plSongsResp = api.getPlaylistSongs(pl.id)
+                if (plSongsResp.isSuccessful && plSongsResp.body() != null) {
+                    for (dto in plSongsResp.body()!!) {
+                        songsById.putIfAbsent(dto.id, mapDtoToSong(dto, currentLikedIds))
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Local DB fallback if cached on device
+        if (songsById.isEmpty()) {
+            val localPls = playlistDao.getUserPlaylists(remoteUserId)
+                .filter { !FuseCodeCodec.isPendingMarker(it.name) }
+            for (pl in localPls) {
+                for (entity in playlistDao.getPlaylistSongs(pl.id)) {
+                    songsById.putIfAbsent(entity.id, entity.toSong().copy(isLiked = currentLikedIds.contains(entity.id)))
+                }
+            }
+        }
+
+        return songsById.values.toList()
+    }
+
+    private suspend fun collectAllSongsForCurrentUser(): List<Song> {
+        val songsById = LinkedHashMap<Int, Song>()
+        val likedIds = authPreferences.getLikedSongIds()
+
+        // 1. Liked Songs (both server & local)
+        try {
+            for (song in getLikedSongs()) {
+                songsById.putIfAbsent(song.id, song)
+            }
+        } catch (_: Exception) {}
+        try {
+            for (song in getCachedLikedSongs()) {
+                songsById.putIfAbsent(song.id, song)
+            }
+        } catch (_: Exception) {}
+
+        if (likedIds.isNotEmpty()) {
+            val catalogById = songDao.getAllCachedSongs().associateBy { it.id }
+            for (likedId in likedIds) {
+                if (likedId !in songsById) {
+                    catalogById[likedId]?.let { entity ->
+                        songsById[likedId] = entity.toSong().copy(isLiked = true)
+                    }
+                }
+            }
+        }
+
+        // 2. All normal custom playlists (both server & local)
+        val userPlaylists = try {
+            getPlaylists(forceRefresh = true)
+        } catch (_: Exception) {
+            getCachedPlaylists()
+        }
+
+        for (pl in userPlaylists) {
+            if (FuseCodeCodec.isPendingMarker(pl.name)) continue
+            try {
+                for (song in getPlaylistSongs(pl.id, forceRefresh = true)) {
+                    songsById.putIfAbsent(song.id, song)
+                }
+            } catch (_: Exception) {}
+            try {
+                for (song in getCachedPlaylistSongs(pl.id)) {
+                    songsById.putIfAbsent(song.id, song)
+                }
+            } catch (_: Exception) {}
+        }
+
+        return attachLocalPaths(songsById.values.toList())
+    }
+
+    private fun mapDtoToSong(dto: SongDto, currentLikedIds: Set<Int>): Song {
+        return Song(
+            id = dto.id,
+            title = dto.title ?: "Untitled Track",
+            artist = dto.artist ?: "Unknown Artist",
+            audioUrl = sanitizeUrl(dto.audioUrl),
+            coverUrl = sanitizeUrl(dto.coverUrl),
+            duration = dto.duration,
+            isLiked = currentLikedIds.contains(dto.id),
+            dominantColorHex = dto.dominantColor
+        )
     }
 
     companion object {

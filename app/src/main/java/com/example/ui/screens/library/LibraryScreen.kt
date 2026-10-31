@@ -20,6 +20,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import com.example.R
+import com.example.data.fuse.FuseCodeCodec
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
 import com.example.model.Song
@@ -32,11 +36,13 @@ fun LibraryScreen(
     repository: MusicRepository,
     onNavigateToPlaylist: (Int, String) -> Unit,
     onNavigateToLikedSongs: () -> Unit,
-    onNavigateToDownloadedSongs: () -> Unit
+    onNavigateToDownloadedSongs: () -> Unit,
+    onNavigateToFuse: () -> Unit = {}
 ) {
     var playlists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
     val downloadedSongs by repository.downloadedSongsFlow.collectAsState(initial = emptyList())
     var likedSongsCount by remember { mutableIntStateOf(0) }
+    var plusMenuExpanded by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var playlistToEdit by remember { mutableStateOf<Playlist?>(null) }
     var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
@@ -84,20 +90,74 @@ fun LibraryScreen(
                     color = AlaktraTextPrimary
                 )
 
-                IconButton(
-                    onClick = { showCreateDialog = true },
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(AlaktraSurface)
-                        .border(1.dp, AlaktraBorder, CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New Playlist",
-                        tint = AlaktraMint,
-                        modifier = Modifier.size(24.dp)
-                    )
+                Box {
+                    IconButton(
+                        onClick = { plusMenuExpanded = true },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(AlaktraSurface)
+                            .border(1.dp, AlaktraBorder, CircleShape)
+                            .testTag("library_plus_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = stringResource(R.string.library_add_options),
+                            tint = AlaktraMint,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = plusMenuExpanded,
+                        onDismissRequest = { plusMenuExpanded = false },
+                        modifier = Modifier
+                            .background(AlaktraCard)
+                            .border(1.dp, AlaktraBorder, RoundedCornerShape(14.dp))
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.menu_create_playlist),
+                                    color = AlaktraTextPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.PlaylistAdd,
+                                    contentDescription = null,
+                                    tint = AlaktraMint
+                                )
+                            },
+                            onClick = {
+                                plusMenuExpanded = false
+                                showCreateDialog = true
+                            },
+                            modifier = Modifier.testTag("menu_create_playlist")
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.menu_create_fuse),
+                                    color = AlaktraTextPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.MergeType,
+                                    contentDescription = null,
+                                    tint = AlaktraCyan
+                                )
+                            },
+                            onClick = {
+                                plusMenuExpanded = false
+                                onNavigateToFuse()
+                            },
+                            modifier = Modifier.testTag("menu_create_fuse")
+                        )
+                    }
                 }
             }
 
@@ -254,6 +314,9 @@ fun LibraryScreen(
                         contentType = { "library_playlist_row" }
                     ) { playlist ->
                             var menuExpanded by remember { mutableStateOf(false) }
+                            val isFusePlaylist = remember(playlist.name) {
+                                FuseCodeCodec.isFusePlaylistName(playlist.name)
+                            }
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -267,13 +330,24 @@ fun LibraryScreen(
                                     modifier = Modifier
                                         .size(64.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(AlaktraSurface)
-                                        .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
+                                        .then(
+                                            if (isFusePlaylist) {
+                                                Modifier.background(
+                                                    Brush.linearGradient(
+                                                        listOf(AlaktraViolet, AlaktraCyan, AlaktraMint)
+                                                    )
+                                                )
+                                            } else {
+                                                Modifier
+                                                    .background(AlaktraSurface)
+                                                    .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
+                                            }
+                                        )
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.QueueMusic,
+                                        imageVector = if (isFusePlaylist) Icons.Default.MergeType else Icons.Default.QueueMusic,
                                         contentDescription = null,
-                                        tint = AlaktraMint,
+                                        tint = if (isFusePlaylist) Color(0xFF041C12) else AlaktraMint,
                                         modifier = Modifier.size(32.dp)
                                     )
                                 }
@@ -291,9 +365,13 @@ fun LibraryScreen(
                                     )
                                     Spacer(modifier = Modifier.height(3.dp))
                                     Text(
-                                        text = "Playlist • ${playlist.songCount} tracks",
+                                        text = if (isFusePlaylist) {
+                                            "Fuse • ${playlist.songCount} tracks"
+                                        } else {
+                                            "Playlist • ${playlist.songCount} tracks"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = AlaktraTextSecondary
+                                        color = if (isFusePlaylist) AlaktraCyan else AlaktraTextSecondary
                                     )
                                 }
 

@@ -348,7 +348,7 @@ object ShapeAtlas {
             // Convert 2048x1530 RGBA sheet into a compact 3.13 MB CPU-only ALPHA_8 mask
             // and immediately release the temporary ARGB buffer.
             val alphaMask = decoded.extractAlpha()
-            if (alphaMask != null && alphaMask.width == decoded.width && alphaMask.height == decoded.height) {
+            if (alphaMask.width == decoded.width && alphaMask.height == decoded.height) {
                 decoded.recycle()
                 ShapeAtlasData(bitmap = alphaMask, isAlphaMask = true)
             } else {
@@ -360,10 +360,10 @@ object ShapeAtlas {
 
 internal const val TOTAL_SHAPE_SPECS = 295
 
-internal inline fun specX(packed: Long): Int = ((packed ushr 32) and 0xFFFL).toInt()
-internal inline fun specY(packed: Long): Int = ((packed ushr 20) and 0xFFFL).toInt()
-internal inline fun specW(packed: Long): Int = ((packed ushr 10) and 0x3FFL).toInt()
-internal inline fun specH(packed: Long): Int = (packed and 0x3FFL).toInt()
+internal fun specX(packed: Long): Int = ((packed ushr 32) and 0xFFFL).toInt()
+internal fun specY(packed: Long): Int = ((packed ushr 20) and 0xFFFL).toInt()
+internal fun specW(packed: Long): Int = ((packed ushr 10) and 0x3FFL).toInt()
+internal fun specH(packed: Long): Int = (packed and 0x3FFL).toInt()
 
 // Packed coordinates for all 295 shapes in shapes/atlas_compact.png (2048x1530).
 // Hollow sprite is at (x, y, w, h); solid sprite is at (x + w + 2, y, w, h).
