@@ -412,7 +412,7 @@
         if (window.location.origin && window.location.origin.startsWith("http")) {
             return window.location.origin;
         }
-        return "http://100.65.126.106:8000";
+        return "https://api.alaktracare.in";
     }
 
     function showToast(msg, isSuccess = true) {
@@ -429,7 +429,7 @@
     window.addEventListener('DOMContentLoaded', () => {
         document.getElementById('serverBase').value = (window.location.origin && window.location.origin.startsWith("http")) 
             ? window.location.origin 
-            : "http://100.65.126.106:8000";
+            : "https://api.alaktracare.in";
         loadSongs();
     });
 

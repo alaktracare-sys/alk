@@ -109,6 +109,8 @@ class ApiCacheManager(
     private val artistCache = BoundedLruCache<String, List<Song>>(ApiCacheConfig.MAX_ARTIST_ENTRIES, clock)
     private val recommendationsCache = BoundedLruCache<String, List<Song>>(ApiCacheConfig.MAX_RECOMMENDATIONS_ENTRIES, clock)
     private val recentlyPlayedCache = BoundedLruCache<String, List<Song>>(ApiCacheConfig.MAX_RECENTLY_PLAYED_ENTRIES, clock)
+    private val soundCapsuleSyncCache = BoundedLruCache<Int, Long>(ApiCacheConfig.MAX_HISTORY_CACHE_ENTRIES, clock)
+    private val syncedHistoryDigestCache = BoundedLruCache<Int, String>(ApiCacheConfig.MAX_HISTORY_CACHE_ENTRIES, clock)
 
     // ==========================================
     // SEARCH RESULTS CACHE (Short TTL)
@@ -259,6 +261,34 @@ class ApiCacheManager(
         recentlyPlayedCache.updateAll(songUpdater)
     }
 
+    // ==========================================
+    // LISTENING HISTORY & SOUND CAPSULE CACHE
+    // ==========================================
+
+    fun isSoundCapsuleSyncFresh(userId: Int): Boolean {
+        return soundCapsuleSyncCache.containsKey(userId)
+    }
+
+    fun markSoundCapsuleSynced(userId: Int) {
+        soundCapsuleSyncCache.put(userId, clock(), ApiCacheConfig.SOUND_CAPSULE_TTL_MS)
+    }
+
+    fun invalidateSoundCapsuleSync(userId: Int? = null) {
+        if (userId != null) {
+            soundCapsuleSyncCache.remove(userId)
+        } else {
+            soundCapsuleSyncCache.clear()
+        }
+    }
+
+    fun getLastSyncedHistoryDigest(userId: Int): String? {
+        return syncedHistoryDigestCache.get(userId)
+    }
+
+    fun putLastSyncedHistoryDigest(userId: Int, digest: String) {
+        syncedHistoryDigestCache.put(userId, digest, ApiCacheConfig.HISTORY_SYNC_DIGEST_TTL_MS)
+    }
+
     /**
      * Clear all in-memory caches on user logout.
      */
@@ -271,5 +301,7 @@ class ApiCacheManager(
         artistCache.clear()
         recommendationsCache.clear()
         recentlyPlayedCache.clear()
+        soundCapsuleSyncCache.clear()
+        syncedHistoryDigestCache.clear()
     }
 }

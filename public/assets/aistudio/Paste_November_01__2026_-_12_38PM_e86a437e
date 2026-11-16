@@ -1,0 +1,697 @@
+## 1. Context
+- My app is a Spotify-like music app: **Android, Kotlin, Jetpack Compose** (Material 3). Repo: https://github.com/alaktracare-sys/studiopp.git
+- `MainShell.kt` holds the floating bottom navigation (Home, Search, Library, Pins).
+- **Do not change** the existing player, queue, shuffle or loop logic. Only add the feature below and the small hooks it needs.
+
+## 2. What to build
+A "Your Sound Capsule" feature made of **4 screens**, plus the listening tracking that feeds them.
+
+### Screen 1 – Your Sound Capsule (home)
+- Top bar: back arrow on the left, title "Your Sound Capsule" centered (16 sp, ExtraBold, white).
+- Month row: month + year ("October 2026", 20 sp, ExtraBold) with an info icon. Tapping the month opens a dropdown to pick another month (last 12 months).
+- Card **Time listened**: label "Time listened", below it the big number in green, e.g. "1,248 minutes" (32 sp, ExtraBold). **Tapping it opens Screen 4.**
+- Two cards side by side (equal width):
+  - **Top artist** card: label, artist name, round artwork (96 dp), and a small outlined "New" pill at the bottom right (only when the artist was not listened to before this month). **Tapping it opens Screen 2.**
+  - **Top song** card: label, song title (max 2 lines), square artwork (96 dp, 4 dp corners), "New" pill (same rule). **Tapping it opens Screen 3.**
+- A card with a 3 x 3 collage of covers (top artists and songs artwork), 6 dp gaps, square tiles, the 6th tile (row 2, column 3) is round.
+
+### Screen 2 – Top 5 artists
+- Title "Top 5 artists", month row with the subtitle "Top 5".
+- Hero card for #1: round artwork 80 dp, "#1 · Top artist", name, minutes in green (24 sp), and "{plays} plays · {share}% of your listening".
+- Card with ranks #2 to #5: rank number, round artwork 48 dp, name, "{min} min · {plays} plays", the share % in green on the right, and under each row a thin progress bar (4 dp) relative to the #1 artist.
+- Footer card: "Together your top 5 artists made up X minutes, Y% of your listening."
+
+### Screen 3 – Top 5 songs
+- Same layout as Screen 2 with square artwork. Hero shows "{plays} plays" and "Artist · {min} minutes". List rows show "Artist · {plays} plays", minutes on the right, bars relative to the #1 song's plays. Footer: "Your top 5 songs were played N times for M minutes."
+
+### Screen 4 – Time listened
+- Total minutes card (same as home).
+- 3 stat tiles: **Daily average** (min per day), **Weekly average** (min per week), **Longest day** (minutes + weekday and date).
+- **Day by day** card: a bar chart with one bar per day of the month (100 dp high, 3 dp gaps, the highest day in bright green, others in the darker green), axis labels 1, 8, 15, 22, 29.
+- **When you listened** card: four time blocks, each with name, range, minutes, a progress bar and "{share}% of listening · {n} min a day":
+  - Night **21:00 – 03:00**
+  - Morning **03:00 – 09:00**
+  - Day **09:00 – 15:00**
+  - Evening **15:00 – 21:00**
+- **Every day** card: two columns listing each day ("Thu 1 … 45 min").
+
+Every sub-screen has a back arrow that returns to the home screen; the system back button must do the same.
+
+### Design tokens
+Background `#121212`, cards `#1F1F1F` with 8 dp corners, progress track `#2A2A2A`, green `#1ED760`, darker green `#2F8F53`, muted text `#B3B3B3`, white text. Screen padding 20 dp horizontally, 12 dp between cards. The text sizes above are the target. Keep the app's own font if it has one.
+
+## 3. Data and rules
+- Every time a track ends, is skipped or playback stops, **save one `PlayEvent`** (track id, title, artist id, artist name, artwork url, start time in ms, milliseconds actually played with pauses excluded). Store them in a Room table.
+- A **play** counts only when at least 30 seconds were played.
+- Time-of-day block = the local hour the track **started**.
+- Averages use the days that have passed when the month is the current month, otherwise all days of the month.
+- Top artists are ranked by total minutes. Top songs are ranked by plays, ties broken by minutes.
+- "New" = the artist/song has no event before the selected month.
+- All numbers are computed by `computeSoundCapsule(events, month)` in `SoundCapsuleStats.kt` (code below). Use it, do not rewrite the maths.
+
+## 4. How to integrate
+1. Add the two Kotlin files below to the project (change the `package` line to my app's package).
+2. Add one navigation destination "sound_capsule" that shows `SoundCapsuleHost(...)`. **Hide the floating bottom nav** while on this destination.
+3. Add an entry point: a row/button "Your Sound Capsule" on the Library or profile screen.
+4. Create the Room entity + DAO for `PlayEvent`, hook a listener into the player that writes events, and a ViewModel that exposes `SoundCapsuleStats` for the selected month (a `Flow` from the DAO mapped through `computeSoundCapsule`).
+5. In `CapsuleArtwork`, use the image loader the app already uses (Coil or other) so real covers show. Keep the gradient as the fallback when `url` is null.
+6. `java.time` needs minSdk 26 or core library desugaring; enable desugaring if minSdk is lower.
+7. Until real data exists, wire the destination to `sampleSoundCapsule()` first to check the UI, then switch to real data.
+
+## 5. Done when
+- [ ] The 4 screens look like the description and are fully scrollable on a small phone.
+- [ ] Time listened, Top artist and Top song cards open the right screens; back works everywhere.
+- [ ] Playing music for a minute creates a PlayEvent and the numbers change.
+- [ ] Switching month updates every screen.
+- [ ] The existing player, queue, shuffle, loop and bottom navigation still work.
+- [ ] The project builds with no new warnings about missing imports or desugaring.
+
+Return the changed files in full and list every file you touched.
+
+---
+
+## Code to add: `SoundCapsuleStats.kt`
+
+```kotlin
+package com.yourapp.soundcapsule // TODO: change to your app's package
+
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import kotlin.math.roundToInt
+
+/** One listening session of one track. Save one every time a track ends, is skipped or playback stops. */
+data class PlayEvent(
+    val trackId: String,
+    val trackTitle: String,
+    val artistId: String,
+    val artistName: String,
+    val artworkUrl: String?,
+    val startedAtMillis: Long, // System.currentTimeMillis() when the track started
+    val msPlayed: Long,        // how long it was actually played (pauses excluded)
+)
+
+/** A track counts as a "play" only after this much listening (same idea as Spotify's 30 s rule). */
+const val MIN_MS_FOR_PLAY = 30_000L
+
+enum class TimeBlock(val label: String, val range: String) {
+    NIGHT("Night", "21:00 – 03:00"),
+    MORNING("Morning", "03:00 – 09:00"),
+    DAY("Day", "09:00 – 15:00"),
+    EVENING("Evening", "15:00 – 21:00");
+
+    companion object {
+        fun forHour(hour: Int): TimeBlock = when (hour) {
+            in 3..8 -> MORNING
+            in 9..14 -> DAY
+            in 15..20 -> EVENING
+            else -> NIGHT // 21..23 and 0..2
+        }
+    }
+}
+
+data class ArtistStat(
+    val artistId: String,
+    val name: String,
+    val artworkUrl: String?,
+    val minutes: Int,
+    val plays: Int,
+    val sharePercent: Int,
+    val isNew: Boolean,
+)
+
+data class SongStat(
+    val trackId: String,
+    val title: String,
+    val artistName: String,
+    val artworkUrl: String?,
+    val plays: Int,
+    val minutes: Int,
+    val isNew: Boolean,
+)
+
+data class TimeBlockStat(val block: TimeBlock, val minutes: Int, val sharePercent: Int, val minutesPerDay: Int)
+
+data class SoundCapsuleStats(
+    val month: YearMonth,
+    val totalMinutes: Int,
+    val dailyMinutes: List<Int>, // index 0 = day 1 of the month
+    val dailyAverage: Int,
+    val weeklyAverage: Int,
+    val longestDayMinutes: Int,
+    val longestDay: Int,         // day of month, 0 when there is no listening
+    val timeBlocks: List<TimeBlockStat>, // always 4 items: night, morning, day, evening
+    val topArtists: List<ArtistStat>,    // up to 5, best first
+    val topSongs: List<SongStat>,        // up to 5, best first
+)
+
+/**
+ * Builds every number the Sound Capsule screens need.
+ * Pass ALL events up to the end of [month] (older ones are only used for the "New" badge).
+ */
+fun computeSoundCapsule(
+    events: List<PlayEvent>,
+    month: YearMonth,
+    zone: ZoneId = ZoneId.systemDefault(),
+): SoundCapsuleStats {
+    val daysInMonth = month.lengthOfMonth()
+    val startMs = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val endMs = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val inMonth = events.filter { it.startedAtMillis in startMs until endMs && it.msPlayed > 0 }
+
+    val dailyMs = LongArray(daysInMonth)
+    val blockMs = LongArray(TimeBlock.values().size)
+    for (e in inMonth) {
+        val t = Instant.ofEpochMilli(e.startedAtMillis).atZone(zone)
+        dailyMs[t.dayOfMonth - 1] += e.msPlayed
+        blockMs[TimeBlock.forHour(t.hour).ordinal] += e.msPlayed // block = hour the track STARTED
+    }
+    val totalMs = dailyMs.sum()
+    fun minutes(ms: Long) = (ms / 60_000.0).roundToInt()
+    fun percent(ms: Long) = if (totalMs == 0L) 0 else (ms * 100.0 / totalMs).roundToInt()
+
+    // For the running month, average over the days that have passed, not the whole month.
+    val today = LocalDate.now(zone)
+    val daysForAverage = if (month == YearMonth.from(today)) today.dayOfMonth else daysInMonth
+    val perDayMinutes = totalMs / 60_000.0 / daysForAverage
+
+    val longestIdx = dailyMs.indices.maxByOrNull { dailyMs[it] } ?: 0
+    val longestMs = dailyMs[longestIdx]
+
+    val artistsBefore = events.asSequence().filter { it.startedAtMillis < startMs }.map { it.artistId }.toHashSet()
+    val tracksBefore = events.asSequence().filter { it.startedAtMillis < startMs }.map { it.trackId }.toHashSet()
+
+    val topArtists = inMonth.groupBy { it.artistId }.map { (id, list) ->
+        val ms = list.sumOf { it.msPlayed }
+        ms to ArtistStat(
+            artistId = id,
+            name = list.first().artistName,
+            artworkUrl = list.firstNotNullOfOrNull { it.artworkUrl },
+            minutes = minutes(ms),
+            plays = list.count { it.msPlayed >= MIN_MS_FOR_PLAY },
+            sharePercent = percent(ms),
+            isNew = id !in artistsBefore,
+        )
+    }.sortedByDescending { it.first }.take(5).map { it.second }
+
+    val topSongs = inMonth.groupBy { it.trackId }.map { (id, list) ->
+        SongStat(
+            trackId = id,
+            title = list.first().trackTitle,
+            artistName = list.first().artistName,
+            artworkUrl = list.firstNotNullOfOrNull { it.artworkUrl },
+            plays = list.count { it.msPlayed >= MIN_MS_FOR_PLAY },
+            minutes = minutes(list.sumOf { it.msPlayed }),
+            isNew = id !in tracksBefore,
+        )
+    }.sortedWith(compareByDescending<SongStat> { it.plays }.thenByDescending { it.minutes }).take(5)
+
+    return SoundCapsuleStats(
+        month = month,
+        totalMinutes = minutes(totalMs),
+        dailyMinutes = dailyMs.map { minutes(it) },
+        dailyAverage = perDayMinutes.roundToInt(),
+        weeklyAverage = (perDayMinutes * 7).roundToInt(),
+        longestDayMinutes = minutes(longestMs),
+        longestDay = if (longestMs > 0) longestIdx + 1 else 0,
+        timeBlocks = TimeBlock.values().map { b ->
+            val ms = blockMs[b.ordinal]
+            TimeBlockStat(b, minutes(ms), percent(ms), (ms / 60_000.0 / daysForAverage).roundToInt())
+        },
+        topArtists = topArtists,
+        topSongs = topSongs,
+    )
+}
+
+/** Fake data matching the design mockup, so the screens can be tested before real tracking exists. */
+fun sampleSoundCapsule(): SoundCapsuleStats = SoundCapsuleStats(
+    month = YearMonth.of(2026, 10),
+    totalMinutes = 1248,
+    dailyMinutes = listOf(45, 33, 42, 56, 43, 28, 29, 44, 39, 41, 50, 46, 34, 25, 39, 44, 45, 44, 43, 41, 26, 32, 45, 52, 41, 37, 45, 31, 27, 42, 59),
+    dailyAverage = 40,
+    weeklyAverage = 282,
+    longestDayMinutes = 59,
+    longestDay = 31,
+    timeBlocks = listOf(
+        TimeBlockStat(TimeBlock.NIGHT, 215, 17, 7),
+        TimeBlockStat(TimeBlock.MORNING, 187, 15, 6),
+        TimeBlockStat(TimeBlock.DAY, 421, 34, 14),
+        TimeBlockStat(TimeBlock.EVENING, 425, 34, 14),
+    ),
+    topArtists = listOf(
+        ArtistStat("a1", "Artist One", null, 240, 61, 19, true),
+        ArtistStat("a2", "Artist Two", null, 186, 48, 15, false),
+        ArtistStat("a3", "Artist Three", null, 154, 39, 12, false),
+        ArtistStat("a4", "Artist Four", null, 121, 31, 10, false),
+        ArtistStat("a5", "Artist Five", null, 96, 25, 8, false),
+    ),
+    topSongs = listOf(
+        SongStat("s1", "Track Title One", "Artist One", null, 38, 122, true),
+        SongStat("s2", "Track Title Two", "Artist Two", null, 31, 99, false),
+        SongStat("s3", "Track Title Three", "Artist One", null, 27, 86, false),
+        SongStat("s4", "Track Title Four", "Artist Three", null, 22, 70, false),
+        SongStat("s5", "Track Title Five", "Artist Four", null, 19, 61, false),
+    ),
+)
+```
+
+## Code to add: `SoundCapsuleScreens.kt`
+
+```kotlin
+package com.yourapp.soundcapsule // TODO: change to your app's package
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.time.YearMonth
+import java.time.format.TextStyle as JTextStyle
+import java.util.Locale
+import kotlin.math.roundToInt
+
+// ---- design tokens (from the mockup) ----
+private val Bg = Color(0xFF121212)
+private val CardBg = Color(0xFF1F1F1F)
+private val Track = Color(0xFF2A2A2A)
+private val Green = Color(0xFF1ED760)
+private val DarkGreen = Color(0xFF2F8F53)
+private val Muted = Color(0xFFB3B3B3)
+
+private val Gradients = listOf(
+    listOf(Color(0xFF1ED760), Color(0xFF0B6B34)),
+    listOf(Color(0xFFFF6B6B), Color(0xFF7A1F3D)),
+    listOf(Color(0xFF6C8CFF), Color(0xFF26327A)),
+    listOf(Color(0xFFFFC94A), Color(0xFFA35A00)),
+    listOf(Color(0xFFB36CFF), Color(0xFF4A1F7A)),
+    listOf(Color(0xFF4AD8D0), Color(0xFF0F5A63)),
+    listOf(Color(0xFFFF8AD8), Color(0xFF7A2060)),
+    listOf(Color(0xFF9AA5B1), Color(0xFF3A4450)),
+)
+
+private enum class CapsuleScreen { Home, Time, Artists, Songs }
+
+/**
+ * Entry point. Put this in your nav graph as ONE destination: it handles its own 4 screens and the
+ * system back button. [onExit] is called when back is pressed on the first screen.
+ */
+@Composable
+fun SoundCapsuleHost(
+    stats: SoundCapsuleStats,
+    availableMonths: List<YearMonth>,
+    onMonthSelected: (YearMonth) -> Unit,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var screen by rememberSaveable { mutableStateOf(CapsuleScreen.Home) }
+    BackHandler(enabled = screen != CapsuleScreen.Home) { screen = CapsuleScreen.Home }
+    Box(modifier.fillMaxSize().background(Bg)) {
+        when (screen) {
+            CapsuleScreen.Home -> HomeScreen(
+                stats, availableMonths, onMonthSelected, onExit,
+                onTime = { screen = CapsuleScreen.Time },
+                onArtists = { screen = CapsuleScreen.Artists },
+                onSongs = { screen = CapsuleScreen.Songs },
+            )
+            CapsuleScreen.Time -> TimeScreen(stats) { screen = CapsuleScreen.Home }
+            CapsuleScreen.Artists -> ArtistsScreen(stats) { screen = CapsuleScreen.Home }
+            CapsuleScreen.Songs -> SongsScreen(stats) { screen = CapsuleScreen.Home }
+        }
+    }
+}
+
+// ================= screens =================
+
+@Composable
+private fun HomeScreen(
+    stats: SoundCapsuleStats,
+    months: List<YearMonth>,
+    onMonthSelected: (YearMonth) -> Unit,
+    onBack: () -> Unit,
+    onTime: () -> Unit,
+    onArtists: () -> Unit,
+    onSongs: () -> Unit,
+) {
+    CapsuleScaffold("Your Sound Capsule", onBack) {
+        MonthRow(stats.month, null, months, onMonthSelected)
+
+        Column(Modifier.fillMaxWidth().card(onTime).padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Label("Time listened")
+            Label("${fmt(stats.totalMinutes)} minutes", 32, FontWeight.ExtraBold, Green)
+        }
+
+        val artist = stats.topArtists.firstOrNull()
+        val song = stats.topSongs.firstOrNull()
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HighlightCard("Top artist", artist?.name ?: "–", artist?.artworkUrl, CircleShape, 0,
+                artist?.isNew == true, Modifier.weight(1f), onArtists)
+            HighlightCard("Top song", song?.title ?: "–", song?.artworkUrl, RoundedCornerShape(4.dp), 2,
+                song?.isNew == true, Modifier.weight(1f), onSongs)
+        }
+
+        // Collage of covers: 3 x 3, the 6th tile is round like in the mockup.
+        val covers = stats.topArtists.map { it.artworkUrl } + stats.topSongs.map { it.artworkUrl }
+        Column(Modifier.fillMaxWidth().card().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (r in 0 until 3) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (c in 0 until 3) {
+                        val i = r * 3 + c
+                        CapsuleArtwork(
+                            covers.getOrNull(i % maxOf(covers.size, 1)), i,
+                            if (i == 5) CircleShape else RoundedCornerShape(4.dp),
+                            Modifier.weight(1f).aspectRatio(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistsScreen(stats: SoundCapsuleStats, onBack: () -> Unit) {
+    CapsuleScaffold("Top 5 artists", onBack) {
+        MonthRow(stats.month, "Top 5")
+        val top = stats.topArtists
+        if (top.isEmpty()) { EmptyNote(); return@CapsuleScaffold }
+        val first = top.first()
+        HeroCard("#1 · Top artist", first.name, "${fmt(first.minutes)} minutes",
+            "${first.plays} plays · ${first.sharePercent}% of your listening") {
+            CapsuleArtwork(first.artworkUrl, 0, CircleShape, Modifier.size(80.dp))
+        }
+        RankedList(top.drop(1).mapIndexed { i, a ->
+            RankRow(i + 2, a.name, "${a.minutes} min · ${a.plays} plays", "${a.sharePercent}%",
+                a.minutes.toFloat() / first.minutes.coerceAtLeast(1), a.artworkUrl, true)
+        })
+        val sum = top.sumOf { it.minutes }
+        val pct = if (stats.totalMinutes > 0) (sum * 100f / stats.totalMinutes).roundToInt() else 0
+        Footer("Together your top ${top.size} artists made up ${fmt(sum)} minutes, $pct% of your listening.")
+    }
+}
+
+@Composable
+private fun SongsScreen(stats: SoundCapsuleStats, onBack: () -> Unit) {
+    CapsuleScaffold("Top 5 songs", onBack) {
+        MonthRow(stats.month, "Top 5")
+        val top = stats.topSongs
+        if (top.isEmpty()) { EmptyNote(); return@CapsuleScaffold }
+        val first = top.first()
+        HeroCard("#1 · Top song", first.title, "${first.plays} plays",
+            "${first.artistName} · ${first.minutes} minutes") {
+            CapsuleArtwork(first.artworkUrl, 2, RoundedCornerShape(6.dp), Modifier.size(80.dp))
+        }
+        RankedList(top.drop(1).mapIndexed { i, s ->
+            RankRow(i + 2, s.title, "${s.artistName} · ${s.plays} plays", "${s.minutes} min",
+                s.plays.toFloat() / first.plays.coerceAtLeast(1), s.artworkUrl, false)
+        })
+        Footer("Your top ${top.size} songs were played ${top.sumOf { it.plays }} times for ${top.sumOf { it.minutes }} minutes.")
+    }
+}
+
+@Composable
+private fun TimeScreen(stats: SoundCapsuleStats, onBack: () -> Unit) {
+    CapsuleScaffold("Time listened", onBack) {
+        MonthRow(stats.month, null)
+        Column(Modifier.fillMaxWidth().card().padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Label("Time listened")
+            Label("${fmt(stats.totalMinutes)} minutes", 32, FontWeight.ExtraBold, Green)
+        }
+        if (stats.totalMinutes == 0) { EmptyNote(); return@CapsuleScaffold }
+
+        val longest = if (stats.longestDay > 0) {
+            val d = stats.month.atDay(stats.longestDay)
+            "${d.dayOfWeek.getDisplayName(JTextStyle.SHORT, Locale.getDefault())} ${stats.longestDay}"
+        } else ""
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatTile("Daily average", "${stats.dailyAverage} min", "per day", Modifier.weight(1f))
+            StatTile("Weekly average", "${stats.weeklyAverage} min", "per week", Modifier.weight(1f))
+            StatTile("Longest day", "${stats.longestDayMinutes} min", longest, Modifier.weight(1f))
+        }
+
+        // Day by day bars
+        val max = (stats.dailyMinutes.maxOrNull() ?: 0).coerceAtLeast(1)
+        Column(Modifier.fillMaxWidth().card().padding(16.dp)) {
+            Label("Day by day", 16, FontWeight.ExtraBold)
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth().height(100.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                stats.dailyMinutes.forEach { m ->
+                    Box(
+                        Modifier.weight(1f).fillMaxHeight((m.toFloat() / max).coerceIn(0.02f, 1f))
+                            .clip(RoundedCornerShape(3.dp)).background(if (m == max) Green else DarkGreen)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                listOf(1, 8, 15, 22, 29).filter { it <= stats.dailyMinutes.size }.forEach { Label("$it", 12, FontWeight.Normal, Muted) }
+            }
+        }
+
+        // Time of day
+        val maxBlock = (stats.timeBlocks.maxOfOrNull { it.minutes } ?: 0).coerceAtLeast(1)
+        Column(Modifier.fillMaxWidth().card().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column {
+                Label("When you listened", 16, FontWeight.ExtraBold)
+                Label("Minutes by time of day", 13, FontWeight.Normal, Muted)
+            }
+            stats.timeBlocks.forEach { b ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Label(b.block.label, 15)
+                            Spacer(Modifier.width(6.dp))
+                            Label(b.block.range, 13, FontWeight.Normal, Muted)
+                        }
+                        Label("${b.minutes} min", 14, FontWeight.ExtraBold)
+                    }
+                    Bar(b.minutes.toFloat() / maxBlock, if (b.minutes == maxBlock) Green else DarkGreen, 8)
+                    Label("${b.sharePercent}% of listening · ${b.minutesPerDay} min a day", 12, FontWeight.Normal, Muted)
+                }
+            }
+        }
+
+        // Every day
+        Column(Modifier.fillMaxWidth().card().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Label("Every day", 16, FontWeight.ExtraBold)
+            Spacer(Modifier.height(8.dp))
+            stats.dailyMinutes.withIndex().chunked(2).forEach { pair ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    pair.forEach { (i, m) ->
+                        val day = i + 1
+                        val wd = stats.month.atDay(day).dayOfWeek.getDisplayName(JTextStyle.SHORT, Locale.getDefault())
+                        Row(Modifier.weight(1f).height(28.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Label("$wd $day", 13, FontWeight.Normal, Muted)
+                            Label("$m min", 13)
+                        }
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+// ================= building blocks =================
+
+/**
+ * Replace the body with your app's image loader so real covers show up, e.g. with Coil:
+ *   AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier.clip(shape))
+ * The gradient is only a placeholder.
+ */
+@Composable
+fun CapsuleArtwork(url: String?, seed: Int, shape: Shape, modifier: Modifier = Modifier) {
+    val colors = Gradients[seed.mod(Gradients.size)]
+    Box(modifier.clip(shape).background(Brush.linearGradient(colors)))
+}
+
+@Composable
+private fun CapsuleScaffold(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.fillMaxWidth().height(44.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Label(title, 16, FontWeight.ExtraBold, modifier = Modifier.align(Alignment.Center))
+        }
+        content()
+    }
+}
+
+@Composable
+private fun MonthRow(
+    month: YearMonth,
+    subtitle: String?,
+    months: List<YearMonth> = emptyList(),
+    onSelect: (YearMonth) -> Unit = {},
+) {
+    var open by remember { mutableStateOf(false) }
+    val canPick = months.size > 1
+    Box {
+        Row(Modifier.height(28.dp).clickable(enabled = canPick) { open = true }, verticalAlignment = Alignment.CenterVertically) {
+            Label(monthTitle(month), 20, FontWeight.ExtraBold)
+            Spacer(Modifier.width(8.dp))
+            if (subtitle != null) Label(subtitle, 14, FontWeight.SemiBold, Muted)
+            else Icon(Icons.Outlined.Info, contentDescription = "Info", tint = Muted, modifier = Modifier.size(18.dp))
+            if (canPick) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose month", tint = Color.White)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            months.forEach { m -> DropdownMenuItem(text = { Text(monthTitle(m)) }, onClick = { open = false; onSelect(m) }) }
+        }
+    }
+}
+
+@Composable
+private fun HighlightCard(
+    label: String, name: String, url: String?, shape: Shape, seed: Int,
+    isNew: Boolean, modifier: Modifier, onClick: () -> Unit,
+) {
+    Column(modifier.card(onClick).padding(12.dp)) {
+        Label(label, 12, color = Muted)
+        Label(name, 14, FontWeight.ExtraBold, maxLines = 2, modifier = Modifier.heightIn(min = 36.dp).padding(top = 2.dp))
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+            CapsuleArtwork(url, seed, shape, Modifier.size(96.dp))
+            if (isNew) Label("New", 11, modifier = Modifier.border(1.dp, Muted, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun HeroCard(label: String, title: String, big: String, sub: String, art: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().card().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        art()
+        Column(Modifier.weight(1f)) {
+            Label(label, 12, color = Muted)
+            Label(title, 20, FontWeight.ExtraBold, maxLines = 2)
+            Label(big, 24, FontWeight.ExtraBold, Green)
+            Label(sub, 13, FontWeight.Normal, Muted)
+        }
+    }
+}
+
+private data class RankRow(val rank: Int, val title: String, val sub: String, val right: String, val fraction: Float, val url: String?, val round: Boolean)
+
+@Composable
+private fun RankedList(rows: List<RankRow>) {
+    Column(Modifier.fillMaxWidth().card().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        rows.forEach { r ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Label("${r.rank}", 16, FontWeight.ExtraBold, Muted, Modifier.width(18.dp))
+                    Spacer(Modifier.width(12.dp))
+                    CapsuleArtwork(r.url, r.rank, if (r.round) CircleShape else RoundedCornerShape(4.dp), Modifier.size(48.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Label(r.title, 15, maxLines = 1)
+                        Label(r.sub, 13, FontWeight.Normal, Muted, maxLines = 1)
+                    }
+                    Label(r.right, 14, FontWeight.ExtraBold, Green)
+                }
+                Bar(r.fraction, Green)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatTile(label: String, value: String, sub: String, modifier: Modifier) {
+    Column(modifier.card().padding(12.dp)) {
+        Label(label, 12, color = Muted)
+        Label(value, 20, FontWeight.ExtraBold, maxLines = 1)
+        Label(sub.ifEmpty { " " }, 12, FontWeight.Normal, Muted)
+    }
+}
+
+@Composable
+private fun Bar(fraction: Float, fill: Color, heightDp: Int = 4) {
+    val h = heightDp.dp
+    Box(Modifier.fillMaxWidth().height(h).clip(RoundedCornerShape(h / 2)).background(Track)) {
+        Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).height(h).background(fill))
+    }
+}
+
+@Composable
+private fun Footer(text: String) {
+    Label(text, 13, FontWeight.Normal, Muted, Modifier.fillMaxWidth().card().padding(horizontal = 16.dp, vertical = 14.dp))
+}
+
+@Composable
+private fun EmptyNote() {
+    Label("No listening recorded for this month yet.", 14, FontWeight.Normal, Muted, Modifier.fillMaxWidth().card().padding(16.dp))
+}
+
+@Composable
+private fun Label(
+    text: String,
+    size: Int = 13,
+    weight: FontWeight = FontWeight.SemiBold,
+    color: Color = Color.White,
+    modifier: Modifier = Modifier,
+    maxLines: Int = Int.MAX_VALUE,
+) {
+    Text(text, modifier, color = color, fontSize = size.sp, fontWeight = weight, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
+
+private fun Modifier.card(onClick: (() -> Unit)? = null): Modifier {
+    val base = this.clip(RoundedCornerShape(8.dp)).background(CardBg)
+    return if (onClick != null) base.clickable(onClick = onClick) else base
+}
+
+private fun fmt(n: Int): String = "%,d".format(n)
+
+private fun monthTitle(m: YearMonth): String =
+    "${m.month.getDisplayName(JTextStyle.FULL, Locale.getDefault())} ${m.year}"
+
+@Preview(showBackground = true, widthDp = 390, heightDp = 844)
+@Composable
+private fun SoundCapsulePreview() {
+    SoundCapsuleHost(sampleSoundCapsule(), listOf(YearMonth.of(2026, 10)), {}, {})
+}
+```

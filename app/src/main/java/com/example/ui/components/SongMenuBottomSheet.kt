@@ -13,9 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.model.Song
 import com.example.ui.theme.*
 
@@ -24,11 +27,13 @@ import com.example.ui.theme.*
 fun SongMenuBottomSheet(
     song: Song,
     isDownloaded: Boolean,
+    allowDownload: Boolean = true,
     onDismiss: () -> Unit,
     onAddToQueue: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onToggleDownload: () -> Unit,
     onPlayNext: () -> Unit = {},
+    onViewArtist: (() -> Unit)? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     ModalBottomSheet(
@@ -118,6 +123,20 @@ fun SongMenuBottomSheet(
                 }
             )
 
+            // Action: View Artist(s)
+            if (onViewArtist != null) {
+                MenuActionRow(
+                    icon = if (song.hasMultipleArtists) Icons.Default.Groups else Icons.Default.Person,
+                    title = if (song.hasMultipleArtists) "View Artists (${song.artists.size})" else stringResource(R.string.menu_view_artist),
+                    tint = AlaktraCyan,
+                    testTag = "song_menu_view_artist",
+                    onClick = {
+                        onDismiss()
+                        onViewArtist()
+                    }
+                )
+            }
+
             // Action: Remove from this Playlist (if inside custom playlist)
             if (onRemoveFromPlaylist != null) {
                 MenuActionRow(
@@ -131,16 +150,18 @@ fun SongMenuBottomSheet(
                 )
             }
 
-            // Action: Download / Remove Download
-            MenuActionRow(
-                icon = if (isDownloaded) Icons.Default.DeleteOutline else Icons.Default.ArrowDownward,
-                title = if (isDownloaded) "Remove Download" else "Download Offline",
-                tint = if (isDownloaded) Color(0xFFFF5252) else AlaktraMint,
-                onClick = {
-                    onToggleDownload()
-                    onDismiss()
-                }
-            )
+            // Action: Download / Remove Download (hidden for non-downloadable Fuse playlists)
+            if (allowDownload) {
+                MenuActionRow(
+                    icon = if (isDownloaded) Icons.Default.DeleteOutline else Icons.Default.ArrowDownward,
+                    title = if (isDownloaded) "Remove Download" else "Download Offline",
+                    tint = if (isDownloaded) Color(0xFFFF5252) else AlaktraMint,
+                    onClick = {
+                        onToggleDownload()
+                        onDismiss()
+                    }
+                )
+            }
 
             Spacer(modifier = Modifier.height(28.dp))
         }
@@ -153,12 +174,14 @@ private fun MenuActionRow(
     icon: ImageVector,
     title: String,
     tint: Color = AlaktraTextPrimary,
+    testTag: String? = null,
     onClick: () -> Unit
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
+            .let { if (testTag != null) it.testTag(testTag) else it }
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp, horizontal = 8.dp)

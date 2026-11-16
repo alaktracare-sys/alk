@@ -24,9 +24,46 @@ This folder contains everything needed to self-host your own **Alaktra Music Ser
 3. If running on a desktop, the modern Dark Mode GUI opens. If running on a headless server or over SSH, it automatically runs in an interactive colored terminal menu!
 4. Press **Ctrl+C** anytime to stop.
 
+## ☁️ Streaming with Cloudflare Tunnel & Custom Domain (Active Setup: https://api.alaktracare.in)
+
+You can run your Alaktra Music server globally with your custom GoDaddy domain and Cloudflare Tunnel (`cloudflared`). This gives you:
+- **Zero Port Forwarding**: No open router ports needed.
+- **Global High-Speed CDN & SSL**: Fully encrypted `https://` with WebSocket `wss://` support.
+- **No VPN client required on your phone**: Works natively on any cellular or Wi-Fi network worldwide.
+
+### Quick Setup with `cloudflared`:
+1. **Download cloudflared**:
+   - **Windows**: Download from [Cloudflare Releases](https://github.com/cloudflare/cloudflared/releases)
+   - **Linux / Raspberry Pi**: `curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | ...` or `brew install cloudflare/cloudflare/cloudflared`
+2. **Authenticate & Create Tunnel**:
+   ```bash
+   cloudflared tunnel login
+   cloudflared tunnel create alaktra-tunnel
+   ```
+3. **Route your DNS to your Custom Domain**:
+   ```bash
+   cloudflared tunnel route dns alaktra-tunnel api.alaktracare.in
+   ```
+4. **Configure `~/.cloudflared/config.yml`**:
+   ```yaml
+   tunnel: <TUNNEL_UUID>
+   credentials-file: /path/to/<TUNNEL_UUID>.json
+   ingress:
+     - hostname: api.alaktracare.in
+       service: http://localhost:8000
+     - service: http_status:404
+   ```
+5. **Run the Tunnel**:
+   ```bash
+   cloudflared tunnel run alaktra-tunnel
+   ```
+6. **Access Upload Panel & App**:
+   - Web Upload Panel: `https://api.alaktracare.in/`
+   - Android App: Already pre-configured by default to `https://api.alaktracare.in/`!
+
 ---
 
-## 🌐 Streaming Anywhere in the World with Tailscale (Recommended)
+## 🌐 Streaming with Tailscale (Alternative Option)
 
 Tailscale creates a free, secure, private network between your PC and your phone. You **do not** need a static IP, a public IP, or router port-forwarding.
 

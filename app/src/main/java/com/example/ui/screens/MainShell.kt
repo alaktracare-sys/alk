@@ -44,12 +44,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.audio.AudioController
+import com.example.data.fuse.FuseCodeCodec
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.components.ArtistCreditsBottomSheet
 import com.example.ui.components.MiniPlayer
 import com.example.ui.responsive.rememberWindowSizeInfo
+import com.example.ui.screens.artist.ArtistProfileScreen
+import com.example.ui.screens.artist.ArtistStudioScreen
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.library.LibraryScreen
 import com.example.ui.screens.equalizer.EqualizerScreen
@@ -57,16 +62,23 @@ import com.example.ui.screens.fuse.FuseScreen
 import com.example.ui.screens.player.PlayerScreen
 import com.example.ui.screens.playlist.AddSongToPlaylistScreen
 import com.example.ui.screens.playlist.PlaylistScreen
-import com.example.ui.screens.profile.FullListeningHistorySheet
 import com.example.ui.screens.profile.ProfileScreen
 import com.example.ui.screens.search.SearchScreen
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.soundcapsule.SoundCapsuleHost
+import com.example.soundcapsule.SoundCapsuleViewModel
 import com.example.ui.screens.pins.LocationPinsScreen
 import com.example.ui.screens.pins.PinsSessionCache
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
+const val ROUTE_SOUND_CAPSULE = "sound_capsule"
+const val ROUTE_ARTIST_PROFILE = "artist_profile"
+const val ROUTE_ARTIST_STUDIO = "artist_studio"
+
 enum class Screen {
-    HOME, SEARCH, LIBRARY, PINS, PLAYLIST, ADD_SONGS, FUSE, PROFILE, EQUALIZER, HISTORY
+    HOME, SEARCH, LIBRARY, PINS, PLAYLIST, ADD_SONGS, FUSE, CLUB, PROFILE, EQUALIZER, SOUND_CAPSULE, ARTIST_PROFILE, ARTIST_STUDIO
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,15 +95,31 @@ fun MainShell(
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var playlistOriginScreen by remember { mutableStateOf(Screen.HOME) }
     var playlistOriginTab by remember { mutableIntStateOf(0) }
+    var soundCapsuleOriginScreen by remember { mutableStateOf(Screen.LIBRARY) }
+    var soundCapsuleOriginTab by remember { mutableIntStateOf(2) }
     var activePlaylistId by remember { mutableIntStateOf(1) }
     var activePlaylistName by remember { mutableStateOf("Playlist") }
+    var activeClubId by remember { mutableStateOf<Int?>(null) }
+    var activeArtistId by remember { mutableIntStateOf(0) }
+    var activeArtistName by remember { mutableStateOf("") }
+    var artistOriginScreen by remember { mutableStateOf(Screen.HOME) }
+    var artistOriginTab by remember { mutableIntStateOf(0) }
+    var artistStudioOriginScreen by remember { mutableStateOf(Screen.PROFILE) }
+    var artistStudioOriginTab by remember { mutableIntStateOf(0) }
+    var songForArtistCreditsSheet by remember { mutableStateOf<Song?>(null) }
     var showFullPlayer by remember { mutableStateOf(false) }
     var pinsRefreshTrigger by remember { mutableIntStateOf(0) }
 
-    // Playlist selector sheet (for "Add to Playlist" action)
+    // Playlist selector sheet (for "Add to Playlist" action — excludes non-editable Fuse playlists)
     var songForPlaylistSelection by remember { mutableStateOf<Song?>(null) }
     var availablePlaylists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
     val scope = rememberCoroutineScope()
+
+    suspend fun loadEditableUserPlaylists(): List<Playlist> {
+        return repository.getPlaylists().filter { pl ->
+            pl.isEditable && !pl.isFuse && !FuseCodeCodec.isFusePlaylistName(pl.name)
+        }
+    }
 
     val playbackStateHolder = audioController.playbackState.collectAsState()
     val hasCurrentSong by remember {
@@ -136,9 +164,9 @@ fun MainShell(
                 currentTab = 2
                 currentScreen = Screen.LIBRARY
             }
-            currentScreen == Screen.HISTORY -> {
-                currentScreen = Screen.HOME
-                currentTab = 0
+            currentScreen == Screen.CLUB -> {
+                currentTab = 2
+                currentScreen = Screen.LIBRARY
             }
             currentScreen == Screen.PROFILE -> {
                 currentScreen = Screen.HOME
@@ -148,11 +176,68 @@ fun MainShell(
                 currentScreen = Screen.HOME
                 currentTab = 0
             }
+            currentScreen == Screen.SOUND_CAPSULE -> {
+                currentScreen = soundCapsuleOriginScreen
+                currentTab = soundCapsuleOriginTab
+            }
+            currentScreen == Screen.ARTIST_STUDIO -> {
+                currentScreen = artistStudioOriginScreen
+                currentTab = artistStudioOriginTab
+            }
+            currentScreen == Screen.ARTIST_PROFILE -> {
+                currentScreen = artistOriginScreen
+                currentTab = artistOriginTab
+            }
             currentTab != 0 -> {
                 currentTab = 0
                 currentScreen = Screen.HOME
             }
         }
+    }
+
+    fun openSoundCapsule() {
+        audioController.flushLiveSessionForUi()
+        if (currentScreen != Screen.SOUND_CAPSULE) {
+            soundCapsuleOriginScreen = currentScreen
+            soundCapsuleOriginTab = currentTab
+        }
+        currentScreen = Screen.SOUND_CAPSULE
+    }
+
+    fun openArtistProfile(artistId: Int, artistName: String = "") {
+        showFullPlayer = false
+        if (currentScreen != Screen.ARTIST_PROFILE && currentScreen != Screen.ARTIST_STUDIO) {
+            artistOriginScreen = currentScreen
+            artistOriginTab = currentTab
+        }
+        activeArtistId = artistId
+        activeArtistName = artistName
+        currentScreen = Screen.ARTIST_PROFILE
+    }
+
+    fun openArtistByHint(artistIdHint: Int?, artistName: String) {
+        scope.launch {
+            val resolved = repository.resolveArtistId(artistIdHint = artistIdHint, artistNameHint = artistName) ?: (artistIdHint ?: 0)
+            openArtistProfile(resolved, artistName)
+        }
+    }
+
+    fun openArtistForSong(song: Song) {
+        if (song.hasMultipleArtists) {
+            songForArtistCreditsSheet = song
+        } else {
+            val credit = song.primaryArtistCredit
+            openArtistByHint(credit?.id ?: song.primaryArtistId, credit?.name ?: song.primaryArtistName)
+        }
+    }
+
+    fun openArtistStudio() {
+        showFullPlayer = false
+        if (currentScreen != Screen.ARTIST_STUDIO) {
+            artistStudioOriginScreen = currentScreen
+            artistStudioOriginTab = currentTab
+        }
+        currentScreen = Screen.ARTIST_STUDIO
     }
 
     fun openPlaylist(id: Int, name: String) {
@@ -178,9 +263,12 @@ fun MainShell(
         Screen.PINS,
         Screen.PLAYLIST,
         Screen.FUSE,
+        Screen.CLUB,
         Screen.PROFILE,
         Screen.EQUALIZER,
-        Screen.HISTORY
+        Screen.SOUND_CAPSULE,
+        Screen.ARTIST_PROFILE,
+        Screen.ARTIST_STUDIO
     )
     val hasBottomBar = !useNavRail && !showFullPlayer && currentScreen in screensWithBottomNav
 
@@ -199,143 +287,164 @@ fun MainShell(
                     .consumeWindowInsets(PaddingValues(top = padding.calculateTopPadding()))
             ) {
                 if (useNavRail && !showFullPlayer && currentScreen in screensWithBottomNav) {
-                    NavigationRail(
-                        containerColor = AlaktraSurface.copy(alpha = 0.25f),
-                        contentColor = AlaktraTextPrimary,
-                        header = {
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(AlaktraMint.copy(alpha = 0.15f))
-                                    .border(1.dp, AlaktraMint.copy(alpha = 0.4f), CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.GraphicEq,
-                                    contentDescription = "Alaktra",
-                                    tint = AlaktraMint,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(20.dp))
-                        },
+                    Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .border(width = 0.5.dp, color = AlaktraBorder.copy(alpha = 0.30f))
+                            .padding(start = 12.dp, end = 6.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        NavigationRailItem(
-                            selected = currentTab == 0 && currentScreen == Screen.HOME,
-                            onClick = {
-                                currentTab = 0
-                                currentScreen = Screen.HOME
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == 0 && currentScreen == Screen.HOME) Icons.Default.Home else Icons.Outlined.Home,
-                                    contentDescription = "Home"
-                                )
-                            },
-                            label = {
-                                Text(
-                                    "Home",
-                                    fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = AlaktraMint,
-                                selectedTextColor = AlaktraMint,
-                                unselectedIconColor = AlaktraTextMuted,
-                                unselectedTextColor = AlaktraTextMuted,
-                                indicatorColor = AlaktraMint.copy(alpha = 0.15f)
-                            )
-                        )
+                        val navPillShape = RoundedCornerShape(32.dp)
+                        Surface(
+                            modifier = Modifier
+                                .width(70.dp)
+                                .wrapContentHeight()
+                                .shadow(
+                                    elevation = 20.dp,
+                                    shape = navPillShape,
+                                    spotColor = Color.Black.copy(alpha = 0.70f),
+                                    ambientColor = Color.Black.copy(alpha = 0.50f)
+                                ),
+                            shape = navPillShape,
+                            color = Color(0xFF000000).copy(alpha = 0.85f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                            tonalElevation = 0.dp
+                        ) {
+                            val isRailHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
+                                (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
+                                (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0)) ||
+                                (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 0)
 
-                        NavigationRailItem(
-                            selected = currentTab == 1 && currentScreen == Screen.SEARCH,
-                            onClick = {
-                                currentTab = 1
-                                currentScreen = Screen.SEARCH
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == 1 && currentScreen == Screen.SEARCH) Icons.Default.Search else Icons.Outlined.Search,
-                                    contentDescription = "Search"
-                                )
-                            },
-                            label = {
-                                Text(
-                                    "Search",
-                                    fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = AlaktraMint,
-                                selectedTextColor = AlaktraMint,
-                                unselectedIconColor = AlaktraTextMuted,
-                                unselectedTextColor = AlaktraTextMuted,
-                                indicatorColor = AlaktraMint.copy(alpha = 0.15f)
-                            )
-                        )
+                            val isRailSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
+                                (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1) ||
+                                (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 1)
 
-                        NavigationRailItem(
-                            selected = currentTab == 2 && currentScreen == Screen.LIBRARY,
-                            onClick = {
-                                currentTab = 2
-                                currentScreen = Screen.LIBRARY
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == 2 && currentScreen == Screen.LIBRARY) Icons.Default.LibraryMusic else Icons.Outlined.LibraryMusic,
-                                    contentDescription = "Library"
-                                )
-                            },
-                            label = {
-                                Text(
-                                    "Library",
-                                    fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = AlaktraMint,
-                                selectedTextColor = AlaktraMint,
-                                unselectedIconColor = AlaktraTextMuted,
-                                unselectedTextColor = AlaktraTextMuted,
-                                indicatorColor = AlaktraMint.copy(alpha = 0.15f)
-                            )
-                        )
+                            val isRailLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
+                                currentScreen == Screen.FUSE ||
+                                currentScreen == Screen.CLUB ||
+                                (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2) ||
+                                (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 2)
 
-                        NavigationRailItem(
-                            selected = currentTab == 3 && currentScreen == Screen.PINS,
-                            onClick = {
-                                if (currentScreen == Screen.PINS && currentTab == 3) {
-                                    pinsRefreshTrigger++
-                                } else {
-                                    currentTab = 3
-                                    currentScreen = Screen.PINS
+                            val isRailPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
+                                (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3) ||
+                                (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 3)
+
+                            val activeRailIndex = when {
+                                isRailHomeSelected -> 0
+                                isRailSearchSelected -> 1
+                                isRailLibrarySelected -> 2
+                                isRailPinsSelected -> 3
+                                else -> 0
+                            }
+
+                            val animatedRailIndex by animateFloatAsState(
+                                targetValue = activeRailIndex.toFloat(),
+                                animationSpec = spring(
+                                    dampingRatio = 0.80f,
+                                    stiffness = 280f
+                                ),
+                                label = "landscape_rail_slide"
+                            )
+
+                            val slotHeight = 58.dp
+                            Box(
+                                modifier = Modifier
+                                    .padding(vertical = 6.dp, horizontal = 5.dp),
+                                contentAlignment = Alignment.TopStart
+                            ) {
+                                // Sliding mint gel pill
+                                Box(
+                                    modifier = Modifier
+                                        .layout { measurable, constraints ->
+                                            val slotHeightPx = slotHeight.toPx()
+                                            val pillHeightPx = 52.dp.roundToPx()
+                                            val pillWidthPx = constraints.maxWidth - 4.dp.roundToPx()
+                                            val topOffsetPx = ((slotHeightPx * animatedRailIndex) + (slotHeightPx - pillHeightPx) / 2f).toInt()
+                                            val placeable = measurable.measure(
+                                                Constraints.fixed(pillWidthPx.coerceAtLeast(0), pillHeightPx)
+                                            )
+                                            layout(constraints.maxWidth, (slotHeightPx * 4).toInt()) {
+                                                placeable.placeRelative(
+                                                    x = 2.dp.roundToPx(),
+                                                    y = topOffsetPx
+                                                )
+                                            }
+                                        }
+                                        .clip(RoundedCornerShape(22.dp))
+                                        .background(AlaktraMint.copy(alpha = 0.22f))
+                                        .border(1.dp, AlaktraMint.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
+                                )
+
+                                Column(
+                                    modifier = Modifier.width(60.dp)
+                                ) {
+                                    LandscapePelletNavItem(
+                                        selected = isRailHomeSelected,
+                                        onClick = {
+                                            if (currentScreen != Screen.HOME || currentTab != 0) {
+                                                currentTab = 0
+                                                currentScreen = Screen.HOME
+                                            }
+                                        },
+                                        icon = Icons.Outlined.Home,
+                                        selectedIcon = Icons.Default.Home,
+                                        label = "Home",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(slotHeight)
+                                    )
+
+                                    LandscapePelletNavItem(
+                                        selected = isRailSearchSelected,
+                                        onClick = {
+                                            if (currentScreen != Screen.SEARCH || currentTab != 1) {
+                                                currentTab = 1
+                                                currentScreen = Screen.SEARCH
+                                            }
+                                        },
+                                        icon = Icons.Outlined.Search,
+                                        selectedIcon = Icons.Default.Search,
+                                        label = "Search",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(slotHeight)
+                                    )
+
+                                    LandscapePelletNavItem(
+                                        selected = isRailLibrarySelected,
+                                        onClick = {
+                                            if (currentScreen != Screen.LIBRARY || currentTab != 2) {
+                                                currentTab = 2
+                                                currentScreen = Screen.LIBRARY
+                                            }
+                                        },
+                                        icon = Icons.Outlined.LibraryMusic,
+                                        selectedIcon = Icons.Default.LibraryMusic,
+                                        label = "Library",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(slotHeight)
+                                    )
+
+                                    LandscapePelletNavItem(
+                                        selected = isRailPinsSelected,
+                                        onClick = {
+                                            if (currentScreen == Screen.PINS && currentTab == 3) {
+                                                pinsRefreshTrigger++
+                                            } else {
+                                                currentTab = 3
+                                                currentScreen = Screen.PINS
+                                            }
+                                        },
+                                        icon = Icons.Outlined.Place,
+                                        selectedIcon = Icons.Default.Place,
+                                        label = "Pins",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(slotHeight)
+                                    )
                                 }
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == 3 && currentScreen == Screen.PINS) Icons.Default.Place else Icons.Outlined.Place,
-                                    contentDescription = "Pins"
-                                )
-                            },
-                            label = {
-                                Text(
-                                    "Pins",
-                                    fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = AlaktraMint,
-                                selectedTextColor = AlaktraMint,
-                                unselectedIconColor = AlaktraTextMuted,
-                                unselectedTextColor = AlaktraTextMuted,
-                                indicatorColor = AlaktraMint.copy(alpha = 0.15f)
-                            )
-                        )
+                            }
+                        }
                     }
                 }
 
@@ -384,13 +493,14 @@ fun MainShell(
                                         onNavigateToEqualizer = { currentScreen = Screen.EQUALIZER },
                                         onNavigateToPlaylistSelect = { song ->
                                             scope.launch {
-                                                availablePlaylists = repository.getPlaylists()
+                                                availablePlaylists = loadEditableUserPlaylists()
                                                 songForPlaylistSelection = song
                                             }
                                         },
                                         onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
                                         onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
-                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") }
+                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
                                     )
                                 }
 
@@ -400,10 +510,12 @@ fun MainShell(
                                         audioController = audioController,
                                         onNavigateToPlaylistSelect = { song ->
                                             scope.launch {
-                                                availablePlaylists = repository.getPlaylists()
+                                                availablePlaylists = loadEditableUserPlaylists()
                                                 songForPlaylistSelection = song
                                             }
-                                        }
+                                        },
+                                        onOpenArtist = { id, name -> openArtistProfile(id, name) },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
                                     )
                                 }
 
@@ -416,7 +528,13 @@ fun MainShell(
                                         onNavigateToFuse = {
                                             currentTab = 2
                                             currentScreen = Screen.FUSE
-                                        }
+                                        },
+                                        onNavigateToClub = { clubId ->
+                                            activeClubId = clubId
+                                            currentTab = 2
+                                            currentScreen = Screen.CLUB
+                                        },
+                                        onNavigateToSoundCapsule = { openSoundCapsule() }
                                     )
                                 }
 
@@ -435,16 +553,33 @@ fun MainShell(
                                         repository = repository,
                                         audioController = audioController,
                                         onBack = navigateBackFromPlaylist,
-                                        onNavigateToAddSongs = { currentScreen = Screen.ADD_SONGS }
+                                        onNavigateToAddSongs = {
+                                            if (!FuseCodeCodec.isFusePlaylistName(activePlaylistName)) {
+                                                currentScreen = Screen.ADD_SONGS
+                                            }
+                                        },
+                                        onNavigateToPlaylistSelect = { song ->
+                                            scope.launch {
+                                                availablePlaylists = loadEditableUserPlaylists()
+                                                songForPlaylistSelection = song
+                                            }
+                                        },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
                                     )
                                 }
 
                                 Screen.ADD_SONGS -> {
-                                    AddSongToPlaylistScreen(
-                                        playlistId = activePlaylistId,
-                                        repository = repository,
-                                        onBack = { currentScreen = Screen.PLAYLIST }
-                                    )
+                                    if (FuseCodeCodec.isFusePlaylistName(activePlaylistName)) {
+                                        LaunchedEffect(activePlaylistId) {
+                                            currentScreen = Screen.PLAYLIST
+                                        }
+                                    } else {
+                                        AddSongToPlaylistScreen(
+                                            playlistId = activePlaylistId,
+                                            repository = repository,
+                                            onBack = { currentScreen = Screen.PLAYLIST }
+                                        )
+                                    }
                                 }
 
                                 Screen.FUSE -> {
@@ -460,6 +595,18 @@ fun MainShell(
                                     )
                                 }
 
+                                Screen.CLUB -> {
+                                    com.example.ui.screens.club.ClubScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        initialClubId = activeClubId,
+                                        onBack = {
+                                            currentTab = 2
+                                            currentScreen = Screen.LIBRARY
+                                        }
+                                    )
+                                }
+
                                 Screen.PROFILE -> {
                                     ProfileScreen(
                                         repository = repository,
@@ -468,7 +615,8 @@ fun MainShell(
                                             currentScreen = Screen.HOME
                                             currentTab = 0
                                         },
-                                        onLogout = onLogout
+                                        onLogout = onLogout,
+                                        onNavigateToSoundCapsule = { openSoundCapsule() }
                                     )
                                 }
 
@@ -482,16 +630,69 @@ fun MainShell(
                                     )
                                 }
 
-                                Screen.HISTORY -> {
-                                    val historyList by repository.listeningHistory.collectAsState(initial = emptyList())
-                                    FullListeningHistorySheet(
+                                Screen.SOUND_CAPSULE -> {
+                                    val capsuleVm: SoundCapsuleViewModel = viewModel(
+                                        factory = remember(repository) { SoundCapsuleViewModel.Factory(repository) }
+                                    )
+                                    remember(capsuleVm) {
+                                        audioController.flushLiveSessionForUi()
+                                        capsuleVm.onScreenOpened()
+                                        true
+                                    }
+                                    val capsuleStats by capsuleVm.stats.collectAsStateWithLifecycle()
+                                    val availableMonths by capsuleVm.availableMonths.collectAsStateWithLifecycle()
+                                    val monthlyFeed by capsuleVm.monthlyFeed.collectAsStateWithLifecycle()
+                                    val historyList by repository.listeningHistory.collectAsStateWithLifecycle(initialValue = emptyList())
+                                    SoundCapsuleHost(
+                                        stats = capsuleStats,
+                                        availableMonths = availableMonths,
+                                        monthlyFeed = monthlyFeed,
                                         historyList = historyList,
+                                        onPlayTodayQueue = { songs, startIndex ->
+                                            audioController.playQueue(songs, startIndex, "Today's History")
+                                        },
+                                        onMonthSelected = capsuleVm::selectMonth,
+                                        onExit = {
+                                            currentScreen = soundCapsuleOriginScreen
+                                            currentTab = soundCapsuleOriginTab
+                                        },
+                                        onOpenArtist = { artistIdStr, artistName ->
+                                            openArtistByHint(artistIdStr.toIntOrNull(), artistName)
+                                        },
+                                        backHandlingEnabled = !showFullPlayer
+                                    )
+                                }
+
+                                Screen.ARTIST_PROFILE -> {
+                                    ArtistProfileScreen(
+                                        artistId = activeArtistId,
+                                        initialArtistName = activeArtistName,
                                         repository = repository,
                                         audioController = audioController,
-                                        onDismiss = {
-                                            currentScreen = Screen.HOME
-                                            currentTab = 0
-                                        }
+                                        onBack = {
+                                            currentScreen = artistOriginScreen
+                                            currentTab = artistOriginTab
+                                        },
+                                        onNavigateToPlaylistSelect = { song ->
+                                            scope.launch {
+                                                availablePlaylists = loadEditableUserPlaylists()
+                                                songForPlaylistSelection = song
+                                            }
+                                        },
+                                        onNavigateToArtistStudio = { openArtistStudio() },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
+                                    )
+                                }
+
+                                Screen.ARTIST_STUDIO -> {
+                                    ArtistStudioScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        onBack = {
+                                            currentScreen = artistStudioOriginScreen
+                                            currentTab = artistStudioOriginTab
+                                        },
+                                        onOpenArtistProfile = { id, name -> openArtistProfile(id, name) }
                                     )
                                 }
                             }
@@ -503,28 +704,32 @@ fun MainShell(
         }
 
         // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
-        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        val bottomScrimHeight = if (hasBottomBar) {
-            navBarBottom + 84.dp
-        } else {
-            (navBarBottom + 48.dp).coerceAtLeast(72.dp)
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(bottomScrimHeight)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, Color.Black)
+        if (!showFullPlayer) {
+            val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val bottomScrimHeight = if (hasBottomBar) {
+                navBarBottom + 84.dp
+            } else {
+                (navBarBottom + 48.dp).coerceAtLeast(72.dp)
+            }
+            Box(
+                modifier = Modifier
+                    .zIndex(1f)
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(bottomScrimHeight)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black)
+                        )
                     )
-                )
-        )
+            )
+        }
 
         // 🎵 Apple Music Style Floating Dock (Floating MiniPlayer + Circular Translucent Capsule Navigation Bar)
         val showMiniPlayer = !showFullPlayer && hasCurrentSong && currentScreen in screensWithBottomNav
         Column(
             modifier = Modifier
+                .zIndex(2f)
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(bottom = 12.dp),
@@ -551,6 +756,9 @@ fun MainShell(
                         }
                     },
                     onExpand = { showFullPlayer = true },
+                    onArtworkLoaded = { songId, coverUrl, drawable ->
+                        audioController.onCurrentSongArtworkLoaded(songId, coverUrl, drawable)
+                    },
                     modifier = Modifier
                         .widthIn(max = 550.dp)
                         .fillMaxWidth()
@@ -582,17 +790,22 @@ fun MainShell(
                 ) {
                     val isHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
                         (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
-                        (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0))
+                        (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0)) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 0)
 
                     val isSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
-                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1)
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 1)
 
                     val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
                         currentScreen == Screen.FUSE ||
-                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2)
+                        currentScreen == Screen.CLUB ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 2)
 
                     val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
-                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3)
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 3)
 
                     val activeIndex = when {
                         isHomeSelected -> 0
@@ -752,7 +965,9 @@ fun MainShell(
         // Full Screen Player Modal / Overlay
         AnimatedVisibility(
             visible = showFullPlayer,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .zIndex(3f)
+                .fillMaxSize(),
             enter = slideInVertically(initialOffsetY = { it }),
             exit = slideOutVertically(targetOffsetY = { it })
         ) {
@@ -766,28 +981,40 @@ fun MainShell(
                     isDownloaded = repository.downloadManager.isDownloaded(s.id)
                 }
             }
-            val currentDownloadProgress = playerPlaybackState.currentSong?.let { downloadProgressMap[it.id] }
+            val isPlayingFromFuse = playerPlaybackState.context?.uri?.startsWith("alaktra:fuse:") == true ||
+                FuseCodeCodec.isFusePlaylistName(playerPlaybackState.playbackSource) ||
+                FuseCodeCodec.isFusePlaylistName(playerPlaybackState.context?.name.orEmpty()) ||
+                playerPlaybackState.currentSong?.fuseContributor != null
+
+            val currentDownloadProgress = if (isPlayingFromFuse) {
+                null
+            } else {
+                playerPlaybackState.currentSong?.let { downloadProgressMap[it.id] }
+            }
 
             PlayerScreen(
                 audioController = audioController,
                 playbackState = playerPlaybackState,
-                isDownloaded = isDownloaded,
+                isDownloaded = !isPlayingFromFuse && isDownloaded,
+                allowDownload = !isPlayingFromFuse,
                 downloadProgress = currentDownloadProgress,
                 onNavigateToEqualizer = {
                     showFullPlayer = false
                     currentScreen = Screen.EQUALIZER
                 },
                 onToggleDownload = {
-                    playerPlaybackState.currentSong?.let { song ->
-                        scope.launch {
-                            if (isDownloaded) {
-                                repository.downloadManager.removeDownload(song.id)
-                                isDownloaded = false
-                                android.widget.Toast.makeText(context, "Download removed", android.widget.Toast.LENGTH_SHORT).show()
-                            } else {
-                                android.widget.Toast.makeText(context, "Downloading ${song.title}...", android.widget.Toast.LENGTH_SHORT).show()
-                                repository.downloadManager.downloadSong(song)
-                                isDownloaded = repository.downloadManager.isDownloaded(song.id)
+                    if (!isPlayingFromFuse) {
+                        playerPlaybackState.currentSong?.let { song ->
+                            scope.launch {
+                                if (isDownloaded) {
+                                    repository.downloadManager.removeDownload(song.id)
+                                    isDownloaded = false
+                                    android.widget.Toast.makeText(context, "Download removed", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "Downloading ${song.title}...", android.widget.Toast.LENGTH_SHORT).show()
+                                    repository.downloadManager.downloadSong(song)
+                                    isDownloaded = repository.downloadManager.isDownloaded(song.id)
+                                }
                             }
                         }
                     }
@@ -795,10 +1022,14 @@ fun MainShell(
                 onAddToPlaylist = {
                     playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
-                            availablePlaylists = repository.getPlaylists()
+                            availablePlaylists = loadEditableUserPlaylists()
                             songForPlaylistSelection = song
                         }
                     }
+                },
+                onOpenArtist = { song -> openArtistForSong(song) },
+                onSelectArtistCredit = { artistId, artistName ->
+                    openArtistByHint(artistId.takeIf { it > 0 }, artistName)
                 },
                 onClose = { showFullPlayer = false },
                 onLikeToggle = {
@@ -808,6 +1039,18 @@ fun MainShell(
                             audioController.updateSongLiked(song.id, isLiked)
                         }
                     }
+                }
+            )
+        }
+
+        // Multi-artist Collaborator Disambiguation Bottom Sheet
+        songForArtistCreditsSheet?.let { creditSong ->
+            ArtistCreditsBottomSheet(
+                song = creditSong,
+                onDismiss = { songForArtistCreditsSheet = null },
+                onSelectArtist = { artistId, artistName ->
+                    songForArtistCreditsSheet = null
+                    openArtistByHint(artistId.takeIf { it > 0 }, artistName)
                 }
             )
         }
@@ -957,6 +1200,61 @@ private fun CapsuleNavItem(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LandscapePelletNavItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: ImageVector,
+    selectedIcon: ImageVector,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    val activeColor = AlaktraMint
+    val inactiveColor = Color.White.copy(alpha = 0.60f)
+
+    val scale by animateFloatAsState(
+        targetValue = if (selected) 1.10f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.75f,
+            stiffness = 280f
+        ),
+        label = "landscape_nav_scale"
+    )
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+        ) {
+            Icon(
+                imageVector = if (selected) selectedIcon else icon,
+                contentDescription = label,
+                tint = if (selected) activeColor else inactiveColor,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) activeColor else inactiveColor,
+                maxLines = 1,
+                softWrap = false
+            )
         }
     }
 }

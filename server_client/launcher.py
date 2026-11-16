@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
 ============================================================
- Alaktra Music - 1-Click Server Launcher (Windows & Linux)
+ Alaktra Music - Standalone Admin Console & 1-Click Launcher
 ============================================================
-Automatically detects your Tailscale IP, verifies dependencies,
-and hosts your self-hosted Alaktra Music streaming server with a
-single button.
+Allows the admin to open the Admin Manager WITHOUT pre-launching
+the streaming server. The admin logs in with credentials, views
+database metrics directly, and turns the streaming server ON/OFF.
 
-Features:
-- Instant 1-Click Server Start / Stop
-- Auto-detects Tailscale IP (100.x.y.z) & Local Network IP
-- Generates exact connection URL for the Alaktra Android app
-- 1-Click 'Copy App URL' button
-- 1-Click 'Open Web Upload Portal' in browser
-- Live real-time server log streaming
-- Graceful GUI (Tkinter) or Headless Console CLI fallback
-============================================================
+Default Admin Credentials:
+  Username: admin
+  Password: admin123
 """
 
 import os
@@ -28,21 +22,32 @@ import threading
 import time
 import webbrowser
 import signal
+import json
+import sqlite3
+import shutil
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-# Ensure current folder is working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 DEFAULT_PORT = 8000
+ADMIN_PORT = 8080
+
+ADMIN_USER = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASSWORD", "admin123")
+
+DB_PATH = os.path.join(SCRIPT_DIR, "music.db")
+MUSIC_DIR = os.path.join(SCRIPT_DIR, "music")
+COVER_DIR = os.path.join(SCRIPT_DIR, "covers")
+PIN_DIR = os.path.join(SCRIPT_DIR, "pins")
+ARTIST_DIR = os.path.join(SCRIPT_DIR, "artist_media")
 
 # -------------------------------------------------------------
 # 1. Tailscale & Network IP Detection
 # -------------------------------------------------------------
 def get_tailscale_ip():
-    """Detects active Tailscale IPv4 address (100.64.0.0/10 range)."""
-    # 1. Try Tailscale CLI directly
     tailscale_bins = ["tailscale"]
     if platform.system() == "Windows":
         tailscale_bins += [
@@ -64,40 +69,16 @@ def get_tailscale_ip():
                 timeout=2,
                 stderr=subprocess.DEVNULL
             ).decode("utf-8", errors="ignore").strip()
-            # Tailscale IPv4 matches 100.x.y.z
             match = re.search(r"\b100\.(?:[6-9]\d|1[0-1]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b", out)
             if match:
                 return match.group(0)
         except Exception:
             pass
-
-    # 2. Try network interface inspection via system tools
-    if platform.system() == "Windows":
-        try:
-            out = subprocess.check_output(["ipconfig"], timeout=3, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
-            # Look for 100.x.y.z under any adapter
-            match = re.search(r"\b100\.(?:[6-9]\d|1[0-1]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b", out)
-            if match:
-                return match.group(0)
-        except Exception:
-            pass
-    else:
-        try:
-            out = subprocess.check_output(["ip", "-4", "addr"], timeout=2, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
-            match = re.search(r"\b100\.(?:[6-9]\d|1[0-1]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b", out)
-            if match:
-                return match.group(0)
-        except Exception:
-            pass
-
     return None
 
-
 def get_lan_ip():
-    """Detects local LAN IPv4 address (e.g., 192.168.x.x, 10.x.x.x)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Using a dummy UDP connect doesn't actually send packets
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
@@ -107,9 +88,7 @@ def get_lan_ip():
         pass
     return "127.0.0.1"
 
-
 def get_best_server_url(port=DEFAULT_PORT):
-    """Returns (ip, url, is_tailscale)."""
     ts_ip = get_tailscale_ip()
     if ts_ip:
         return ts_ip, f"http://{ts_ip}:{port}", True
@@ -118,80 +97,169 @@ def get_best_server_url(port=DEFAULT_PORT):
 
 
 # -------------------------------------------------------------
-# 2. Dependency Checking & Installation
+# 2. Direct Database & System Storage Metrics
 # -------------------------------------------------------------
-REQUIRED_MODULES = ["fastapi", "uvicorn", "mutagen", "PIL", "bcrypt"]
+def get_dir_size(path):
+    if not os.path.exists(path):
+        return 0
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(root, f)
+            if os.path.isfile(fp):
+                total += os.path.getsize(fp)
+    return total
 
-def check_missing_dependencies():
-    missing = []
-    for mod in REQUIRED_MODULES:
-        try:
-            __import__(mod)
-        except ImportError:
-            missing.append(mod)
-    return missing
+def format_size(bytes_val):
+    if bytes_val < 1024 * 1024:
+        return f"{bytes_val / 1024:.1f} KB"
+    elif bytes_val < 1024 * 1024 * 1024:
+        return f"{bytes_val / (1024 * 1024):.1f} MB"
+    else:
+        return f"{bytes_val / (1024 * 1024 * 1024):.2f} GB"
 
+def get_offline_db_stats():
+    if not os.path.exists(DB_PATH):
+        return {
+            "status": "offline_no_db",
+            "total_songs": 0, "total_users": 0, "total_plays": 0,
+            "storage": {"used": "0 MB", "total": "512 GB", "music": "0 MB", "covers": "0 MB", "pins": "0 MB", "db": "0 MB"},
+            "recent_songs": [], "users": [], "playlists": [], "clubs": []
+        }
 
-def install_requirements(log_callback=print):
-    """Installs required packages from requirements.txt."""
-    req_file = os.path.join(SCRIPT_DIR, "requirements.txt")
-    if not os.path.exists(req_file):
-        log_callback("⚠️ requirements.txt not found. Skipping auto-install.")
-        return False
-    log_callback("📦 Installing missing dependencies (this only happens once)...")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    total_songs = cursor.execute("SELECT COUNT(*) FROM songs").fetchone()[0] if os.path.exists(DB_PATH) else 0
+    total_users = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0] if os.path.exists(DB_PATH) else 0
+    
     try:
-        cmd = [sys.executable, "-m", "pip", "install", "-r", req_file]
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        for line in process.stdout:
-            log_callback(line.rstrip())
-        process.wait()
-        return process.returncode == 0
-    except Exception as e:
-        log_callback(f"❌ Error during pip install: {e}")
-        return False
+        total_plays = cursor.execute("SELECT COUNT(*) FROM listening_history").fetchone()[0]
+    except Exception:
+        total_plays = 0
+
+    music_size = get_dir_size(MUSIC_DIR)
+    cover_size = get_dir_size(COVER_DIR)
+    pin_size = get_dir_size(PIN_DIR) + get_dir_size(ARTIST_DIR)
+    db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    total_storage = music_size + cover_size + pin_size + db_size
+
+    try:
+        total_disk, used_disk, free_disk = shutil.disk_usage(SCRIPT_DIR)
+    except Exception:
+        total_disk, used_disk, free_disk = 512 * (1024**3), total_storage, 512 * (1024**3) - total_storage
+
+    recent_songs = []
+    try:
+        rows = cursor.execute("SELECT id, title, artist, duration, created_at FROM songs ORDER BY id DESC LIMIT 50").fetchall()
+        for r in rows:
+            recent_songs.append({
+                "id": r["id"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "duration": f"{int(r['duration'] // 60)}:{int(r['duration'] % 60):02d}" if r["duration"] else "3:30",
+                "added": r["created_at"] or "Just now"
+            })
+    except Exception:
+        pass
+
+    users_list = []
+    try:
+        rows = cursor.execute("SELECT id, username, email, is_verified, created_at FROM users ORDER BY id DESC LIMIT 50").fetchall()
+        for r in rows:
+            users_list.append({
+                "id": r["id"],
+                "username": r["username"],
+                "email": r["email"],
+                "is_verified": bool(r["is_verified"]),
+                "created_at": r["created_at"] or "Recent"
+            })
+    except Exception:
+        pass
+
+    playlists_list = []
+    try:
+        rows = cursor.execute("""
+            SELECT p.id, p.name, p.is_system, p.is_fuse, u.username, 
+            (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlist_id = p.id) as song_count,
+            p.created_at
+            FROM playlists p
+            LEFT JOIN users u ON p.user_id = u.id
+            ORDER BY p.id DESC LIMIT 50
+        """).fetchall()
+        for r in rows:
+            p_type = "Blend" if r["is_fuse"] else ("System" if r["is_system"] else "Custom")
+            playlists_list.append({
+                "id": r["id"],
+                "name": r["name"],
+                "owner": r["username"] or "System",
+                "song_count": r["song_count"],
+                "type": p_type,
+                "created_at": r["created_at"] or "Recent"
+            })
+    except Exception:
+        pass
+
+    clubs_list = []
+    try:
+        rows = cursor.execute("""
+            SELECT c.id, c.code, c.name, c.created_at, u.username as owner_name,
+            (SELECT COUNT(*) FROM club_members cm WHERE cm.club_id = c.id) as member_count,
+            (SELECT COUNT(*) FROM club_songs cs WHERE cs.club_id = c.id) as song_count
+            FROM clubs c
+            LEFT JOIN users u ON c.owner_id = u.id
+            ORDER BY c.id DESC LIMIT 50
+        """).fetchall()
+        for r in rows:
+            clubs_list.append({
+                "id": r["id"],
+                "code": r["code"],
+                "name": r["name"],
+                "owner": r["owner_name"] or "Host",
+                "member_count": r["member_count"],
+                "song_count": r["song_count"],
+                "is_live": True
+            })
+    except Exception:
+        pass
+
+    conn.close()
+
+    return {
+        "status": "ready",
+        "total_songs": total_songs,
+        "total_users": total_users,
+        "total_plays": total_plays,
+        "storage": {
+            "used": format_size(total_storage),
+            "total": format_size(total_disk),
+            "music": format_size(music_size),
+            "covers": format_size(cover_size),
+            "pins": format_size(pin_size),
+            "db": format_size(db_size),
+            "used_bytes": total_storage,
+            "total_bytes": total_disk
+        },
+        "recent_songs": recent_songs,
+        "users": users_list,
+        "playlists": playlists_list,
+        "clubs": clubs_list
+    }
 
 
 # -------------------------------------------------------------
-# 3. Server Controller
+# 3. Server Controller Subprocess
 # -------------------------------------------------------------
 class ServerManager:
-    def __init__(self, port=DEFAULT_PORT, log_callback=None):
+    def __init__(self, port=DEFAULT_PORT):
         self.port = port
         self.process = None
         self.is_running = False
-        self.log_callback = log_callback or print
-
-    def log(self, text):
-        if self.log_callback:
-            self.log_callback(text)
 
     def start(self):
         if self.is_running:
-            return
-
-        missing = check_missing_dependencies()
-        if missing:
-            self.log(f"⚠️ Missing packages: {', '.join(missing)}")
-            self.log("🔧 Auto-installing required packages now...")
-            success = install_requirements(self.log)
-            if not success:
-                self.log("❌ Failed to install dependencies. Please run 'pip install -r requirements.txt' manually.")
-                return False
-
-        self.log("🚀 Starting Alaktra Music Server...")
-        self.log(f"📁 Root directory: {SCRIPT_DIR}")
-
-        # Set environment variables
-        env = os.environ.copy()
-        env["HOST"] = "0.0.0.0"
-        env["PORT"] = str(self.port)
-        env["PYTHONUNBUFFERED"] = "1"
+            return True
 
         cmd = [
             sys.executable, "-m", "uvicorn",
@@ -200,6 +268,11 @@ class ServerManager:
             "--port", str(self.port),
             "--app-dir", SCRIPT_DIR
         ]
+
+        env = os.environ.copy()
+        env["HOST"] = "0.0.0.0"
+        env["PORT"] = str(self.port)
+        env["PYTHONUNBUFFERED"] = "1"
 
         try:
             self.process = subprocess.Popen(
@@ -213,24 +286,24 @@ class ServerManager:
             )
             self.is_running = True
 
-            # Background thread to capture uvicorn output
-            def stream_output():
-                for line in self.process.stdout:
-                    self.log(line.rstrip())
+            def monitor():
+                if self.process:
+                    for line in self.process.stdout:
+                        pass
                 self.is_running = False
-                self.log("⏹ Server process stopped.")
 
-            threading.Thread(target=stream_output, daemon=True).start()
+            threading.Thread(target=monitor, daemon=True).start()
             return True
         except Exception as e:
-            self.log(f"❌ Failed to launch server: {e}")
+            print(f"❌ Error starting server: {e}")
             self.is_running = False
             return False
 
     def stop(self):
         if not self.is_running or not self.process:
-            return
-        self.log("⏹ Stopping server...")
+            self.is_running = False
+            return True
+
         try:
             if platform.system() == "Windows":
                 subprocess.call(["taskkill", "/F", "/T", "/PID", str(self.process.pid)], stderr=subprocess.DEVNULL)
@@ -240,366 +313,150 @@ class ServerManager:
                     self.process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self.process.kill()
-        except Exception as e:
-            self.log(f"⚠️ Notice when stopping: {e}")
+        except Exception:
+            pass
+
         self.is_running = False
-        self.log("✅ Server stopped successfully.")
+        self.process = None
+        return True
+
+server_manager = ServerManager(port=DEFAULT_PORT)
 
 
 # -------------------------------------------------------------
-# 4. Graphical User Interface (Tkinter)
+# 4. Standalone Admin Control HTTP Handler
 # -------------------------------------------------------------
-def run_gui():
-    import tkinter as tk
-    from tkinter import ttk, messagebox
-
-    root = tk.Tk()
-    root.title("Alaktra Music - Server Launcher")
-    root.geometry("680x580")
-    root.minsize(580, 480)
-
-    # Modern Dark Theme Colors
-    BG_DARK = "#0d1117"
-    BG_CARD = "#161b22"
-    BG_CARD_BORDER = "#30363d"
-    ACCENT_CYAN = "#00e5ff"
-    ACCENT_GREEN = "#2ea043"
-    ACCENT_RED = "#da3633"
-    TEXT_PRIMARY = "#f0f6fc"
-    TEXT_MUTED = "#8b949e"
-    TEXT_URL = "#58a6ff"
-
-    root.configure(bg=BG_DARK)
-
-    # State variables
-    port_var = tk.StringVar(value=str(DEFAULT_PORT))
-    ip_display_var = tk.StringVar(value="Detecting...")
-    url_display_var = tk.StringVar(value="Detecting...")
-    status_var = tk.StringVar(value="● STOPPED")
-    is_ts_var = tk.BooleanVar(value=False)
-
-    server_manager = ServerManager(port=DEFAULT_PORT)
-
-    def append_log(line):
-        def _append():
-            log_text.config(state="normal")
-            log_text.insert(tk.END, line + "\n")
-            log_text.see(tk.END)
-            log_text.config(state="disabled")
-        root.after(0, _append)
-
-    server_manager.log_callback = append_log
-
-    def refresh_ip():
-        try:
-            p = int(port_var.get())
-        except ValueError:
-            p = DEFAULT_PORT
-        ip, url, is_ts = get_best_server_url(p)
-        is_ts_var.set(is_ts)
-        if is_ts:
-            ip_display_var.set(f"Tailscale IP: {ip}  (Global Remote Access)")
-            url_display_var.set(url)
-            ip_badge.config(text="TAILSCALE DETECTED", bg="#1f6feb", fg="#ffffff")
-        else:
-            ip_display_var.set(f"Local LAN IP: {ip}  (Same Wi-Fi Only)")
-            url_display_var.set(url)
-            ip_badge.config(text="LOCAL NETWORK ONLY", bg="#6e7681", fg="#ffffff")
-
-    def toggle_server():
-        if server_manager.is_running:
-            server_manager.stop()
-            btn_start.config(text="▶  START SERVER", bg=ACCENT_GREEN, activebackground="#3fb950")
-            status_label.config(text="● STOPPED", fg=ACCENT_RED)
-        else:
-            try:
-                p = int(port_var.get())
-                server_manager.port = p
-            except ValueError:
-                messagebox.showerror("Invalid Port", "Port must be an integer, e.g. 8000")
-                return
-
-            refresh_ip()
-            success = server_manager.start()
-            if success:
-                btn_start.config(text="⏹  STOP SERVER", bg=ACCENT_RED, activebackground="#f85149")
-                status_label.config(text="● ONLINE", fg=ACCENT_GREEN)
-
-    def copy_url():
-        url = url_display_var.get()
-        root.clipboard_clear()
-        root.clipboard_append(url)
-        root.update()
-        btn_copy.config(text="✓ Copied!")
-        root.after(1500, lambda: btn_copy.config(text="📋 Copy App URL"))
-
-    def open_browser():
-        try:
-            p = int(port_var.get())
-        except ValueError:
-            p = DEFAULT_PORT
-        webbrowser.open(f"http://localhost:{p}")
-
-    def on_closing():
-        if server_manager.is_running:
-            server_manager.stop()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-
-    # ---------------- UI Layout ----------------
-    # Header Card
-    header_frame = tk.Frame(root, bg=BG_DARK, pady=12, padx=20)
-    header_frame.pack(fill=tk.X)
-
-    title_label = tk.Label(
-        header_frame,
-        text="🎵 Alaktra Music Server Launcher",
-        font=("Segoe UI", 16, "bold"),
-        fg=TEXT_PRIMARY,
-        bg=BG_DARK
-    )
-    title_label.pack(side=tk.LEFT)
-
-    status_label = tk.Label(
-        header_frame,
-        textvariable=status_var,
-        font=("Segoe UI", 11, "bold"),
-        fg=ACCENT_RED,
-        bg=BG_DARK
-    )
-    status_label.pack(side=tk.RIGHT)
-
-    # Server Info Card
-    card_frame = tk.Frame(root, bg=BG_CARD, bd=1, relief=tk.SOLID, padx=16, pady=14)
-    card_frame.pack(fill=tk.X, padx=20, pady=6)
-
-    # Row 1: Detected IP & Badge
-    row1 = tk.Frame(card_frame, bg=BG_CARD)
-    row1.pack(fill=tk.X, pady=(0, 8))
-
-    ip_label = tk.Label(
-        row1,
-        textvariable=ip_display_var,
-        font=("Segoe UI", 11, "bold"),
-        fg=TEXT_PRIMARY,
-        bg=BG_CARD
-    )
-    ip_label.pack(side=tk.LEFT)
-
-    ip_badge = tk.Label(
-        row1,
-        text="CHECKING...",
-        font=("Segoe UI", 8, "bold"),
-        bg="#30363d",
-        fg="#ffffff",
-        padx=8,
-        pady=2
-    )
-    ip_badge.pack(side=tk.RIGHT)
-
-    # Row 2: Android App URL
-    row2 = tk.Frame(card_frame, bg=BG_CARD)
-    row2.pack(fill=tk.X, pady=(0, 10))
-
-    url_hint = tk.Label(
-        row2,
-        text="Android App URL:",
-        font=("Segoe UI", 9),
-        fg=TEXT_MUTED,
-        bg=BG_CARD
-    )
-    url_hint.pack(anchor="w")
-
-    url_val = tk.Label(
-        row2,
-        textvariable=url_display_var,
-        font=("Consolas", 13, "bold"),
-        fg=ACCENT_CYAN,
-        bg=BG_CARD,
-        cursor="hand2"
-    )
-    url_val.pack(anchor="w", pady=(2, 0))
-
-    # Row 3: Action Buttons inside Card
-    row3 = tk.Frame(card_frame, bg=BG_CARD)
-    row3.pack(fill=tk.X, pady=(6, 0))
-
-    btn_copy = tk.Button(
-        row3,
-        text="📋 Copy App URL",
-        font=("Segoe UI", 9, "bold"),
-        bg="#21262d",
-        fg=TEXT_PRIMARY,
-        activebackground="#30363d",
-        activeforeground=TEXT_PRIMARY,
-        bd=1,
-        relief=tk.FLAT,
-        padx=12,
-        pady=5,
-        cursor="hand2",
-        command=copy_url
-    )
-    btn_copy.pack(side=tk.LEFT, padx=(0, 8))
-
-    btn_portal = tk.Button(
-        row3,
-        text="🌐 Open Web Upload Portal",
-        font=("Segoe UI", 9),
-        bg="#21262d",
-        fg=TEXT_PRIMARY,
-        activebackground="#30363d",
-        activeforeground=TEXT_PRIMARY,
-        bd=1,
-        relief=tk.FLAT,
-        padx=12,
-        pady=5,
-        cursor="hand2",
-        command=open_browser
-    )
-    btn_portal.pack(side=tk.LEFT, padx=(0, 8))
-
-    btn_refresh = tk.Button(
-        row3,
-        text="🔄 Refresh IP",
-        font=("Segoe UI", 9),
-        bg="#21262d",
-        fg=TEXT_PRIMARY,
-        activebackground="#30363d",
-        activeforeground=TEXT_PRIMARY,
-        bd=1,
-        relief=tk.FLAT,
-        padx=10,
-        pady=5,
-        cursor="hand2",
-        command=refresh_ip
-    )
-    btn_refresh.pack(side=tk.LEFT)
-
-    # Big 1-Button Start / Stop
-    btn_start = tk.Button(
-        root,
-        text="▶  START SERVER",
-        font=("Segoe UI", 13, "bold"),
-        bg=ACCENT_GREEN,
-        fg="#ffffff",
-        activebackground="#3fb950",
-        activeforeground="#ffffff",
-        bd=0,
-        relief=tk.FLAT,
-        pady=12,
-        cursor="hand2",
-        command=toggle_server
-    )
-    btn_start.pack(fill=tk.X, padx=20, pady=12)
-
-    # Server Logs Section
-    log_header = tk.Label(
-        root,
-        text="Server Output & Streaming Logs:",
-        font=("Segoe UI", 9),
-        fg=TEXT_MUTED,
-        bg=BG_DARK
-    )
-    log_header.pack(anchor="w", padx=20, pady=(4, 2))
-
-    log_frame = tk.Frame(root, bg="#010409", bd=1, relief=tk.SOLID)
-    log_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 16))
-
-    scrollbar = tk.Scrollbar(log_frame)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    log_text = tk.Text(
-        log_frame,
-        bg="#010409",
-        fg="#c9d1d9",
-        insertbackground="#ffffff",
-        font=("Consolas", 9),
-        wrap=tk.WORD,
-        yscrollcommand=scrollbar.set,
-        bd=0,
-        padx=8,
-        pady=8
-    )
-    log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scrollbar.config(command=log_text.yview)
-
-    # Initial log message & IP detection
-    append_log("Alaktra Music Server Launcher initialized.")
-    append_log("Click 'START SERVER' to host on your network.")
-    refresh_ip()
-
-    root.mainloop()
-
-
-# -------------------------------------------------------------
-# 5. Console CLI Fallback (Headless / SSH / Raspberry Pi)
-# -------------------------------------------------------------
-def run_cli():
-    print("=" * 60)
-    print(" 🎵  ALAKTRA MUSIC SERVER - 1-CLICK LAUNCHER (CLI)")
-    print("=" * 60)
-
-    ip, url, is_ts = get_best_server_url(DEFAULT_PORT)
-    print("\n🔍 Detecting Network Interfaces...")
-    if is_ts:
-        print(f" ✅ Tailscale IP Detected: \033[1;32m{ip}\033[0m")
-        print("    (Stream anywhere from mobile data or external Wi-Fi!)")
-    else:
-        print(f" ℹ️  Local LAN IP: \033[1;33m{ip}\033[0m")
-        print("    (Stream within your home Wi-Fi. Start Tailscale for global remote access)")
-
-    print(f"\n📱 Android App URL to paste: \033[1;36m{url}\033[0m")
-    print(f"🌐 Web Upload Portal:       \033[1;36mhttp://localhost:{DEFAULT_PORT}\033[0m")
-    print("-" * 60)
-
-    missing = check_missing_dependencies()
-    if missing:
-        print(f"⚠️  Missing dependencies: {', '.join(missing)}")
-        print("📦 Installing required dependencies automatically...")
-        install_requirements()
-
-    server = ServerManager(port=DEFAULT_PORT, log_callback=lambda l: print(f"[Server] {l}"))
-
-    def handle_sigint(sig, frame):
-        print("\n\n⏹ Stopping server...")
-        server.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_sigint)
-
-    print("\n▶  Starting server now on 0.0.0.0:8000...")
-    success = server.start()
-    if not success:
-        print("❌ Could not start server. Please check errors above.")
+class AdminManagerHTTPHandler(SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
         return
 
-    print("✅ Server is RUNNING! Press Ctrl+C at any time to stop.\n")
+    def do_GET(self):
+        path = self.path.split('?')[0]
+        if path in ["/", "/admin", "/admin/"]:
+            admin_file = os.path.join(SCRIPT_DIR, "admin.html")
+            if os.path.exists(admin_file):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                with open(admin_file, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "admin.html not found")
+            return
+
+        if path == "/admin/api/server/status":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            ip, url, is_ts = get_best_server_url(DEFAULT_PORT)
+            data = {
+                "running": server_manager.is_running,
+                "port": DEFAULT_PORT,
+                "host": "0.0.0.0",
+                "tailscale_ip": ip if is_ts else None,
+                "lan_ip": get_lan_ip(),
+                "app_url": url,
+                "admin_user": ADMIN_USER
+            }
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+            return
+
+        if path == "/admin/api/stats":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            stats = get_offline_db_stats()
+            self.wfile.write(json.dumps(stats).encode("utf-8"))
+            return
+
+        super().do_GET()
+
+    def do_POST(self):
+        path = self.path.split('?')[0]
+        content_length = int(self.headers.get('Content-Length', 0))
+        body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+
+        if path == "/admin/api/login":
+            try:
+                body = json.loads(body_bytes.decode("utf-8"))
+                u = body.get("username", "").strip()
+                p = body.get("password", "").strip()
+                if u == ADMIN_USER and p == ADMIN_PASS:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "token": "admin-token-offline", "username": ADMIN_USER}).encode("utf-8"))
+                    return
+            except Exception:
+                pass
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": False, "detail": "Invalid Admin credentials"}).encode("utf-8"))
+            return
+
+        if path == "/admin/api/server/start":
+            success = server_manager.start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "running": server_manager.is_running}).encode("utf-8"))
+            return
+
+        if path == "/admin/api/server/stop":
+            success = server_manager.stop()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "running": server_manager.is_running}).encode("utf-8"))
+            return
+
+        self.send_error(404, "Not Found")
+
+
+def start_admin_web_server(port=ADMIN_PORT):
+    try:
+        httpd = HTTPServer(("0.0.0.0", port), AdminManagerHTTPHandler)
+        print(f"🛡️ Standalone Admin Control Panel running on http://localhost:{port}/admin")
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return True
+    except Exception as e:
+        print(f"⚠️ Could not start Admin web server on port {port}: {e}")
+        return False
+
+
+# -------------------------------------------------------------
+# 5. Entry Point & Browser Auto-Open
+# -------------------------------------------------------------
+if __name__ == "__main__":
+    print("=" * 60)
+    print(" 🛡️  ALAKTRA MUSIC - STANDALONE ADMIN MANAGER")
+    print("=" * 60)
+    print(f" Default Admin Credentials: Username: '{ADMIN_USER}' | Password: '{ADMIN_PASS}'")
+    print("-" * 60)
+
+    start_admin_web_server(ADMIN_PORT)
+
+    admin_url = f"http://localhost:{ADMIN_PORT}/admin"
+    print(f"\n🌐 Opening Standalone Admin Console in browser: {admin_url}")
+    try:
+        webbrowser.open(admin_url)
+    except Exception:
+        pass
+
+    print("\n✅ Admin Manager is READY!")
+    print("   Open browser to login, check database metrics, and turn server ON/OFF.")
+    print("   Press Ctrl+C to exit Admin Manager.\n")
+
+    def handle_sig(sig, frame):
+        print("\n⏹ Shutting down Admin Manager...")
+        server_manager.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_sig)
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        handle_sigint(None, None)
-
-
-# -------------------------------------------------------------
-# 6. Entry Point
-# -------------------------------------------------------------
-if __name__ == "__main__":
-    # Check if graphical display is available
-    has_display = True
-    if platform.system() != "Windows" and not os.environ.get("DISPLAY"):
-        has_display = False
-
-    if has_display:
-        try:
-            import tkinter
-            run_gui()
-        except ImportError:
-            print("⚠️ Tkinter not installed in this environment. Falling back to Console CLI...")
-            run_cli()
-        except Exception as e:
-            print(f"⚠️ Could not open GUI ({e}). Falling back to Console CLI...")
-            run_cli()
-    else:
-        run_cli()
+        handle_sig(None, None)

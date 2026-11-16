@@ -91,6 +91,7 @@ fun MiniPlayer(
     onPrevious: () -> Unit,
     onLikeToggle: () -> Unit,
     onExpand: () -> Unit,
+    onArtworkLoaded: ((Int, String, android.graphics.drawable.Drawable) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
@@ -278,7 +279,12 @@ fun MiniPlayer(
             SongCover(
                 imageUrl = song.coverUrl,
                 size = 46.dp,
-                cornerRadius = 23.dp
+                cornerRadius = 23.dp,
+                onArtworkLoaded = if (onArtworkLoaded != null) {
+                    { drawable -> onArtworkLoaded(song.id, song.coverUrl, drawable) }
+                } else {
+                    null
+                }
             )
 
             Spacer(modifier = Modifier.width(12.dp))

@@ -306,4 +306,62 @@ class CachingPhase3Test {
         val response = interceptor.intercept(postChain)
         assertNull("POST mutations must never have synthetic Cache-Control headers injected", response.header("Cache-Control"))
     }
+
+    @Test
+    fun testHistoryAndSoundCapsuleCaching_ttlAndInvalidation() {
+        val virtualTime = AtomicLong(10_000L)
+        val cacheManager = ApiCacheManager(clock = { virtualTime.get() })
+
+        assertFalse(cacheManager.isSoundCapsuleSyncFresh(7))
+        cacheManager.markSoundCapsuleSynced(7)
+        assertTrue(cacheManager.isSoundCapsuleSyncFresh(7))
+
+        cacheManager.putLastSyncedHistoryDigest(7, "1:1000:180000")
+        assertEquals("1:1000:180000", cacheManager.getLastSyncedHistoryDigest(7))
+
+        // Advance past SOUND_CAPSULE_TTL_MS (30 minutes): pull stamp expires while 6h digest stays valid
+        virtualTime.addAndGet(ApiCacheConfig.SOUND_CAPSULE_TTL_MS + 1L)
+        assertFalse(cacheManager.isSoundCapsuleSyncFresh(7))
+        assertEquals("1:1000:180000", cacheManager.getLastSyncedHistoryDigest(7))
+
+        cacheManager.markSoundCapsuleSynced(7)
+        assertTrue(cacheManager.isSoundCapsuleSyncFresh(7))
+        cacheManager.invalidateSoundCapsuleSync(7)
+        assertFalse(cacheManager.isSoundCapsuleSyncFresh(7))
+    }
+
+    @Test
+    fun testNetworkCacheInterceptor_cachesHistoryGetEndpointsFor10Minutes() {
+        val interceptor = NetworkCacheInterceptor()
+        val historyChain = object : Interceptor.Chain {
+            override fun request(): Request = Request.Builder()
+                .url("https://music.example.com/history/sound-capsule/7")
+                .get()
+                .build()
+
+            override fun proceed(request: Request): Response {
+                return Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("{}".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+
+            override fun connection() = null
+            override fun call() = throw UnsupportedOperationException()
+            override fun connectTimeoutMillis() = 0
+            override fun withConnectTimeout(timeout: Int, unit: java.util.concurrent.TimeUnit) = this
+            override fun readTimeoutMillis() = 0
+            override fun withReadTimeout(timeout: Int, unit: java.util.concurrent.TimeUnit) = this
+            override fun writeTimeoutMillis() = 0
+            override fun withWriteTimeout(timeout: Int, unit: java.util.concurrent.TimeUnit) = this
+        }
+
+        val response = interceptor.intercept(historyChain)
+        val cacheControl = response.header("Cache-Control")
+        assertNotNull(cacheControl)
+        assertTrue("History GET endpoints must receive 600s max-age disk cache", cacheControl!!.contains("max-age=600"))
+    }
 }

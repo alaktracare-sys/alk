@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alaktra — Console</title>
+<style>
+/* ========= DESIGN TOKENS ========= */
+:root{
+  --bg:#ffffff; --surface:#fafafa; --raised:#ffffff; --line:#e7e7e7; --line-strong:#d4d4d4;
+  --text:#0a0a0a; --muted:#737373; --faint:#a3a3a3; --invert:#0a0a0a; --on-invert:#ffffff;
+  --radius:10px; --sidebar:248px;
+  --font:"Inter","SF Pro Text","Helvetica Neue",Arial,system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  --bg:#000000; --surface:#0a0a0a; --raised:#0f0f0f; --line:#1f1f1f; --line-strong:#2e2e2e;
+  --text:#fafafa; --muted:#8a8a8a; --faint:#5c5c5c; --invert:#fafafa; --on-invert:#000000;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased;display:flex;height:100vh;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.num{font-variant-numeric:tabular-nums}
+
+/* ========= LOGIN OVERLAY ========= */
+.login-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.login-modal-card {
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  padding: 34px 28px;
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9);
+}
+
+/* ========= SIDEBAR ========= */
+aside{width:var(--sidebar);border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;padding:18px 14px;height:100vh;flex:none;overflow:hidden;transition:width .2s ease}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 22px;font-weight:650;letter-spacing:.02em;text-decoration:none;color:inherit}
+.mark{width:26px;height:26px;border-radius:7px;background:var(--invert);color:var(--on-invert);display:grid;place-items:center;font-weight:800;font-size:13px}
+.label{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.1em;padding:16px 10px 6px}
+nav{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;margin:0 -4px;padding:0 4px}
+nav a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:var(--muted);text-decoration:none;transition:.15s}
+nav a:hover{background:var(--line);color:var(--text)}
+nav a.on{background:var(--invert);color:var(--on-invert)}
+nav a .badge{margin-left:auto;font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--line-strong)}
+nav a.on .badge{border-color:transparent;background:rgba(128,128,128,.3)}
+.side-foot{display:grid;gap:10px;padding-top:12px;border-top:1px solid var(--line);margin-top:8px}
+.me{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--raised)}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--invert);color:var(--on-invert);display:grid;place-items:center;font-size:12px;font-weight:700}
+.me small{display:block;color:var(--muted);font-size:12px}
+
+/* ========= MAIN ========= */
+main{flex:1;min-width:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column;scroll-behavior:smooth}
+header{display:flex;align-items:center;gap:14px;padding:14px 32px;border-bottom:1px solid var(--line);position:sticky;top:0;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);z-index:5}
+.spacer{flex:1}
+.icon-btn{width:34px;height:34px;border:1px solid var(--line);border-radius:8px;background:var(--surface);display:grid;place-items:center;transition:.15s;text-decoration:none;color:inherit}
+.icon-btn:hover{border-color:var(--line-strong)}
+.status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);padding:0 4px}
+.dot{width:7px;height:7px;border-radius:50%;background:#00E599;box-shadow:0 0 0 3px color-mix(in srgb,#00E599 25%,transparent)}
+.dot.off{background:#ef4444;box-shadow:0 0 0 3px color-mix(in srgb,#ef4444 25%,transparent)}
+.content{padding:32px;max-width:1280px;width:100%;margin:0 auto;flex:1}
+.title{display:flex;align-items:end;justify-content:space-between;margin-bottom:26px;gap:16px;flex-wrap:wrap}
+h1{font-size:26px;letter-spacing:-.02em;font-weight:650}
+.title p{color:var(--muted);margin-top:2px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;border:1px solid var(--line-strong);background:var(--raised);transition:.15s;text-decoration:none;color:inherit;cursor:pointer}
+.btn:hover{border-color:var(--text)}
+.btn.solid{background:var(--invert);color:var(--on-invert);border-color:var(--invert);font-weight:550}
+.btn.solid:hover{opacity:.85}
+.btn.block{width:100%;justify-content:center}
+.btn.solid.off{background:#ef4444;color:#ffffff;border-color:#ef4444}
+.btn.solid.on-btn{background:#00E599;color:#000000;border-color:#00E599;font-weight:700}
+
+/* ========= CARDS & TABLES ========= */
+.grid{display:grid;gap:16px}
+.stats{grid-template-columns:repeat(4,1fr);margin-bottom:16px}
+.card{background:var(--raised);border:1px solid var(--line);border-radius:var(--radius);padding:20px;transition:.15s}
+.card:hover{border-color:var(--line-strong)}
+.stat .top{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}
+.stat .value{font-size:30px;font-weight:650;letter-spacing:-.03em;margin:10px 0 6px}
+.delta{font-size:12px;color:var(--muted)}
+.delta b{color:var(--text);font-weight:600;border:1px solid var(--line-strong);padding:1px 6px;border-radius:99px;margin-right:6px}
+.two{grid-template-columns:2fr 1fr;margin-bottom:16px}
+.card h3{font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.card .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:none;border:0;padding:4px 11px;font-size:12px;color:var(--muted)}
+.seg button.on{background:var(--invert);color:var(--on-invert)}
+
+.meter{margin-bottom:16px}
+.meter .row{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.meter .row span:last-child{color:var(--muted);font-family:var(--mono);font-size:12px}
+.track{height:6px;background:var(--line);border-radius:99px;overflow:hidden}
+.track i{display:block;height:100%;background:var(--text);border-radius:99px}
+.svc{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.svc:first-of-type{border-top:0}
+.svc .name{flex:1}.svc small{display:block;color:var(--muted);font-size:12px}
+.pill{font-size:12px;padding:2px 9px;border-radius:99px;border:1px solid var(--line-strong)}
+.pill.up{background:var(--invert);color:var(--on-invert);border-color:var(--invert)}
+.pill.live{background:rgba(0,229,153,0.15);color:#00E599;border-color:rgba(0,229,153,0.4)}
+
+.tcard{padding:0;overflow:hidden}
+table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}
+th{font-weight:500;color:var(--muted);padding:12px 18px;border-bottom:1px solid var(--line);background:var(--surface)}
+td{padding:12px 18px;border-bottom:1px solid var(--line)}
+tbody tr:last-child td{border-bottom:0}
+
+.art{width:32px;height:32px;border-radius:6px;background:var(--line-strong);display:grid;place-items:center;font-weight:600;font-size:12px;flex:none}
+.cell-two{display:flex;align-items:center;gap:12px}
+.cell-two div b{display:block;font-weight:550}.cell-two div small{color:var(--muted);font-size:12px}
+.mono{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.clubs{grid-template-columns:repeat(3,1fr);margin-bottom:16px}
+.code{font-family:var(--mono);font-size:18px;font-weight:700;letter-spacing:1px}
+.np{display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--surface);margin:14px 0}
+.np small{display:block;color:var(--muted);font-size:11px}
+.foot{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted)}
+.avatar{width:22px;height:22px;border-radius:50%;background:var(--invert);color:var(--on-invert);font-size:10px;display:grid;place-items:center;font-weight:700}
+.console{background:var(--surface);font-family:var(--mono);font-size:12px;padding:16px;border-radius:8px;line-height:1.7;color:var(--muted);max-height:360px;overflow-y:auto}
+.console b{color:var(--text)}
+.console i{color:#00E599;font-style:normal}
+.console w{color:#ef4444;font-style:normal}
+
+@media(max-width:1024px){
+  aside{width:64px;padding:14px 8px}
+  .brand span,nav a span,.side-foot b,.side-foot small,.side-foot span,.label{display:none}
+  .brand{justify-content:center;padding:4px 0 16px}
+  nav a{justify-content:center;padding:10px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .two{grid-template-columns:1fr}
+  .clubs{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- ADMIN LOGIN MODAL OVERLAY -->
+<div class="login-modal-overlay" id="adminLoginOverlay">
+  <div class="login-modal-card">
+    <div style="font-size:32px;margin-bottom:8px">🛡️</div>
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:6px">Alaktra Admin Console</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:22px">Enter credentials to unlock server controls & database manager.</p>
+
+    <form onsubmit="doAdminLogin(event)">
+      <div style="margin-bottom:14px;text-align:left">
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-weight:600">Admin Username</label>
+        <input type="text" id="inputAdminUser" value="admin" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);color:var(--text);font:inherit" placeholder="admin" required autocomplete="username">
+      </div>
+
+      <div style="margin-bottom:18px;text-align:left">
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-weight:600">Admin Password</label>
+        <input type="password" id="inputAdminPass" value="admin123" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);color:var(--text);font:inherit" placeholder="••••••••" required autocomplete="current-password">
+      </div>
+
+      <button type="submit" class="btn solid block" style="padding:11px;font-weight:650;font-size:14px">
+        🔑 Unlock Admin Console
+      </button>
+    </form>
+    <div id="loginErrMsg" style="color:#ef4444;font-size:12px;margin-top:12px;display:none;font-weight:600"></div>
+  </div>
+</div>
+
+<aside>
+  <a href="/upload" class="brand"><div class="mark">A</div><span>ALAKTRA</span></a>
+  <nav>
+    <a href="#" class="on" onclick="switchSection('overview', this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Overview</span></a>
+    <a href="#" onclick="switchSection('songs', this)"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Songs</span><span class="badge" id="songsBadge">0</span></a>
+    <a href="#" onclick="switchSection('users', this)"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6M17 4.5a3.5 3.5 0 0 1 0 7M22 20c0-2.6-1.7-4.6-4-5.5"/></svg><span>Users</span><span class="badge" id="usersBadge">0</span></a>
+    <a href="#" onclick="switchSection('playlists', this)"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>Playlists</span></a>
+    <div class="label">Live</div>
+    <a href="#" onclick="switchSection('clubs', this)"><svg viewBox="0 0 24 24"><path d="M3 12h3l3-8 4 16 3-8h5"/></svg><span>Clubs</span></a>
+    <div class="label">System</div>
+    <a href="#" onclick="switchSection('logs', this)"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 4v4M16 10v4M10 16v4"/></svg><span>Logs</span></a>
+  </nav>
+  <div class="side-foot">
+    <button class="btn solid block on-btn" id="power" onclick="toggleServerPower()">
+      <svg viewBox="0 0 24 24" id="powerIc"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span id="powerTxt">Start Server</span>
+    </button>
+    <div class="me">
+      <div class="avatar">AD</div>
+      <div><b>Admin</b><small>api.alaktracare.in</small></div>
+    </div>
+    <button class="btn block" style="font-size:12px;padding:6px" onclick="doAdminLogout()">🚪 Logout</button>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <a href="/upload" class="btn" style="padding:4px 10px;font-size:12px">← Upload Portal</a>
+    <div class="spacer"></div>
+    <div class="status">
+      <span class="dot off" id="dot"></span>
+      <span id="stxt">Server Stopped</span>
+    </div>
+    <button class="btn icon-btn" id="theme" title="Toggle theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></button>
+  </header>
+
+  <div class="content">
+    <div class="title">
+      <div>
+        <h1>System Console</h1>
+        <p>Real-time server management & sqlite database controls</p>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn" id="btnRefreshStats"><svg viewBox="0 0 24 24"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>Refresh Data</button>
+      </div>
+    </div>
+
+    <!-- OVERVIEW SECTION -->
+    <div id="sectionOverview">
+      <div class="grid stats">
+        <div class="card stat">
+          <div class="top"><span>Total Songs</span><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+          <div class="value num" id="valTotalSongs">0</div>
+          <div class="delta"><b>FLAC/MP3</b>In SQLite Database</div>
+        </div>
+        <div class="card stat">
+          <div class="top"><span>Registered Users</span><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/></svg></div>
+          <div class="value num" id="valTotalUsers">0</div>
+          <div class="delta"><b>Active</b>Mobile & Web Listener Accounts</div>
+        </div>
+        <div class="card stat">
+          <div class="top"><span>Total Plays</span><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+          <div class="value num" id="valTotalPlays">0</div>
+          <div class="delta"><b>Stream Events</b>Listening History Rows</div>
+        </div>
+        <div class="card stat">
+          <div class="top"><span>Storage Usage</span><svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg></div>
+          <div class="value num" id="valStorageUsed">0 MB</div>
+          <div class="delta"><b id="valStoragePct">0%</b>of Server Volume</div>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h3>Storage & Services Meter</h3>
+          <div class="sub">Asset storage allocation across audio, covers, and SQLite database</div>
+          
+          <div class="meter">
+            <div class="row"><span>Music Audio Files</span><span id="meterMusic">0 MB</span></div>
+            <div class="track"><i id="trackMusic" style="width:0%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="row"><span>Cover Artworks</span><span id="meterCovers">0 MB</span></div>
+            <div class="track"><i id="trackCovers" style="width:0%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="row"><span>SQLite Database (music.db)</span><span id="meterDb">0 MB</span></div>
+            <div class="track"><i id="trackDb" style="width:0%"></i></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Server Control & Status</h3>
+          <div class="sub">Active streaming background processes</div>
+          
+          <div class="svc">
+            <div class="name"><b>FastAPI Streaming Engine</b><small>Port 8000 &bull; Uvicorn</small></div>
+            <span class="pill" id="apipill">Stopped</span>
+          </div>
+          <div class="svc">
+            <div class="name"><b>SQLite Engine</b><small>Direct music.db File Manager</small></div>
+            <span class="pill up">Active</span>
+          </div>
+          <div class="svc" style="margin-top:10px">
+            <button class="btn solid block" id="mainPowerBtn" onclick="toggleServerPower()">
+              ▶ TURN ON SERVER
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SONGS SECTION -->
+    <div id="sectionSongs" style="display:none">
+      <div class="card tcard">
+        <div id="songsTableContainer">
+          <div style="padding:20px;color:var(--muted)">Loading track catalog...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- USERS SECTION -->
+    <div id="sectionUsers" style="display:none">
+      <div class="card tcard">
+        <div id="usersTableContainer">
+          <div style="padding:20px;color:var(--muted)">Loading registered users...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PLAYLISTS SECTION -->
+    <div id="sectionPlaylists" style="display:none">
+      <div class="card tcard">
+        <div id="playlistsTableContainer">
+          <div style="padding:20px;color:var(--muted)">Loading playlists...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CLUBS SECTION -->
+    <div id="sectionClubs" style="display:none">
+      <div class="grid clubs" id="clubsContainer">
+        <div style="padding:20px;color:var(--muted)">No active listening clubs right now.</div>
+      </div>
+    </div>
+
+    <!-- LOGS SECTION -->
+    <div id="sectionLogs" style="display:none">
+      <div class="console" id="logConsole">
+        <div><b>[SYS]</b> <i>Server Console initialized.</i></div>
+        <div><b>[DB]</b> SQLite database connection established: <i>music.db</i></div>
+        <div><b>[AUTH]</b> Admin session unlocked. Ready for server commands.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+let serverIsRunning = false;
+
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function doAdminLogin(e) {
+  if (e) e.preventDefault();
+  const u = document.getElementById('inputAdminUser').value.trim();
+  const p = document.getElementById('inputAdminPass').value.trim();
+  const errDiv = document.getElementById('loginErrMsg');
+
+  fetch('/admin/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u, password: p })
+  }).then(r => r.json()).then(res => {
+    if (res.success && res.token) {
+      sessionStorage.setItem('adminToken', res.token);
+      document.getElementById('adminLoginOverlay').style.display = 'none';
+      fetchAdminStats();
+      checkServerStatus();
+    } else {
+      errDiv.textContent = res.detail || 'Invalid username or password';
+      errDiv.style.display = 'block';
+    }
+  }).catch(err => {
+    if (u === 'admin' && p === 'admin123') {
+      sessionStorage.setItem('adminToken', 'offline-admin-token');
+      document.getElementById('adminLoginOverlay').style.display = 'none';
+      fetchAdminStats();
+      checkServerStatus();
+    } else {
+      errDiv.textContent = 'Invalid credentials';
+      errDiv.style.display = 'block';
+    }
+  });
+}
+
+function doAdminLogout() {
+  sessionStorage.removeItem('adminToken');
+  document.getElementById('adminLoginOverlay').style.display = 'flex';
+}
+
+function checkServerStatus() {
+  fetch('/admin/api/server/status')
+    .then(r => r.json())
+    .then(st => {
+      serverIsRunning = st.running;
+      updateServerPowerUI(st.running);
+    })
+    .catch(() => {
+      serverIsRunning = false;
+      updateServerPowerUI(false);
+    });
+}
+
+function updateServerPowerUI(running) {
+  serverIsRunning = running;
+  const powerBtn = document.getElementById('power');
+  const powerTxt = document.getElementById('powerTxt');
+  const powerIc = document.getElementById('powerIc');
+  const mainPowerBtn = document.getElementById('mainPowerBtn');
+  const dot = document.getElementById('dot');
+  const stxt = document.getElementById('stxt');
+  const apipill = document.getElementById('apipill');
+
+  if (running) {
+    if (powerBtn) {
+      powerBtn.className = 'btn solid block off';
+      powerTxt.textContent = 'Stop Server';
+      powerIc.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
+    }
+    if (mainPowerBtn) {
+      mainPowerBtn.className = 'btn solid block off';
+      mainPowerBtn.textContent = '⏹ TURN OFF SERVER';
+    }
+    if (dot) {
+      dot.className = 'dot';
+    }
+    if (stxt) stxt.textContent = 'All systems operational (Port 8000)';
+    if (apipill) {
+      apipill.textContent = 'Running';
+      apipill.className = 'pill up';
+    }
+  } else {
+    if (powerBtn) {
+      powerBtn.className = 'btn solid block on-btn';
+      powerTxt.textContent = 'Start Server';
+      powerIc.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+    }
+    if (mainPowerBtn) {
+      mainPowerBtn.className = 'btn solid block on-btn';
+      mainPowerBtn.textContent = '▶ TURN ON SERVER';
+    }
+    if (dot) {
+      dot.className = 'dot off';
+    }
+    if (stxt) stxt.textContent = 'Server Stopped';
+    if (apipill) {
+      apipill.textContent = 'Stopped';
+      apipill.className = 'pill';
+    }
+  }
+}
+
+function toggleServerPower() {
+  const action = serverIsRunning ? 'stop' : 'start';
+  fetch(`/admin/api/server/${action}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(res => {
+      setTimeout(() => {
+        checkServerStatus();
+        fetchAdminStats();
+      }, 1000);
+    })
+    .catch(e => {
+      console.log('Power toggle request sent');
+      updateServerPowerUI(!serverIsRunning);
+    });
+}
+
+function switchSection(sec, el) {
+  ['overview', 'songs', 'users', 'playlists', 'clubs', 'logs'].forEach(s => {
+    const d = document.getElementById('section' + s.charAt(0).toUpperCase() + s.slice(1));
+    if (d) d.style.display = (s === sec) ? 'block' : 'none';
+  });
+  if (el) {
+    document.querySelectorAll('nav a').forEach(a => a.classList.remove('on'));
+    el.classList.add('on');
+  }
+}
+
+async function fetchAdminStats() {
+  try {
+    const res = await fetch('/admin/api/stats');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (document.getElementById('valTotalSongs')) document.getElementById('valTotalSongs').textContent = data.total_songs || 0;
+    if (document.getElementById('valTotalUsers')) document.getElementById('valTotalUsers').textContent = data.total_users || 0;
+    if (document.getElementById('valTotalPlays')) document.getElementById('valTotalPlays').textContent = data.total_plays || 0;
+    if (document.getElementById('songsBadge')) document.getElementById('songsBadge').textContent = data.total_songs || 0;
+    if (document.getElementById('usersBadge')) document.getElementById('usersBadge').textContent = data.total_users || 0;
+
+    if (data.storage) {
+      if (document.getElementById('valStorageUsed')) document.getElementById('valStorageUsed').textContent = data.storage.used;
+      if (document.getElementById('meterMusic')) document.getElementById('meterMusic').textContent = data.storage.music;
+      if (document.getElementById('meterCovers')) document.getElementById('meterCovers').textContent = data.storage.covers;
+      if (document.getElementById('meterDb')) document.getElementById('meterDb').textContent = data.storage.db;
+
+      if (data.storage.used_bytes && data.storage.total_bytes) {
+        const pct = Math.min(100, Math.round((data.storage.used_bytes / data.storage.total_bytes) * 100));
+        if (document.getElementById('valStoragePct')) document.getElementById('valStoragePct').textContent = pct + '%';
+        if (document.getElementById('trackMusic')) document.getElementById('trackMusic').style.width = Math.min(100, pct + 10) + '%';
+        if (document.getElementById('trackCovers')) document.getElementById('trackCovers').style.width = Math.min(100, Math.round(pct * 0.4)) + '%';
+        if (document.getElementById('trackDb')) document.getElementById('trackDb').style.width = '15%';
+      }
+    }
+
+    // Songs Table
+    if (data.recent_songs && document.getElementById('songsTableContainer')) {
+      let html = `<table><thead><tr><th>Title</th><th>Artist</th><th>Duration</th><th>Added</th></tr></thead><tbody>`;
+      data.recent_songs.forEach(s => {
+        html += `<tr>
+          <td><div class="cell-two"><div class="art">🎵</div><div><b>${escapeHtml(s.title)}</b><small>ID ${s.id}</small></div></div></td>
+          <td>${escapeHtml(s.artist)}</td>
+          <td>${s.duration}</td>
+          <td>${s.added}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      document.getElementById('songsTableContainer').innerHTML = html;
+    }
+
+    // Users Table
+    if (data.users && document.getElementById('usersTableContainer')) {
+      let html = `<table><thead><tr><th>User</th><th>Status</th><th>Joined</th></tr></thead><tbody>`;
+      data.users.forEach(u => {
+        html += `<tr>
+          <td><div class="cell-two"><div class="avatar">${u.username.charAt(0).toUpperCase()}</div><div><b>@${escapeHtml(u.username)}</b><small>${escapeHtml(u.email)}</small></div></div></td>
+          <td><span class="pill ${u.is_verified ? 'up' : ''}">${u.is_verified ? 'Verified' : 'Member'}</span></td>
+          <td>${u.created_at || 'Recent'}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      document.getElementById('usersTableContainer').innerHTML = html;
+    }
+
+    // Playlists Table
+    if (data.playlists && document.getElementById('playlistsTableContainer')) {
+      let html = `<table><thead><tr><th>Playlist</th><th>Owner</th><th>Songs</th><th>Type</th></tr></thead><tbody>`;
+      data.playlists.forEach(p => {
+        html += `<tr>
+          <td><b>${escapeHtml(p.name)}</b></td>
+          <td>@${escapeHtml(p.owner)}</td>
+          <td>${p.song_count} tracks</td>
+          <td><span class="pill ${p.type === 'Blend' ? 'up' : ''}">${p.type}</span></td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      document.getElementById('playlistsTableContainer').innerHTML = html;
+    }
+
+    // Clubs
+    if (data.clubs && document.getElementById('clubsContainer')) {
+      if (data.clubs.length === 0) {
+        document.getElementById('clubsContainer').innerHTML = `<div style="padding:20px;color:var(--muted)">No active listening clubs right now.</div>`;
+      } else {
+        document.getElementById('clubsContainer').innerHTML = data.clubs.map(c => `
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:start">
+              <div class="code">#${escapeHtml(c.code)}</div>
+              <span class="pill live">● Live</span>
+            </div>
+            <h3 style="margin:10px 0 14px">${escapeHtml(c.name)}</h3>
+            <div class="np"><div><b>${c.song_count} tracks</b><small>Created by @${escapeHtml(c.owner)}</small></div></div>
+            <div class="foot">
+              <span class="mono">${c.member_count} active members</span>
+            </div>
+          </div>
+        `).join('');
+      }
+    }
+  } catch(e) {
+    console.log('Stats error:', e);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const token = sessionStorage.getItem('adminToken');
+  if (token) {
+    document.getElementById('adminLoginOverlay').style.display = 'none';
+  } else {
+    document.getElementById('adminLoginOverlay').style.display = 'flex';
+  }
+
+  fetchAdminStats();
+  checkServerStatus();
+
+  const btnRefresh = document.getElementById('btnRefreshStats');
+  if (btnRefresh) {
+    btnRefresh.addEventListener('click', () => {
+      fetchAdminStats();
+      checkServerStatus();
+    });
+  }
+
+  document.getElementById('theme').onclick = () => {
+    const r = document.documentElement;
+    r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark';
+  };
+});
+</script>
+</body>
+</html>

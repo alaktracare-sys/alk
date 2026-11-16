@@ -635,7 +635,7 @@
 
 <div class="portal-header">
     <h1>Alaktra Studio Portal</h1>
-    <p>Manage music catalog, theme colors, and EXIF metadata streaming</p>
+    <p>Manage music catalog, theme colors, and EXIF metadata streaming &bull; <a href="/admin" style="color: var(--primary); font-weight: 700; text-decoration: none;">🛡️ Admin Console</a></p>
 </div>
 
 <div class="main-layout">
@@ -1062,7 +1062,7 @@
 
         const uploadUrl = (window.location.origin && window.location.origin.startsWith("http")) 
             ? `${window.location.origin}/songs/upload`
-            : "http://100.65.126.106:8000/songs/upload";
+            : "https://api.alaktracare.in/songs/upload";
 
         try {
             const response = await fetch(uploadUrl, { method: "POST", body: formData });

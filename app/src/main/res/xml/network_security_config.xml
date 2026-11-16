@@ -9,6 +9,8 @@
     </base-config>
 
     <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">api.alaktracare.in</domain>
+        <domain includeSubdomains="true">alaktracare.in</domain>
         <domain includeSubdomains="true">100.65.126.106</domain>
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>

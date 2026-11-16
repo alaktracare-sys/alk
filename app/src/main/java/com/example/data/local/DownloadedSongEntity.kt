@@ -1,5 +1,6 @@
 package com.example.data.local
 
+import com.example.model.ArtistCreditJsonCodec
 import com.example.model.Song
 
 data class DownloadedSongEntity(
@@ -12,9 +13,12 @@ data class DownloadedSongEntity(
     val duration: Double,
     val downloadedAt: Long = System.currentTimeMillis(),
     val fileSize: Long = 0L,
-    val dominantColorHex: String? = null
+    val dominantColorHex: String? = null,
+    val primaryArtistId: Int? = null,
+    val artistsJson: String? = null
 ) {
     fun toSong(): Song {
+        val credits = ArtistCreditJsonCodec.decode(artistsJson)
         return Song(
             id = songId,
             title = title,
@@ -24,7 +28,9 @@ data class DownloadedSongEntity(
             duration = duration,
             localPath = localPath,
             isDownloaded = true,
-            dominantColorHex = dominantColorHex
+            dominantColorHex = dominantColorHex,
+            primaryArtistId = primaryArtistId ?: credits.firstOrNull { it.role == "primary" }?.id ?: credits.firstOrNull()?.id,
+            artists = credits
         )
     }
 
@@ -40,7 +46,9 @@ data class DownloadedSongEntity(
                 duration = song.duration,
                 downloadedAt = System.currentTimeMillis(),
                 fileSize = fileSize,
-                dominantColorHex = song.dominantColorHex
+                dominantColorHex = song.dominantColorHex,
+                primaryArtistId = song.primaryArtistId,
+                artistsJson = ArtistCreditJsonCodec.encode(song.artists)
             )
         }
     }

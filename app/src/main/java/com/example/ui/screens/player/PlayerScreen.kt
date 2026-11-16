@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import com.example.audio.AudioController
 import com.example.audio.PlaybackState
 import com.example.audio.RepeatMode
+import com.example.model.Song
 import com.example.ui.components.SongCover
 import com.example.ui.theme.*
 import java.util.Locale
@@ -52,10 +53,13 @@ fun PlayerScreen(
     audioController: AudioController,
     playbackState: PlaybackState,
     isDownloaded: Boolean = false,
+    allowDownload: Boolean = true,
     downloadProgress: Float? = null,
     onNavigateToEqualizer: () -> Unit = {},
     onToggleDownload: () -> Unit = {},
     onAddToPlaylist: () -> Unit = {},
+    onOpenArtist: (Song) -> Unit = {},
+    onSelectArtistCredit: (Int, String) -> Unit = { _, _ -> },
     onClose: () -> Unit,
     onLikeToggle: () -> Unit
 ) {
@@ -85,6 +89,10 @@ fun PlayerScreen(
     // Pure pitch black at top (behind header and upper artwork),
     // blooming into the rich song-dependent dominant color across the middle (track info, seekbar, controls),
     // then smoothly deepening into a dark shade at the bottom.
+    LaunchedEffect(playbackState.currentSong?.id) {
+        audioController.ensureCurrentSongPalette()
+    }
+
     val hasDominant = playbackState.dominantColor != Color.Unspecified &&
         playbackState.dominantColor != Color.Transparent
     val dominant = if (hasDominant) {
@@ -152,19 +160,19 @@ fun PlayerScreen(
         val portraitArtMaxHeight = (screenHeight - 296.dp).coerceAtLeast(140.dp)
         val portraitArtworkSize = min(portraitArtMaxWidth, portraitArtMaxHeight).coerceIn(160.dp, 400.dp)
 
-        val landscapeArtMaxHeight = (screenHeight - 88.dp).coerceAtLeast(140.dp)
-        val landscapeArtMaxWidth = (screenWidth * 0.40f).coerceAtLeast(140.dp)
-        val landscapeArtworkSize = min(landscapeArtMaxWidth, landscapeArtMaxHeight).coerceIn(140.dp, 360.dp)
+        val landscapeArtMaxHeight = (screenHeight - 32.dp).coerceAtLeast(160.dp)
+        val landscapeArtMaxWidth = (screenWidth * 0.46f).coerceAtLeast(160.dp)
+        val landscapeArtworkSize = min(landscapeArtMaxWidth, landscapeArtMaxHeight).coerceIn(160.dp, 390.dp)
 
         val artworkSize = if (isLandscape) landscapeArtworkSize else portraitArtworkSize
 
         // Proportional control sizing - enlarged playback controls below artwork
-        val playButtonSize = (76.dp * heightScale).coerceIn(64.dp, 88.dp)
-        val playIconSize = (44.dp * heightScale).coerceIn(36.dp, 52.dp)
-        val skipButtonSize = (56.dp * heightScale).coerceIn(46.dp, 64.dp)
-        val skipIconSize = (42.dp * heightScale).coerceIn(34.dp, 48.dp)
-        val sideControlSize = (48.dp * heightScale).coerceIn(40.dp, 56.dp)
-        val sideIconSize = (28.dp * heightScale).coerceIn(24.dp, 34.dp)
+        val playButtonSize = if (isLandscape) 68.dp else (76.dp * heightScale).coerceIn(64.dp, 88.dp)
+        val playIconSize = if (isLandscape) 36.dp else (44.dp * heightScale).coerceIn(36.dp, 52.dp)
+        val skipButtonSize = if (isLandscape) 48.dp else (56.dp * heightScale).coerceIn(46.dp, 64.dp)
+        val skipIconSize = if (isLandscape) 34.dp else (42.dp * heightScale).coerceIn(34.dp, 48.dp)
+        val sideControlSize = if (isLandscape) 44.dp else (48.dp * heightScale).coerceIn(40.dp, 56.dp)
+        val sideIconSize = if (isLandscape) 24.dp else (28.dp * heightScale).coerceIn(24.dp, 34.dp)
         val topActionSize = (38.dp * heightScale).coerceIn(32.dp, 42.dp)
         val topDownArrowSize = (30.dp * heightScale).coerceIn(24.dp, 34.dp)
         val topMoreIconSize = (23.dp * heightScale).coerceIn(18.dp, 26.dp)
@@ -213,518 +221,475 @@ fun PlayerScreen(
                 .testTag("player_gradient_overlay")
         )
 
-        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
-                .background(bottomScrimBrush)
-        )
+        if (!isLandscape) {
+            val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
+                    .background(bottomScrimBrush)
+            )
+        }
 
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.fillMaxSize()
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .widthIn(max = if (isLandscape) 960.dp else 600.dp)
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(horizontal = horizontalPadding)
-            ) {
-            // Top Bar
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = topBarVerticalPadding + 6.dp, bottom = topBarVerticalPadding)
-            ) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.size(topActionSize)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Minimize Player",
-                        tint = Color.White,
-                        modifier = Modifier.size(topDownArrowSize)
-                    )
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "Playing from Playlist",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = topSubheaderFontSize,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = Color.White.copy(alpha = 0.7f)
-                    )
-                    Text(
-                        text = playbackState.playbackSource.ifBlank { if (song.isLiked) "Liked Songs" else "Alaktra Stream" },
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = topHeaderFontSize
-                        ),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // 3-dot menu button at top right
-                Box {
-                    IconButton(
-                        onClick = { showMenu = true },
-                        modifier = Modifier.size(topActionSize)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More Options",
-                            tint = Color.White,
-                            modifier = Modifier.size(topMoreIconSize)
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false },
-                        modifier = Modifier.background(AlaktraSurface)
-                    ) {
-                        // Download
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = if (isDownloaded) "Remove download" else "Download",
-                                    color = AlaktraTextPrimary
-                                )
-                            },
-                            leadingIcon = {
-                                if (downloadProgress != null) {
-                                    CircularProgressIndicator(
-                                        progress = { downloadProgress },
-                                        color = AlaktraMint,
-                                        strokeWidth = 2.dp,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = if (isDownloaded) Icons.Default.CheckCircle else Icons.Default.Download,
-                                        contentDescription = null,
-                                        tint = if (isDownloaded) AlaktraMint else AlaktraTextPrimary
-                                    )
-                                }
-                            },
-                            onClick = {
-                                showMenu = false
-                                onToggleDownload()
-                            }
-                        )
-
-                        // Add to playlist
-                        DropdownMenuItem(
-                            text = { Text("Add to playlist", color = AlaktraTextPrimary) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.PlaylistAdd,
-                                    contentDescription = null,
-                                    tint = AlaktraTextPrimary
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                onAddToPlaylist()
-                            }
-                        )
-
-                        // Queue
-                        DropdownMenuItem(
-                            text = { Text("Queue", color = AlaktraTextPrimary) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = null,
-                                    tint = AlaktraTextPrimary
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                showQueueSheet = true
-                            }
-                        )
-
-                        // Equalizer
-                        DropdownMenuItem(
-                            text = { Text("Equalizer", color = AlaktraTextPrimary) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.GraphicEq,
-                                    contentDescription = null,
-                                    tint = AlaktraMint
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                onNavigateToEqualizer()
-                            }
-                        )
-
-                        // Sleep timer
-                        DropdownMenuItem(
-                            text = {
-                                val label = if (isSleepTimerActive && sleepTimerSeconds != null) {
-                                    if (stopAtEndOfTrack) "Sleep timer (End of track)" else "Sleep timer (${(sleepTimerSeconds!! + 59) / 60}m)"
-                                } else {
-                                    "Sleep timer"
-                                }
-                                Text(label, color = AlaktraTextPrimary)
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Timer,
-                                    contentDescription = null,
-                                    tint = if (isSleepTimerActive) AlaktraMint else AlaktraTextPrimary
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                showSleepTimerDialog = true
-                            }
-                        )
-
-                        // Share
-                        DropdownMenuItem(
-                            text = { Text("Share", color = AlaktraTextPrimary) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Share,
-                                    contentDescription = null,
-                                    tint = AlaktraTextPrimary
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(
-                                        Intent.EXTRA_TEXT,
-                                        "Listening to ${song.title} by ${song.artist} on Alaktra Stream"
-                                    )
-                                }
-                                context.startActivity(Intent.createChooser(shareIntent, "Share song via"))
-                            }
-                        )
-                    }
-                }
-            }
-
             if (isLandscape) {
-                // Two-pane side-by-side layout for landscape mode
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+                // Landscape: Full-screen two-pane centered layout with floating corner controls
+                Box(
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    // Left Pane: Artwork
-                    Column(
+                    // Main 2-Pane Content: Both Left & Right Panes are vertically centered on the device screen
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                            .fillMaxSize()
+                            .align(Alignment.Center)
+                            .padding(horizontal = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(28.dp)
                     ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
+                        // Left Pane: Artwork (strictly centered vertically, equal distance from top and bottom)
+                        Column(
                             modifier = Modifier
-                                .size(artworkSize)
-                                .padding(vertical = artworkVerticalPadding)
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
                         ) {
                             Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .shadow(16.dp, RoundedCornerShape(10.dp))
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                                    .background(AlaktraCard)
-                            ) {
-                                SongCover(
-                                    imageUrl = song.coverUrl,
-                                    size = artworkSize,
-                                    cornerRadius = 10.dp,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        }
-                    }
-
-                    // Right Pane: Info, Seeker, Controls, Actions
-                    Column(
-                        modifier = Modifier
-                            .weight(1.3f)
-                            .fillMaxHeight()
-                            .padding(horizontal = 12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        // Title, Artist, and Green Like Checkmark
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = song.title,
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = titleFontSize
-                                    ),
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = song.artist,
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontSize = artistFontSize,
-                                        fontWeight = FontWeight.Normal
-                                    ),
-                                    color = Color.White.copy(alpha = 0.7f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-
-                            IconButton(
-                                onClick = onLikeToggle,
-                                modifier = Modifier.size(likeBadgeSize)
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.size(artworkSize)
                             ) {
                                 Box(
-                                    contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .size(likeIconContainerSize)
-                                        .clip(CircleShape)
-                                        .background(if (song.isLiked) Color(0xFF1DB954) else Color.White.copy(alpha = 0.15f))
+                                        .fillMaxSize()
+                                        .shadow(16.dp, RoundedCornerShape(24.dp))
+                                        .clip(RoundedCornerShape(24.dp))
+                                        .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
+                                        .background(AlaktraCard)
                                 ) {
-                                    Icon(
-                                        imageVector = if (song.isLiked) Icons.Default.Check else Icons.Default.FavoriteBorder,
-                                        contentDescription = if (song.isLiked) "Liked" else "Like",
-                                        tint = if (song.isLiked) Color.Black else Color.White,
-                                        modifier = Modifier.size(likeIconSize)
+                                    SongCover(
+                                        imageUrl = song.coverUrl,
+                                        size = artworkSize,
+                                        cornerRadius = 24.dp,
+                                        modifier = Modifier.fillMaxSize(),
+                                        onArtworkLoaded = { drawable ->
+                                            audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
+                                        }
                                     )
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        LiveDurationBar(
-                            audioController = audioController,
-                            fallbackPositionMs = playbackState.currentPositionMs,
-                            durationMs = effectiveDurationMs,
-                            modifier = Modifier.padding(horizontal = 4.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        // Controls
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                        // Right Pane: Info, Seeker, Controls, Actions (strictly centered vertically, equal distance from top and bottom)
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .weight(1.3f)
+                                .fillMaxHeight()
+                                .padding(horizontal = 4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            IconButton(
-                                onClick = { audioController.toggleShuffle() },
-                                modifier = Modifier.size(sideControlSize)
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Shuffle,
-                                        contentDescription = "Shuffle",
-                                        tint = if (playbackState.shuffle) Color(0xFF1DB954) else Color.White.copy(alpha = 0.7f),
-                                        modifier = Modifier.size(sideIconSize)
-                                    )
-                                    if (playbackState.shuffle) {
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(top = 2.dp)
-                                                .size(4.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF1DB954))
-                                        )
-                                    }
-                                }
-                            }
-
-                            IconButton(
-                                onClick = { audioController.previous() },
-                                modifier = Modifier.size(skipButtonSize)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.SkipPrevious,
-                                    contentDescription = "Previous Track",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(skipIconSize)
-                                )
-                            }
-
-                            Box(
-                                contentAlignment = Alignment.Center,
+                            // Title, Artist, and Like Checkmark/Heart
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
-                                    .size(playButtonSize)
-                                    .clip(CircleShape)
-                                    .background(Color.White)
-                                    .clickable { audioController.togglePlayPause() }
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp)
                             ) {
-                                Icon(
-                                    imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
-                                    tint = Color.Black,
-                                    modifier = Modifier.size(playIconSize)
-                                )
-                            }
-
-                            IconButton(
-                                onClick = { audioController.next() },
-                                modifier = Modifier.size(skipButtonSize)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.SkipNext,
-                                    contentDescription = "Next Track",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(skipIconSize)
-                                )
-                            }
-
-                            IconButton(
-                                onClick = { audioController.cycleRepeatMode() },
-                                modifier = Modifier.size(sideControlSize)
-                            ) {
-                                val isRepeatActive = playbackState.repeat != RepeatMode.OFF
-                                val loopIcon = if (playbackState.repeat == RepeatMode.TRACK) {
-                                    Icons.Default.RepeatOne
-                                } else {
-                                    Icons.Default.Repeat
-                                }
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(
-                                        imageVector = loopIcon,
-                                        contentDescription = "Repeat Mode",
-                                        tint = if (isRepeatActive) Color(0xFF1DB954) else Color.White.copy(alpha = 0.7f),
-                                        modifier = Modifier.size(sideIconSize)
-                                    )
-                                    if (isRepeatActive) {
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(top = 2.dp)
-                                                .size(4.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF1DB954))
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(2.dp))
-
-                        // Bottom Actions
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        ) {
-                            IconButton(
-                                onClick = { showSleepTimerDialog = true },
-                                modifier = Modifier.size(sideControlSize)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Timer,
-                                        contentDescription = "Sleep Timer",
-                                        tint = if (isSleepTimerActive) AlaktraMint else Color.White.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(sideIconSize)
-                                    )
-                                    if (isSleepTimerActive) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(5.dp)
-                                                .align(Alignment.TopEnd)
-                                                .clip(CircleShape)
-                                                .background(AlaktraMint)
-                                        )
-                                    }
-                                }
-                            }
-
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.12f))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.20f), CircleShape)
-                                    .clickable { showCreditsDialog = true }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = "Credits",
-                                        tint = Color.White.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(sideIconSize * 0.60f)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Credits",
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold
+                                        text = song.title,
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = titleFontSize
                                         ),
-                                        color = Color.White.copy(alpha = 0.95f),
+                                        color = Color.White,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = song.artist,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontSize = artistFontSize,
+                                            fontWeight = FontWeight.Normal
+                                        ),
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable { onOpenArtist(song) }
+                                            .padding(vertical = 1.dp)
+                                            .testTag("player_artist_name_landscape")
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onLikeToggle,
+                                    modifier = Modifier.size(likeBadgeSize)
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(likeIconContainerSize)
+                                            .clip(CircleShape)
+                                            .background(if (song.isLiked) Color(0xFF1DB954) else Color.White.copy(alpha = 0.12f))
+                                    ) {
+                                        Icon(
+                                            imageVector = if (song.isLiked) Icons.Default.Check else Icons.Default.FavoriteBorder,
+                                            contentDescription = if (song.isLiked) "Liked" else "Like",
+                                            tint = if (song.isLiked) Color.Black else Color.White,
+                                            modifier = Modifier.size(likeIconSize)
+                                        )
+                                    }
                                 }
                             }
 
+                            // Gap between song name & seek slider
+                            Spacer(modifier = Modifier.height(18.dp))
+
+                            LiveDurationBar(
+                                audioController = audioController,
+                                fallbackPositionMs = playbackState.currentPositionMs,
+                                durationMs = effectiveDurationMs,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+
+                            // Gap between seek slider & playback controls
+                            Spacer(modifier = Modifier.height(22.dp))
+
+                            // Controls (Shuffle, Previous, Play/Pause, Next, Repeat)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { audioController.toggleShuffle() },
+                                    modifier = Modifier.size(sideControlSize)
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Shuffle,
+                                            contentDescription = "Shuffle",
+                                            tint = if (playbackState.shuffle) Color(0xFF1DB954) else Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(sideIconSize)
+                                        )
+                                        if (playbackState.shuffle) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(top = 2.dp)
+                                                    .size(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF1DB954))
+                                            )
+                                        }
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = { audioController.previous() },
+                                    modifier = Modifier.size(skipButtonSize)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipPrevious,
+                                        contentDescription = "Previous Track",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(skipIconSize)
+                                    )
+                                }
+
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(playButtonSize)
+                                        .clip(CircleShape)
+                                        .background(Color.White)
+                                        .clickable { audioController.togglePlayPause() }
+                                ) {
+                                    Icon(
+                                        imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(playIconSize)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { audioController.next() },
+                                    modifier = Modifier.size(skipButtonSize)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipNext,
+                                        contentDescription = "Next Track",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(skipIconSize)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { audioController.cycleRepeatMode() },
+                                    modifier = Modifier.size(sideControlSize)
+                                ) {
+                                    val isRepeatActive = playbackState.repeat != RepeatMode.OFF
+                                    val loopIcon = if (playbackState.repeat == RepeatMode.TRACK) {
+                                        Icons.Default.RepeatOne
+                                    } else {
+                                        Icons.Default.Repeat
+                                    }
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = loopIcon,
+                                            contentDescription = "Repeat Mode",
+                                            tint = if (isRepeatActive) Color(0xFF1DB954) else Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(sideIconSize)
+                                        )
+                                        if (isRepeatActive) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(top = 2.dp)
+                                                    .size(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF1DB954))
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Gap between playback controls & bottom actions (credits, timer, queue)
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            // Bottom Actions
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { showSleepTimerDialog = true },
+                                    modifier = Modifier.size(sideControlSize)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Timer,
+                                            contentDescription = "Sleep Timer",
+                                            tint = if (isSleepTimerActive) AlaktraMint else Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(sideIconSize)
+                                        )
+                                        if (isSleepTimerActive) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(5.dp)
+                                                    .align(Alignment.TopEnd)
+                                                    .clip(CircleShape)
+                                                    .background(AlaktraMint)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(Color.White.copy(alpha = 0.12f))
+                                        .border(0.5.dp, Color.White.copy(alpha = 0.20f), CircleShape)
+                                        .clickable { showCreditsDialog = true }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = "Credits",
+                                            tint = Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(sideIconSize * 0.60f)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Credits",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            color = Color.White.copy(alpha = 0.95f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = { showQueueSheet = true },
+                                    modifier = Modifier.size(sideControlSize)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QueueMusic,
+                                        contentDescription = "View Queue",
+                                        tint = Color.White.copy(alpha = 0.85f),
+                                        modifier = Modifier.size(sideIconSize)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Floating Overlay Top Bar: Down-arrow top-left & 3-dot top-right (Zero layout height impact)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .padding(horizontal = 5.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onClose,
+                            modifier = Modifier.size(topActionSize)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize Player",
+                                tint = Color.White,
+                                modifier = Modifier.size(topDownArrowSize)
+                            )
+                        }
+
+                        Box {
                             IconButton(
-                                onClick = { showQueueSheet = true },
-                                modifier = Modifier.size(sideControlSize)
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(topActionSize)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = "View Queue",
-                                    tint = Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(sideIconSize)
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More Options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(topMoreIconSize)
                                 )
                             }
+
+                            PlayerOptionsMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                                allowDownload = allowDownload,
+                                isDownloaded = isDownloaded,
+                                downloadProgress = downloadProgress,
+                                onToggleDownload = onToggleDownload,
+                                onAddToPlaylist = onAddToPlaylist,
+                                song = song,
+                                onOpenArtist = onOpenArtist,
+                                onOpenQueue = { showQueueSheet = true },
+                                onNavigateToEqualizer = onNavigateToEqualizer,
+                                isSleepTimerActive = isSleepTimerActive,
+                                sleepTimerSeconds = sleepTimerSeconds,
+                                stopAtEndOfTrack = stopAtEndOfTrack,
+                                onOpenSleepTimer = { showSleepTimerDialog = true }
+                            )
                         }
                     }
                 }
             } else {
                 // Portrait Layout
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .widthIn(max = 600.dp)
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = horizontalPadding)
+                ) {
+                    // Top Bar (Portrait)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = topBarVerticalPadding + 6.dp, bottom = topBarVerticalPadding)
+                    ) {
+                        IconButton(
+                            onClick = onClose,
+                            modifier = Modifier.size(topActionSize)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize Player",
+                                tint = Color.White,
+                                modifier = Modifier.size(topDownArrowSize)
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = if (!allowDownload) "Playing from Fuse Blend" else "Playing from Playlist",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = topSubheaderFontSize,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = if (!allowDownload) AlaktraCyan else Color.White.copy(alpha = 0.7f)
+                            )
+                            Text(
+                                text = playbackState.playbackSource.ifBlank { if (song.isLiked) "Liked Songs" else "Alaktra Stream" },
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = topHeaderFontSize
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        // 3-dot menu button at top right
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(topActionSize)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More Options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(topMoreIconSize)
+                                )
+                            }
+
+                            PlayerOptionsMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                                allowDownload = allowDownload,
+                                isDownloaded = isDownloaded,
+                                downloadProgress = downloadProgress,
+                                onToggleDownload = onToggleDownload,
+                                onAddToPlaylist = onAddToPlaylist,
+                                song = song,
+                                onOpenArtist = onOpenArtist,
+                                onOpenQueue = { showQueueSheet = true },
+                                onNavigateToEqualizer = onNavigateToEqualizer,
+                                isSleepTimerActive = isSleepTimerActive,
+                                sleepTimerSeconds = sleepTimerSeconds,
+                                stopAtEndOfTrack = stopAtEndOfTrack,
+                                onOpenSleepTimer = { showSleepTimerDialog = true }
+                            )
+                        }
+                    }
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Artwork with definite auto-adjusted proportion
@@ -746,7 +711,10 @@ fun PlayerScreen(
                             imageUrl = song.coverUrl,
                             size = artworkSize,
                             cornerRadius = 10.dp,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            onArtworkLoaded = { drawable ->
+                                audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
+                            }
                         )
                     }
                 }
@@ -778,9 +746,14 @@ fun PlayerScreen(
                                 fontSize = artistFontSize,
                                 fontWeight = FontWeight.Normal
                             ),
-                            color = Color.White.copy(alpha = 0.7f),
+                            color = Color.White.copy(alpha = 0.78f),
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onOpenArtist(song) }
+                                .padding(vertical = 2.dp)
+                                .testTag("player_artist_name")
                         )
                     }
 
@@ -1237,17 +1210,68 @@ fun PlayerScreen(
                                 color = Color.White
                             )
                         }
-                        Column {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(
-                                text = "Performed by",
+                                text = "Performing Artists",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White.copy(alpha = 0.5f)
                             )
-                            Text(
-                                text = song.artist,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White
-                            )
+                            if (song.artists.isNotEmpty()) {
+                                song.artists.forEach { credit ->
+                                    val isPrimary = credit.role.equals("primary", ignoreCase = true)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(AlaktraSurface)
+                                            .clickable {
+                                                showCreditsDialog = false
+                                                onSelectArtistCredit(credit.id, credit.name)
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text = credit.name,
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                color = Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (credit.isVerified) {
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Default.Verified,
+                                                    contentDescription = "Verified",
+                                                    tint = AlaktraCyan,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = if (isPrimary) "Primary" else "Featured",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPrimary) AlaktraMint else Color(0xFFC4B5FD)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = song.artist,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = AlaktraCyan,
+                                    modifier = Modifier.clickable {
+                                        showCreditsDialog = false
+                                        onOpenArtist(song)
+                                    }
+                                )
+                            }
                         }
                         Column {
                             Text(
@@ -1279,6 +1303,172 @@ fun PlayerScreen(
                 onDismiss = { showQueueSheet = false }
             )
         }
+    }
+}
+
+@Composable
+private fun PlayerOptionsMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    allowDownload: Boolean,
+    isDownloaded: Boolean,
+    downloadProgress: Float?,
+    onToggleDownload: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    song: Song,
+    onOpenArtist: (Song) -> Unit,
+    onOpenQueue: () -> Unit,
+    onNavigateToEqualizer: () -> Unit,
+    isSleepTimerActive: Boolean,
+    sleepTimerSeconds: Int?,
+    stopAtEndOfTrack: Boolean,
+    onOpenSleepTimer: () -> Unit
+) {
+    val context = LocalContext.current
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        modifier = Modifier.background(AlaktraSurface)
+    ) {
+        if (allowDownload) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (isDownloaded) "Remove download" else "Download",
+                        color = AlaktraTextPrimary
+                    )
+                },
+                leadingIcon = {
+                    if (downloadProgress != null) {
+                        CircularProgressIndicator(
+                            progress = { downloadProgress },
+                            color = AlaktraMint,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (isDownloaded) Icons.Default.CheckCircle else Icons.Default.Download,
+                            contentDescription = null,
+                            tint = if (isDownloaded) AlaktraMint else AlaktraTextPrimary
+                        )
+                    }
+                },
+                onClick = {
+                    onDismissRequest()
+                    onToggleDownload()
+                }
+            )
+        }
+
+        DropdownMenuItem(
+            text = { Text("Add to playlist", color = AlaktraTextPrimary) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.PlaylistAdd,
+                    contentDescription = null,
+                    tint = AlaktraTextPrimary
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                onAddToPlaylist()
+            }
+        )
+
+        DropdownMenuItem(
+            text = {
+                Text(
+                    text = if (song.hasMultipleArtists) "View artists (${song.artists.size})" else "View artist",
+                    color = AlaktraTextPrimary
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = if (song.hasMultipleArtists) Icons.Default.Groups else Icons.Default.Person,
+                    contentDescription = null,
+                    tint = AlaktraCyan
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                onOpenArtist(song)
+            }
+        )
+
+        DropdownMenuItem(
+            text = { Text("Queue", color = AlaktraTextPrimary) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.QueueMusic,
+                    contentDescription = null,
+                    tint = AlaktraTextPrimary
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                onOpenQueue()
+            }
+        )
+
+        DropdownMenuItem(
+            text = { Text("Equalizer", color = AlaktraTextPrimary) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = AlaktraMint
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                onNavigateToEqualizer()
+            }
+        )
+
+        DropdownMenuItem(
+            text = {
+                val label = if (isSleepTimerActive && sleepTimerSeconds != null) {
+                    if (stopAtEndOfTrack) "Sleep timer (End of track)" else "Sleep timer (${(sleepTimerSeconds + 59) / 60}m)"
+                } else {
+                    "Sleep timer"
+                }
+                Text(label, color = AlaktraTextPrimary)
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Timer,
+                    contentDescription = null,
+                    tint = if (isSleepTimerActive) AlaktraMint else AlaktraTextPrimary
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                onOpenSleepTimer()
+            }
+        )
+
+        DropdownMenuItem(
+            text = { Text("Share", color = AlaktraTextPrimary) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = null,
+                    tint = AlaktraTextPrimary
+                )
+            },
+            onClick = {
+                onDismissRequest()
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "Listening to ${song.title} by ${song.artist} on Alaktra Stream"
+                    )
+                }
+                context.startActivity(Intent.createChooser(shareIntent, "Share song via"))
+            }
+        )
     }
 }
 

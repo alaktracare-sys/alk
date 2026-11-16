@@ -1,5 +1,7 @@
 package com.example.data.fuse
 
+import com.example.data.local.PlaylistEntity
+import com.example.model.Playlist
 import com.example.model.Song
 import org.junit.Assert.*
 import org.junit.Test
@@ -18,17 +20,24 @@ class FuseCodeCodecTest {
     }
 
     @Test
-    fun `extractCode handles raw codes, https links, app scheme links, and full share message`() {
-        val code = FuseCodeCodec.encodeCode(hostUserId = 12, nonce = 0x1A3C)
+    fun `extractCode handles server random 6 char codes, https links, app scheme links, and share messages`() {
+        val serverCodes = listOf(
+            "2BCD34", // starts with low digit where legacy decodeHostUserId would be null
+            "A7K9P2",
+            FuseCodeCodec.encodeCode(hostUserId = 12, nonce = 0x1A3C)
+        )
 
-        assertEquals(code, FuseCodeCodec.extractCode(code))
-        assertEquals(code, FuseCodeCodec.extractCode("  ${code.lowercase()}  "))
-        assertEquals(code, FuseCodeCodec.extractCode(FuseCodeCodec.buildShareDeepLink(code)))
-        assertEquals(code, FuseCodeCodec.extractCode(FuseCodeCodec.buildAppSchemeLink(code)))
-        assertEquals(code, FuseCodeCodec.extractCode("https://alaktra.app/fuse/$code"))
+        for (code in serverCodes) {
+            assertEquals(code, FuseCodeCodec.extractCode(code))
+            assertEquals(code, FuseCodeCodec.extractCode("  ${code.lowercase()}  "))
+            assertEquals(code, FuseCodeCodec.extractCode("${code.take(3)}-${code.drop(3)}"))
+            assertEquals(code, FuseCodeCodec.extractCode(FuseCodeCodec.buildShareDeepLink(code)))
+            assertEquals(code, FuseCodeCodec.extractCode(FuseCodeCodec.buildAppSchemeLink(code)))
+            assertEquals(code, FuseCodeCodec.extractCode("https://alaktra.app/fuse/$code"))
 
-        val shareMessage = FuseCodeCodec.buildShareMessage("Aman", code)
-        assertEquals(code, FuseCodeCodec.extractCode(shareMessage))
+            val shareMessage = FuseCodeCodec.buildShareMessage("Aman", code)
+            assertEquals(code, FuseCodeCodec.extractCode(shareMessage))
+        }
     }
 
     @Test
@@ -54,46 +63,97 @@ class FuseCodeCodecTest {
     }
 
     @Test
-    fun `buildFusePlaylistName formats as user 1 fuse user 2`() {
+    fun `buildFusePlaylistName and parseFuseNamesFromTitle preserve user 1 fuse user 2`() {
         val title = FuseCodeCodec.buildFusePlaylistName("Alex", "Sam")
         assertEquals("Alex fuse Sam", title)
         assertTrue(FuseCodeCodec.isFusePlaylistName(title))
+
+        val (u1, u2) = FuseCodeCodec.parseFuseNamesFromTitle(title)
+        assertEquals("Alex", u1)
+        assertEquals("Sam", u2)
+        assertEquals("A", FuseCodeCodec.extractInitial(u1))
+        assertEquals("S", FuseCodeCodec.extractInitial(u2))
     }
 
     @Test
-    fun `computeCommonFuseSongs selects up to 30 shared songs from liked and normal playlists`() {
-        val user1LikedAndNormal = (1..45).map { id ->
+    fun `PlaylistEntity roundtrips Fuse Blend metadata and enforces non editable and non downloadable flags`() {
+        val original = Playlist(
+            id = 77,
+            name = "Riya fuse Kabir",
+            description = "Fuse Blend",
+            songCount = 30,
+            isFuse = true,
+            fuseId = 14,
+            fuseMatchScore = 88,
+            fuseUser1Name = "Riya",
+            fuseUser2Name = "Kabir"
+        )
+        assertFalse(original.isEditable)
+        assertFalse(original.isDownloadable)
+
+        val entity = PlaylistEntity.fromPlaylist(original, userId = 5)
+        val restored = entity.toPlaylist()
+
+        assertTrue(restored.isFuse)
+        assertEquals(14, restored.fuseId)
+        assertEquals(88, restored.fuseMatchScore)
+        assertEquals("Riya", restored.fuseUser1Name)
+        assertEquals("Kabir", restored.fuseUser2Name)
+        assertFalse(restored.isEditable)
+        assertFalse(restored.isDownloadable)
+    }
+
+    @Test
+    fun `computeCommonFuseSongs and computeBlendFallback enforce stream only non downloadable songs and contributor badges`() {
+        val user1LikedAndNormal = (1..25).map { id ->
             Song(
                 id = id,
                 title = "Track $id",
-                artist = "Artist $id",
+                artist = "Artist ${id % 5}",
                 audioUrl = "http://server/audio/$id.mp3",
                 coverUrl = "http://server/cover/$id.jpg",
-                isLiked = id <= 15
+                isLiked = id <= 10,
+                isDownloaded = true,
+                localPath = "/data/local/$id.mp3"
             )
         }
 
-        // User 2 shares songs 10..44 (35 common songs across liked & normal) plus unique songs 100..110
-        val user2LikedAndNormal = ((10..44) + (100..110)).map { id ->
+        // User 2 shares songs 15..25 (11 common songs) plus unique songs 100..125
+        val user2LikedAndNormal = ((15..25) + (100..125)).map { id ->
             Song(
                 id = id,
                 title = "Track $id",
-                artist = "Artist $id",
+                artist = "Artist ${id % 5}",
                 audioUrl = "http://server/audio/$id.mp3",
                 coverUrl = "http://server/cover/$id.jpg",
-                isLiked = id >= 35
+                isLiked = id >= 20,
+                isDownloaded = true,
+                localPath = "/data/local/$id.mp3"
             )
         }
 
-        val fusePlaylistSongs = FuseCodeCodec.computeCommonFuseSongs(
+        val commonOnly = FuseCodeCodec.computeCommonFuseSongs(
             user1Songs = user1LikedAndNormal,
             user2Songs = user2LikedAndNormal,
             maxSongs = 30,
             random = Random(42)
         )
+        assertEquals(11, commonOnly.size)
+        assertTrue(commonOnly.all { it.id in 15..25 })
+        assertTrue(commonOnly.all { !it.isDownloaded && it.localPath == null && it.fuseContributor == "both" })
 
-        assertEquals(30, fusePlaylistSongs.size)
-        assertEquals(30, fusePlaylistSongs.map { it.id }.distinct().size)
-        assertTrue(fusePlaylistSongs.all { it.id in 10..44 })
+        val (blended, matchScore) = FuseCodeCodec.computeBlendFallback(
+            user1Songs = user1LikedAndNormal,
+            user2Songs = user2LikedAndNormal,
+            maxSongs = 30,
+            random = Random(42)
+        )
+        assertEquals(30, blended.size)
+        assertEquals(30, blended.map { it.id }.distinct().size)
+        assertTrue(matchScore in 42..99)
+        assertTrue(blended.all { !it.isDownloaded && it.localPath == null })
+        assertEquals(11, blended.count { it.fuseContributor == "both" })
+        assertTrue(blended.any { it.fuseContributor == "user1" })
+        assertTrue(blended.any { it.fuseContributor == "user2" })
     }
 }

@@ -281,6 +281,10 @@ object AudioCache {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(20000)
+            .setUserAgent("AlaktraAndroidApp/${com.example.BuildConfig.VERSION_NAME}")
+            .setDefaultRequestProperties(
+                mapOf("X-App-Secret" to com.example.BuildConfig.API_SECRET)
+            )
 
         val cacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)

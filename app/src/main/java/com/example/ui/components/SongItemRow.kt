@@ -36,6 +36,8 @@ fun SongItemRow(
     song: Song,
     isPlaying: Boolean = false,
     downloadProgress: Float? = null,
+    showDownloadStatus: Boolean = true,
+    contributorBadge: (@Composable () -> Unit)? = null,
     onSongClick: () -> Unit,
     onLikeToggle: () -> Unit,
     onMoreClick: () -> Unit,
@@ -90,24 +92,28 @@ fun SongItemRow(
             Spacer(modifier = Modifier.height(3.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (downloadProgress != null) {
-                    CircularProgressIndicator(
-                        progress = { downloadProgress },
-                        color = AlaktraMint,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier
-                            .size(13.dp)
-                            .padding(end = 6.dp)
-                    )
-                } else if (song.isDownloaded) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Downloaded offline",
-                        tint = AlaktraMint,
-                        modifier = Modifier
-                            .size(14.dp)
-                            .padding(end = 6.dp)
-                    )
+                contributorBadge?.invoke()
+
+                if (showDownloadStatus) {
+                    if (downloadProgress != null) {
+                        CircularProgressIndicator(
+                            progress = { downloadProgress },
+                            color = AlaktraMint,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier
+                                .size(13.dp)
+                                .padding(end = 6.dp)
+                        )
+                    } else if (song.isDownloaded) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Downloaded offline",
+                            tint = AlaktraMint,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .padding(end = 6.dp)
+                        )
+                    }
                 }
 
                 Text(

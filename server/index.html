@@ -3,17 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Alaktra Studio • Creator Portal</title>
+    <title>Alaktra Studio • Creator & Artist Portal</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-base: #060907;
-            --bg-card: rgba(17, 24, 20, 0.75);
+            --bg-card: rgba(17, 24, 20, 0.78);
             --bg-card-solid: #111814;
             --border-color: rgba(255, 255, 255, 0.08);
             --border-hover: rgba(0, 229, 153, 0.35);
             --primary: #00E599;
             --primary-hover: #00c784;
+            --cyan: #00D2FF;
+            --violet: #8B5CF6;
             --text-main: #f3f6f4;
             --text-muted: #8b9d93;
             --accent-glow: rgba(0, 229, 153, 0.15);
@@ -28,13 +30,13 @@
         body {
             font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
             background-color: var(--bg-base);
-            background-image: 
+            background-image:
                 radial-gradient(circle at 15% 10%, rgba(0, 229, 153, 0.1) 0%, transparent 45%),
                 radial-gradient(circle at 85% 90%, rgba(0, 112, 243, 0.08) 0%, transparent 45%),
                 radial-gradient(circle at 50% 50%, rgba(155, 81, 224, 0.04) 0%, transparent 60%);
             color: var(--text-main);
             min-height: 100vh;
-            padding: 2.5rem 1rem;
+            padding: 2.2rem 1rem 3rem;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -42,7 +44,7 @@
 
         .portal-header {
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 1.4rem;
         }
 
         .portal-header h1 {
@@ -57,25 +59,82 @@
 
         .portal-header p {
             color: var(--text-muted);
-            font-size: 0.95rem;
+            font-size: 0.94rem;
             font-weight: 500;
+        }
+
+        /* Top Navigation Tabs */
+        .portal-tabs {
+            display: inline-flex;
+            gap: 8px;
+            padding: 6px;
+            background: rgba(17, 24, 20, 0.9);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            margin-bottom: 2rem;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        }
+
+        .portal-tab {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 700;
+            padding: 10px 20px;
+            border-radius: 12px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .portal-tab:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .portal-tab.active {
+            background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
+            color: #060a08;
+            box-shadow: 0 6px 18px rgba(0, 229, 153, 0.28);
+        }
+
+        .tab-badge {
+            background: #ef4444;
+            color: #fff;
+            font-size: 0.72rem;
+            font-weight: 800;
+            padding: 2px 7px;
+            border-radius: 999px;
+            display: none;
+        }
+
+        .tab-section {
+            display: none;
+            width: 100%;
+            max-width: 1160px;
+        }
+
+        .tab-section.active {
+            display: block;
         }
 
         .main-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
             width: 100%;
-            max-width: 1120px;
             gap: 28px;
             align-items: start;
-            justify-content: center;
         }
 
         .card {
             background: var(--bg-card);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            padding: 2.2rem;
+            padding: 2rem;
             border-radius: 24px;
             box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
             border: 1px solid var(--border-color);
@@ -94,21 +153,24 @@
         }
 
         .card-title {
-            font-size: 1.25rem;
+            font-size: 1.22rem;
             font-weight: 700;
             color: #ffffff;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.4rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .card-title-left {
             display: flex;
             align-items: center;
             gap: 10px;
         }
 
-        .card-title span {
-            font-size: 1.2rem;
-        }
-
         .input-group {
-            margin-bottom: 1.35rem;
+            margin-bottom: 1.25rem;
             position: relative;
         }
 
@@ -116,29 +178,110 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 0.5rem;
-            font-size: 0.85rem;
+            margin-bottom: 0.48rem;
+            font-size: 0.84rem;
             font-weight: 600;
             color: #c4d1c8;
         }
 
-        input[type="text"] {
+        input[type="text"],
+        select,
+        textarea {
             width: 100%;
-            padding: 13px 16px;
+            padding: 12px 15px;
             border-radius: 12px;
             border: 1px solid var(--border-color);
-            background-color: rgba(255, 255, 255, 0.03);
+            background-color: rgba(255, 255, 255, 0.035);
             color: white;
-            font-size: 0.95rem;
+            font-family: inherit;
+            font-size: 0.92rem;
             font-weight: 500;
             outline: none;
-            transition: all 0.25s ease;
+            transition: all 0.2s ease;
         }
 
-        input[type="text"]:focus {
+        select option {
+            background-color: #111814;
+            color: #f3f6f4;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 82px;
+            line-height: 1.45;
+        }
+
+        input[type="text"]:focus,
+        select:focus,
+        textarea:focus {
             border-color: var(--primary);
             background-color: rgba(255, 255, 255, 0.06);
             box-shadow: 0 0 0 4px var(--accent-glow);
+        }
+
+        /* Collaborator Chips & Selector */
+        .collab-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-secondary-sm {
+            background: rgba(0, 229, 153, 0.12);
+            border: 1px solid rgba(0, 229, 153, 0.35);
+            color: var(--primary);
+            padding: 11px 14px;
+            border-radius: 12px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.18s ease;
+        }
+
+        .btn-secondary-sm:hover {
+            background: var(--primary);
+            color: #060a08;
+        }
+
+        .chips-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 7px;
+            margin-top: 8px;
+        }
+
+        .artist-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            background: rgba(139, 92, 246, 0.15);
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            color: #ddd6fe;
+        }
+
+        .artist-chip.primary-role {
+            background: rgba(0, 229, 153, 0.14);
+            border-color: rgba(0, 229, 153, 0.42);
+            color: var(--primary);
+        }
+
+        .artist-chip button {
+            background: none;
+            border: none;
+            color: inherit;
+            font-size: 0.95rem;
+            cursor: pointer;
+            line-height: 1;
+            opacity: 0.8;
+        }
+
+        .artist-chip button:hover {
+            opacity: 1;
         }
 
         /* Live Match Dropdown */
@@ -155,7 +298,6 @@
             z-index: 50;
             max-height: 200px;
             overflow-y: auto;
-            backdrop-filter: blur(10px);
         }
 
         .match-item {
@@ -177,7 +319,6 @@
             height: 36px;
             border-radius: 8px;
             object-fit: cover;
-            border: 1px solid rgba(255,255,255,0.1);
         }
 
         .match-title {
@@ -196,7 +337,7 @@
             position: relative;
             border: 2px dashed rgba(255, 255, 255, 0.1);
             border-radius: 16px;
-            padding: 1.5rem;
+            padding: 1.25rem;
             text-align: center;
             background-color: rgba(255, 255, 255, 0.02);
             cursor: pointer;
@@ -205,7 +346,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 6px;
+            gap: 5px;
         }
 
         .dropzone:hover {
@@ -221,18 +362,17 @@
         }
 
         .dropzone-icon {
-            font-size: 1.8rem;
-            margin-bottom: 2px;
+            font-size: 1.55rem;
         }
 
         .dropzone-title {
-            font-size: 0.9rem;
+            font-size: 0.88rem;
             font-weight: 600;
             color: #e2ece6;
         }
 
         .dropzone-desc {
-            font-size: 0.75rem;
+            font-size: 0.74rem;
             color: var(--text-muted);
         }
 
@@ -281,14 +421,9 @@
             cursor: pointer;
             font-size: 1.2rem;
             padding: 6px;
-            transition: transform 0.2s;
         }
 
-        .remove-file:hover {
-            transform: scale(1.15);
-        }
-
-        /* Color Picker Styling */
+        /* Color Picker */
         .color-picker-container {
             display: flex;
             align-items: center;
@@ -298,19 +433,18 @@
 
         .color-input-wrapper {
             position: relative;
-            width: 46px;
-            height: 46px;
+            width: 44px;
+            height: 44px;
             border-radius: 12px;
             overflow: hidden;
             border: 2px solid var(--border-color);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             flex-shrink: 0;
             cursor: pointer;
         }
 
         .color-input-wrapper input[type="color"] {
             position: absolute;
-            top: -10px; left: -10px; width: 68px; height: 68px;
+            top: -10px; left: -10px; width: 66px; height: 66px;
             border: none;
             cursor: pointer;
             background: none;
@@ -320,7 +454,7 @@
             flex-grow: 1;
             text-transform: uppercase;
             font-family: monospace;
-            font-size: 1rem !important;
+            font-size: 0.98rem !important;
             font-weight: 700;
             letter-spacing: 1px;
         }
@@ -333,7 +467,6 @@
             display: inline-block;
             vertical-align: middle;
             margin-left: 8px;
-            box-shadow: 0 0 10px currentColor;
         }
 
         .swatches-row {
@@ -344,18 +477,12 @@
         }
 
         .swatch-btn {
-            width: 32px;
-            height: 32px;
+            width: 30px;
+            height: 30px;
             border-radius: 9px;
             border: 2px solid rgba(255,255,255,0.12);
             cursor: pointer;
-            transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
             padding: 0;
-        }
-
-        .swatch-btn:hover {
-            transform: scale(1.12);
-            border-color: #fff;
         }
 
         .swatch-btn.active {
@@ -364,46 +491,40 @@
         }
 
         .helper-text {
-            font-size: 0.76rem;
+            font-size: 0.75rem;
             color: var(--text-muted);
-            margin-top: 8px;
+            margin-top: 7px;
             line-height: 1.45;
         }
 
         /* Buttons */
         .btn-primary {
             width: 100%;
-            padding: 15px;
+            padding: 14px;
             background: linear-gradient(135deg, #00E599 0%, #00B377 100%);
             border: none;
             border-radius: 14px;
             color: #060a08;
-            font-size: 1rem;
+            font-size: 0.96rem;
             font-weight: 800;
-            letter-spacing: 0.3px;
             cursor: pointer;
             transition: all 0.2s ease;
-            margin-top: 1rem;
+            margin-top: 0.6rem;
             box-shadow: 0 10px 25px rgba(0, 229, 153, 0.25);
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
+            transform: translateY(-1px);
             box-shadow: 0 14px 30px rgba(0, 229, 153, 0.4);
-        }
-
-        .btn-primary:active {
-            transform: translateY(0);
         }
 
         .btn-primary:disabled {
             opacity: 0.6;
             cursor: not-allowed;
             transform: none;
-            box-shadow: none;
         }
 
-        /* Catalog Section */
+        /* Catalog & Artist Lists */
         .catalog-header {
             display: flex;
             justify-content: space-between;
@@ -413,53 +534,34 @@
         }
 
         .catalog-search {
-            padding: 9px 14px;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            background-color: rgba(255, 255, 255, 0.03);
-            color: white;
-            font-size: 0.85rem;
-            outline: none;
-            width: 190px;
-            transition: border-color 0.2s;
-        }
-
-        .catalog-search:focus {
-            border-color: var(--primary);
+            padding: 9px 14px !important;
+            width: 210px !important;
+            font-size: 0.84rem !important;
         }
 
         .songs-list {
             overflow-y: auto;
-            max-height: 520px;
+            max-height: 620px;
             display: flex;
             flex-direction: column;
             gap: 10px;
             padding-right: 4px;
         }
 
-        .songs-list::-webkit-scrollbar {
-            width: 6px;
-        }
-        .songs-list::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.1);
-            border-radius: 3px;
-        }
-
         .song-item {
             display: flex;
             align-items: center;
             gap: 14px;
-            background: rgba(255, 255, 255, 0.02);
-            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.025);
+            padding: 12px 15px;
             border-radius: 16px;
             border: 1px solid var(--border-color);
             transition: all 0.2s ease;
         }
 
         .song-item:hover {
-            background: rgba(255, 255, 255, 0.04);
+            background: rgba(255, 255, 255, 0.045);
             border-color: rgba(0, 229, 153, 0.3);
-            transform: translateY(-1px);
         }
 
         .song-cover {
@@ -469,6 +571,17 @@
             object-fit: cover;
             border: 1px solid rgba(255,255,255,0.1);
             flex-shrink: 0;
+            background: #1a241e;
+        }
+
+        .artist-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid rgba(0, 229, 153, 0.35);
+            flex-shrink: 0;
+            background: #1a241e;
         }
 
         .song-meta {
@@ -477,44 +590,98 @@
         }
 
         .song-title {
-            font-size: 0.95rem;
+            font-size: 0.94rem;
             font-weight: 700;
             color: #fff;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            margin-bottom: 2px;
+            margin-bottom: 3px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .verified-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 210, 255, 0.16);
+            color: var(--cyan);
+            border: 1px solid rgba(0, 210, 255, 0.4);
+            font-size: 0.66rem;
+            font-weight: 800;
+            padding: 1px 6px;
+            border-radius: 999px;
+        }
+
+        .claim-owner-pill {
+            display: inline-flex;
+            align-items: center;
+            background: rgba(0, 229, 153, 0.12);
+            color: var(--primary);
+            border: 1px solid rgba(0, 229, 153, 0.3);
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 999px;
+        }
+
+        .unclaimed-pill {
+            display: inline-flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-muted);
+            font-size: 0.68rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 999px;
         }
 
         .song-artist {
-            font-size: 0.8rem;
+            font-size: 0.78rem;
             color: var(--text-muted);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            align-items: center;
+        }
+
+        .mini-role-tag {
+            font-size: 0.68rem;
+            padding: 1px 7px;
+            border-radius: 999px;
+            font-weight: 700;
+            background: rgba(0, 229, 153, 0.11);
+            color: #9ef5d4;
+        }
+
+        .mini-role-tag.feat {
+            background: rgba(139, 92, 246, 0.15);
+            color: #d8b4fe;
         }
 
         .song-actions {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
+            flex-shrink: 0;
         }
 
         .color-indicator {
-            width: 22px;
-            height: 22px;
+            width: 20px;
+            height: 20px;
             border-radius: 50%;
-            border: 2px solid rgba(255,255,255,0.9);
-            box-shadow: 0 0 10px currentColor;
+            border: 2px solid rgba(255,255,255,0.85);
         }
 
         .btn-edit {
             background: rgba(0, 229, 153, 0.1);
             border: 1px solid rgba(0, 229, 153, 0.3);
             color: var(--primary);
-            padding: 7px 14px;
+            padding: 7px 13px;
             border-radius: 10px;
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             font-weight: 700;
             cursor: pointer;
             transition: all 0.2s;
@@ -523,7 +690,58 @@
         .btn-edit:hover {
             background: var(--primary);
             color: #060a08;
-            box-shadow: 0 0 15px rgba(0, 229, 153, 0.4);
+        }
+
+        .btn-danger-sm {
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            color: #fca5a5;
+            padding: 7px 13px;
+            border-radius: 10px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .btn-danger-sm:hover {
+            background: #ef4444;
+            color: #fff;
+        }
+
+        /* Claims Queue Banner */
+        .claims-card {
+            margin-bottom: 26px;
+        }
+
+        .claim-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            padding: 14px 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            margin-bottom: 10px;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.025);
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            font-size: 0.86rem;
+            font-weight: 600;
+        }
+
+        .checkbox-row input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--primary);
         }
 
         /* Modal */
@@ -531,7 +749,7 @@
             display: none;
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.82);
             backdrop-filter: blur(12px);
             z-index: 100;
             align-items: center;
@@ -541,25 +759,27 @@
 
         .modal-card {
             background: var(--bg-card-solid);
-            padding: 2.5rem;
+            padding: 2rem;
             border-radius: 24px;
             width: 100%;
-            max-width: 440px;
+            max-width: 500px;
+            max-height: 92vh;
+            overflow-y: auto;
             border: 1px solid rgba(255, 255, 255, 0.12);
             box-shadow: 0 25px 60px rgba(0,0,0,0.9);
         }
 
         .modal-card h3 {
-            font-size: 1.4rem;
+            font-size: 1.35rem;
             font-weight: 800;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.3rem;
             color: #fff;
         }
 
         .modal-buttons {
             display: flex;
             gap: 12px;
-            margin-top: 2rem;
+            margin-top: 1.6rem;
         }
 
         .btn-modal {
@@ -568,7 +788,7 @@
             border-radius: 12px;
             font-weight: 700;
             cursor: pointer;
-            font-size: 0.95rem;
+            font-size: 0.92rem;
             border: none;
         }
 
@@ -576,21 +796,18 @@
             background: rgba(255,255,255,0.06);
             color: #a3b8ad;
         }
-        .btn-cancel:hover { background: rgba(255,255,255,0.1); }
 
         .btn-save {
             background: var(--primary);
             color: #060a08;
-            box-shadow: 0 8px 20px rgba(0, 229, 153, 0.25);
         }
-        .btn-save:hover { background: var(--primary-hover); }
 
         .status-msg {
             display: none;
             padding: 12px 16px;
             border-radius: 12px;
-            font-size: 0.88rem;
-            margin-top: 1.2rem;
+            font-size: 0.86rem;
+            margin-top: 1rem;
             text-align: center;
             font-weight: 600;
         }
@@ -608,7 +825,7 @@
         }
 
         .footer {
-            margin-top: 3rem;
+            margin-top: 2.8rem;
             text-align: center;
             font-size: 0.82rem;
             color: var(--text-muted);
@@ -618,10 +835,6 @@
             color: var(--primary);
             text-decoration: none;
             font-weight: 600;
-        }
-
-        .footer a:hover {
-            text-decoration: underline;
         }
 
         @media (max-width: 960px) {
@@ -635,127 +848,262 @@
 
 <div class="portal-header">
     <h1>Alaktra Studio Portal</h1>
-    <p>Manage music catalog, theme colors, and EXIF metadata streaming</p>
+    <p>Segregated Artist Profiles, Multi-Artist Song Allotment & Catalog Streaming</p>
 </div>
 
-<div class="main-layout">
-    <!-- LEFT: UPLOAD CARD -->
-    <div class="card">
+<div class="portal-tabs">
+    <button class="portal-tab active" id="tabBtnCatalog" onclick="switchPortalTab('catalog')">
+        🎵 Catalog & Track Allotment
+    </button>
+    <button class="portal-tab" id="tabBtnArtists" onclick="switchPortalTab('artists')">
+        🎤 Artists & Claim Requests
+        <span class="tab-badge" id="pendingClaimsBadge">0</span>
+    </button>
+    <a href="/admin" class="portal-tab" style="text-decoration: none;">
+        🛡️ Admin Console
+    </a>
+</div>
+
+<!-- ==================== TAB 1: CATALOG & TRACK ALLOTMENT ==================== -->
+<div class="tab-section active" id="sectionCatalog">
+    <div class="main-layout">
+        <!-- LEFT: UPLOAD CARD -->
+        <div class="card">
+            <div class="card-title">
+                <div class="card-title-left"><span>🚀</span> Upload & Allot New Track</div>
+            </div>
+
+            <div class="input-group">
+                <label for="songName">Song Title</label>
+                <input type="text" id="songName" placeholder="e.g. Dilawara" oninput="checkLiveDuplicates(this.value)" autocomplete="off">
+                <div class="live-match-dropdown" id="liveMatchDropdown"></div>
+            </div>
+
+            <!-- Structured Primary Artist Allotment -->
+            <div class="input-group">
+                <label for="uploadPrimaryArtistSelect">
+                    <span>Primary Artist</span>
+                    <span style="color: var(--primary); font-size: 0.75rem;">Main Release Owner</span>
+                </label>
+                <select id="uploadPrimaryArtistSelect" onchange="onUploadPrimaryArtistChange()">
+                    <option value="__new__">➕ Create New Artist Profile...</option>
+                </select>
+                <input type="text" id="uploadNewPrimaryArtistName" placeholder="Enter new primary artist stage name..." style="margin-top: 8px; display: block;">
+            </div>
+
+            <!-- Featured Collaborators Multi-Select -->
+            <div class="input-group">
+                <label>
+                    <span>Featured Collaborators (Optional)</span>
+                    <span style="color: #c4b5fd; font-size: 0.75rem;">Appears On Credit</span>
+                </label>
+                <div class="collab-row">
+                    <select id="uploadFeaturedSelect">
+                        <option value="">Select catalog artist to feature...</option>
+                    </select>
+                    <button type="button" class="btn-secondary-sm" onclick="addUploadFeaturedFromSelect()">+ Add</button>
+                </div>
+                <div class="collab-row" style="margin-top: 8px;">
+                    <input type="text" id="uploadFeaturedCustomInput" placeholder="Or type new collaborator name...">
+                    <button type="button" class="btn-secondary-sm" onclick="addUploadFeaturedCustom()">+ New</button>
+                </div>
+                <div class="chips-wrap" id="uploadFeaturedChips"></div>
+            </div>
+
+            <!-- Audio Dropzone -->
+            <div class="input-group">
+                <label>Audio File (MP3, WAV, FLAC)</label>
+                <div class="dropzone" id="audioDropzone">
+                    <div class="dropzone-icon">🎵</div>
+                    <div class="dropzone-title">Click or drop audio file</div>
+                    <div class="dropzone-desc">Lossless or compressed audio</div>
+                    <input type="file" id="audioFile" accept="audio/*" onchange="handleAudioSelect(event)">
+                </div>
+                <div class="preview-container" id="audioPreview">
+                    <div style="font-size: 1.5rem;">🎶</div>
+                    <div class="preview-info">
+                        <div class="preview-name" id="audioFileName">track.mp3</div>
+                        <div class="preview-size" id="audioFileSize">0 MB</div>
+                    </div>
+                    <button type="button" class="remove-file" onclick="clearAudioFile()">&times;</button>
+                </div>
+            </div>
+
+            <!-- Cover Art Dropzone -->
+            <div class="input-group">
+                <label>Cover Artwork (JPG, PNG)</label>
+                <div class="dropzone" id="coverDropzone">
+                    <div class="dropzone-icon">🖼️</div>
+                    <div class="dropzone-title">Click or drop cover art</div>
+                    <div class="dropzone-desc">Auto-samples dominant color</div>
+                    <input type="file" id="imageFile" accept="image/*" onchange="previewCover(event)">
+                </div>
+                <div class="preview-container" id="coverPreviewContainer">
+                    <img id="coverImgPreview" alt="Cover Preview">
+                    <div class="preview-info">
+                        <div class="preview-name" id="coverFileName">cover.jpg</div>
+                        <div class="preview-size" id="coverFileSize">0 KB</div>
+                    </div>
+                    <button type="button" class="remove-file" onclick="clearCoverFile()">&times;</button>
+                </div>
+            </div>
+
+            <!-- Theme Color -->
+            <div class="input-group">
+                <label for="themeColor">
+                    <span>Theme Color / Wave Ambient <span class="color-preview-badge" id="previewBadge" style="background-color: #00E599;"></span></span>
+                </label>
+                <div class="color-picker-container">
+                    <div class="color-input-wrapper">
+                        <input type="color" id="themeColor" value="#00E599" oninput="syncColorFromPicker(this.value)">
+                    </div>
+                    <input type="text" id="colorHex" class="color-hex-input" value="#00E599" maxlength="7" oninput="syncColorFromHex(this.value)">
+                </div>
+                <div class="swatches-row">
+                    <button type="button" class="swatch-btn active" style="background-color: #00E599;" onclick="selectSwatch('#00E599')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #00F2FE;" onclick="selectSwatch('#00F2FE')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #0070F3;" onclick="selectSwatch('#0070F3')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #9B51E0;" onclick="selectSwatch('#9B51E0')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #FF2A85;" onclick="selectSwatch('#FF2A85')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #FF6B00;" onclick="selectSwatch('#FF6B00')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #FFD600;" onclick="selectSwatch('#FFD600')"></button>
+                    <button type="button" class="swatch-btn" style="background-color: #E02424;" onclick="selectSwatch('#E02424')"></button>
+                </div>
+            </div>
+
+            <button id="submitBtn" class="btn-primary" onclick="handleSubmit()">Release & Allot Track</button>
+            <div id="statusMsg" class="status-msg"></div>
+        </div>
+
+        <!-- RIGHT: CATALOG CARD -->
+        <div class="card">
+            <div class="catalog-header">
+                <div class="card-title-left" style="font-size: 1.2rem; font-weight: 700;">
+                    <span>📚</span> Allotted Catalog
+                </div>
+                <input type="text" id="catalogSearch" class="catalog-search" placeholder="Search tracks or artists..." oninput="filterCatalog(this.value)">
+            </div>
+            <div class="songs-list" id="songsListContainer">
+                <div style="text-align: center; color: var(--text-muted); padding: 3rem;">Loading catalog...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== TAB 2: ARTISTS & CLAIM REQUESTS ==================== -->
+<div class="tab-section" id="sectionArtists">
+    <!-- Pending Claims Queue -->
+    <div class="card claims-card" id="claimsQueueCard">
         <div class="card-title">
-            <span>🚀</span> Upload New Track
+            <div class="card-title-left"><span>🛡️</span> Listener-to-Artist Claim Requests</div>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">Segregates listener accounts from verified artist profiles</span>
         </div>
-
-        <div class="input-group">
-            <label for="songName">Song Title</label>
-            <input type="text" id="songName" placeholder="e.g. Dilawara" oninput="checkLiveDuplicates(this.value)" required autocomplete="off">
-            <div class="live-match-dropdown" id="liveMatchDropdown"></div>
+        <div id="claimsListContainer">
+            <div style="color: var(--text-muted); font-size: 0.88rem;">No pending artist claims right now.</div>
         </div>
-
-        <div class="input-group">
-            <label for="artistName">Artist Name</label>
-            <input type="text" id="artistName" placeholder="e.g. The PropheC, Ezu" required>
-        </div>
-
-        <!-- Audio Dropzone -->
-        <div class="input-group">
-            <label>Audio File (MP3, WAV, FLAC)</label>
-            <div class="dropzone" id="audioDropzone">
-                <div class="dropzone-icon">🎵</div>
-                <div class="dropzone-title" id="audioTitleText">Click or drop audio file</div>
-                <div class="dropzone-desc">Lossless or compressed audio</div>
-                <input type="file" id="audioFile" accept="audio/*" onchange="handleAudioSelect(event)" required>
-            </div>
-            <div class="preview-container" id="audioPreview">
-                <div style="font-size: 1.6rem; padding-left: 2px;">🎶</div>
-                <div class="preview-info">
-                    <div class="preview-name" id="audioFileName">track.mp3</div>
-                    <div class="preview-size" id="audioFileSize">0 MB</div>
-                </div>
-                <button type="button" class="remove-file" onclick="clearAudioFile()" title="Remove">&times;</button>
-            </div>
-        </div>
-
-        <!-- Cover Art Dropzone -->
-        <div class="input-group">
-            <label>Cover Artwork (JPG, PNG)</label>
-            <div class="dropzone" id="coverDropzone">
-                <div class="dropzone-icon">🖼️</div>
-                <div class="dropzone-title" id="coverTitleText">Click or drop cover art</div>
-                <div class="dropzone-desc">Auto-samples dominant color</div>
-                <input type="file" id="imageFile" accept="image/*" onchange="previewCover(event)" required>
-            </div>
-            <div class="preview-container" id="coverPreviewContainer">
-                <img id="coverImgPreview" alt="Cover Preview">
-                <div class="preview-info">
-                    <div class="preview-name" id="coverFileName">cover.jpg</div>
-                    <div class="preview-size" id="coverFileSize">0 KB</div>
-                </div>
-                <button type="button" class="remove-file" onclick="clearCoverFile()" title="Remove">&times;</button>
-            </div>
-        </div>
-
-        <!-- Theme Color -->
-        <div class="input-group">
-            <label for="themeColor">
-                Theme Color / Wave Ambient
-                <span class="color-preview-badge" id="previewBadge" style="background-color: #00E599;"></span>
-            </label>
-            <div class="color-picker-container">
-                <div class="color-input-wrapper" title="Pick custom color">
-                    <input type="color" id="themeColor" value="#00E599" oninput="syncColorFromPicker(this.value)">
-                </div>
-                <input type="text" id="colorHex" class="color-hex-input" value="#00E599" maxlength="7" placeholder="#00E599" oninput="syncColorFromHex(this.value)">
-            </div>
-            <div class="swatches-row">
-                <button type="button" class="swatch-btn active" style="background-color: #00E599;" onclick="selectSwatch('#00E599')" title="Neon Green"></button>
-                <button type="button" class="swatch-btn" style="background-color: #00F2FE;" onclick="selectSwatch('#00F2FE')" title="Cyan Wave"></button>
-                <button type="button" class="swatch-btn" style="background-color: #0070F3;" onclick="selectSwatch('#0070F3')" title="Electric Azure"></button>
-                <button type="button" class="swatch-btn" style="background-color: #9B51E0;" onclick="selectSwatch('#9B51E0')" title="Vibrant Purple"></button>
-                <button type="button" class="swatch-btn" style="background-color: #FF2A85;" onclick="selectSwatch('#FF2A85')" title="Hot Pink"></button>
-                <button type="button" class="swatch-btn" style="background-color: #FF6B00;" onclick="selectSwatch('#FF6B00')" title="Sunset Orange"></button>
-                <button type="button" class="swatch-btn" style="background-color: #FFD600;" onclick="selectSwatch('#FFD600')" title="Solar Gold"></button>
-                <button type="button" class="swatch-btn" style="background-color: #E02424;" onclick="selectSwatch('#E02424')" title="Ruby Red"></button>
-            </div>
-            <p class="helper-text">
-                🔒 Privacy Sanitized: All prior GPS/camera metadata is wiped and replaced with embedded color EXIF tags.
-            </p>
-        </div>
-
-        <button id="submitBtn" class="btn-primary" onclick="handleSubmit()">Release to Alaktra Player</button>
-        <div id="statusMsg" class="status-msg"></div>
     </div>
 
-    <!-- RIGHT: CATALOG CARD -->
-    <div class="card">
-        <div class="catalog-header">
-            <div class="card-title" style="margin-bottom: 0;">
-                <span>📚</span> Library Catalog
+    <div class="main-layout">
+        <!-- LEFT: CREATE / EDIT ARTIST PROFILE -->
+        <div class="card">
+            <div class="card-title">
+                <div class="card-title-left"><span id="artistFormIcon">✨</span> <span id="artistFormTitle">Create Artist Profile</span></div>
+                <button type="button" class="btn-secondary-sm" id="resetArtistFormBtn" style="display: none; padding: 6px 12px;" onclick="resetArtistForm()">+ New Mode</button>
             </div>
-            <input type="text" id="catalogSearch" class="catalog-search" placeholder="Search catalog..." oninput="filterCatalog(this.value)">
+
+            <input type="hidden" id="editingArtistId" value="">
+
+            <div class="input-group">
+                <label for="artistStageName">Artist / Stage Name</label>
+                <input type="text" id="artistStageName" placeholder="e.g. Tegi Pannu">
+            </div>
+
+            <div class="input-group">
+                <label for="artistBioInput">Artist Bio</label>
+                <textarea id="artistBioInput" placeholder="Tell listeners about the artist, sound, and story..."></textarea>
+            </div>
+
+            <div class="input-group">
+                <label for="artistUserLinkSelect">
+                    <span>Linked Listener Account (Segregation Control)</span>
+                    <span style="font-size: 0.74rem; color: var(--primary);">Optional</span>
+                </label>
+                <select id="artistUserLinkSelect">
+                    <option value="">Unclaimed Catalog Profile (No linked user)</option>
+                </select>
+                <p class="helper-text">Linking a verified listener user grants them in-app <strong>Artist Studio</strong> access for this artist profile only.</p>
+            </div>
+
+            <div class="input-group">
+                <label class="checkbox-row">
+                    <input type="checkbox" id="artistVerifiedCheck">
+                    <span>Verified Artist Badge (Blue Checkmark in App)</span>
+                </label>
+            </div>
+
+            <div class="input-group">
+                <label>Profile Avatar (Optional)</label>
+                <input type="file" id="artistAvatarFile" accept="image/*" style="color: var(--text-muted); font-size: 0.82rem;">
+            </div>
+
+            <div class="input-group">
+                <label>Cover Banner Image (Optional)</label>
+                <input type="file" id="artistBannerFile" accept="image/*" style="color: var(--text-muted); font-size: 0.82rem;">
+            </div>
+
+            <button id="saveArtistBtn" class="btn-primary" onclick="saveArtistProfile()">Create Artist Profile</button>
+            <div id="artistStatusMsg" class="status-msg"></div>
         </div>
-        <div class="songs-list" id="songsListContainer">
-            <div style="text-align: center; color: var(--text-muted); padding: 3rem;">Loading catalog...</div>
+
+        <!-- RIGHT: ARTIST DIRECTORY -->
+        <div class="card">
+            <div class="catalog-header">
+                <div class="card-title-left" style="font-size: 1.2rem; font-weight: 700;">
+                    <span>🎤</span> Artist Directory
+                </div>
+                <input type="text" id="artistDirSearch" class="catalog-search" placeholder="Search artists..." oninput="renderArtistDirectory()">
+            </div>
+            <div class="songs-list" id="artistsListContainer">
+                <div style="text-align: center; color: var(--text-muted); padding: 3rem;">Loading artists...</div>
+            </div>
         </div>
     </div>
 </div>
 
 <div class="footer">
-    Powered by FastAPI & SQLite &bull; <a href="/docs" target="_blank">API Documentation</a> &bull; <a href="/songs" target="_blank">Catalog JSON</a>
+    Powered by FastAPI & SQLite &bull; <a href="/docs" target="_blank">API Documentation</a> &bull; <a href="/artists" target="_blank">Artists JSON</a> &bull; <a href="/songs" target="_blank">Catalog JSON</a>
 </div>
 
-<!-- EDIT MODAL -->
+<!-- EDIT TRACK & ARTIST ALLOTMENT MODAL -->
 <div class="modal-overlay" id="editModal">
     <div class="modal-card">
-        <h3>Edit Track Details</h3>
+        <h3>Edit Track & Allot Artists</h3>
         <input type="hidden" id="editSongId">
+
         <div class="input-group">
             <label>Song Title</label>
-            <input type="text" id="editSongTitle" readonly style="opacity: 0.7; cursor: not-allowed;">
+            <input type="text" id="editSongTitle">
         </div>
+
         <div class="input-group">
-            <label>Artist Name</label>
-            <input type="text" id="editSongArtist" readonly style="opacity: 0.7; cursor: not-allowed;">
+            <label>Primary Artist</label>
+            <select id="editPrimaryArtistSelect" onchange="onEditPrimaryArtistChange()"></select>
+            <input type="text" id="editNewPrimaryArtistName" placeholder="Enter new primary artist name..." style="margin-top: 8px; display: none;">
         </div>
+
+        <div class="input-group">
+            <label>Featured Collaborators</label>
+            <div class="collab-row">
+                <select id="editFeaturedSelect"></select>
+                <button type="button" class="btn-secondary-sm" onclick="addEditFeaturedFromSelect()">+ Add</button>
+            </div>
+            <div class="collab-row" style="margin-top: 8px;">
+                <input type="text" id="editFeaturedCustomInput" placeholder="Or type new collaborator name...">
+                <button type="button" class="btn-secondary-sm" onclick="addEditFeaturedCustom()">+ New</button>
+            </div>
+            <div class="chips-wrap" id="editFeaturedChips"></div>
+        </div>
+
         <div class="input-group">
             <label>Theme Color / Wave Ambient</label>
             <div class="color-picker-container">
@@ -765,27 +1113,204 @@
                 <input type="text" id="editColorHex" class="color-hex-input" maxlength="7">
             </div>
         </div>
+
         <div class="modal-buttons">
             <button class="btn-modal btn-cancel" onclick="closeEditModal()">Cancel</button>
-            <button class="btn-modal btn-save" onclick="saveEditedSong()">Save Changes</button>
+            <button class="btn-modal btn-save" onclick="saveEditedSong()">Save Allotment</button>
         </div>
     </div>
 </div>
 
 <script>
     let allCatalogSongs = [];
+    let allArtists = [];
+    let allUsers = [];
+    let allClaims = [];
     let currentColor = "#00E599";
+
+    // Featured collaborators state: array of { id: number|null, name: string }
+    let uploadFeaturedList = [];
+    let editFeaturedList = [];
+
+    function switchPortalTab(tab) {
+        document.getElementById('tabBtnCatalog').classList.toggle('active', tab === 'catalog');
+        document.getElementById('tabBtnArtists').classList.toggle('active', tab === 'artists');
+        document.getElementById('sectionCatalog').classList.toggle('active', tab === 'catalog');
+        document.getElementById('sectionArtists').classList.toggle('active', tab === 'artists');
+    }
+
+    function escapeHtml(str) {
+        return String(str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    async function refreshAllPortalData() {
+        await Promise.all([fetchArtists(), fetchUsers(), fetchClaims(), fetchCatalog()]);
+    }
+
+    async function fetchArtists() {
+        try {
+            const res = await fetch('/artists?limit=500');
+            if (res.ok) {
+                allArtists = await res.json();
+                populateArtistDropdowns();
+                renderArtistDirectory();
+            }
+        } catch (e) {
+            console.error("Failed to load artists:", e);
+        }
+    }
+
+    async function fetchUsers() {
+        try {
+            const res = await fetch('/artists/users');
+            if (res.ok) {
+                allUsers = await res.json();
+                populateUserLinkDropdown();
+            }
+        } catch (e) {
+            console.error("Failed to load users:", e);
+        }
+    }
+
+    async function fetchClaims() {
+        try {
+            const res = await fetch('/artists/claims');
+            if (res.ok) {
+                allClaims = await res.json();
+                renderClaimsQueue();
+            }
+        } catch (e) {
+            console.error("Failed to load claims:", e);
+        }
+    }
 
     async function fetchCatalog() {
         try {
-            const res = await fetch('/songs');
+            const res = await fetch('/songs', { cache: 'no-store' });
             if (res.ok) {
                 allCatalogSongs = await res.json();
                 renderCatalogSongs(allCatalogSongs);
             }
-        } catch(e) {
+        } catch (e) {
             console.error("Failed to fetch catalog:", e);
         }
+    }
+
+    function populateArtistDropdowns() {
+        const upPrim = document.getElementById('uploadPrimaryArtistSelect');
+        const prevUpPrim = upPrim.value;
+        const optionsHtml = allArtists.map(a =>
+            `<option value="${a.id}">${escapeHtml(a.name)}${a.is_verified ? ' ✓' : ''}</option>`
+        ).join('');
+
+        upPrim.innerHTML = `<option value="__new__">➕ Create New Artist Profile...</option>` + optionsHtml;
+        if (allArtists.length > 0 && prevUpPrim && prevUpPrim !== '__new__' && allArtists.some(a => String(a.id) === String(prevUpPrim))) {
+            upPrim.value = prevUpPrim;
+        } else if (allArtists.length > 0 && !prevUpPrim) {
+            upPrim.value = String(allArtists[0].id);
+        }
+        onUploadPrimaryArtistChange();
+
+        const featHtml = `<option value="">Select catalog artist to feature...</option>` + optionsHtml;
+        document.getElementById('uploadFeaturedSelect').innerHTML = featHtml;
+        document.getElementById('editFeaturedSelect').innerHTML = featHtml;
+        document.getElementById('editPrimaryArtistSelect').innerHTML = optionsHtml + `<option value="__new__">➕ Create New Artist Profile...</option>`;
+    }
+
+    function populateUserLinkDropdown(selectedUserId = "") {
+        const sel = document.getElementById('artistUserLinkSelect');
+        const editingId = document.getElementById('editingArtistId').value;
+        const opts = [`<option value="">Unclaimed Catalog Profile (No linked user)</option>`];
+        allUsers.forEach(u => {
+            const linkedOther = u.claimed_artist_id && String(u.claimed_artist_id) !== String(editingId)
+                ? ` (Currently linked to ${escapeHtml(u.claimed_artist_name)})`
+                : '';
+            opts.push(`<option value="${u.id}">@${escapeHtml(u.username)} — ${escapeHtml(u.email)}${linkedOther}</option>`);
+        });
+        sel.innerHTML = opts.join('');
+        sel.value = selectedUserId ? String(selectedUserId) : "";
+    }
+
+    function onUploadPrimaryArtistChange() {
+        const val = document.getElementById('uploadPrimaryArtistSelect').value;
+        document.getElementById('uploadNewPrimaryArtistName').style.display = (val === '__new__') ? 'block' : 'none';
+    }
+
+    function onEditPrimaryArtistChange() {
+        const val = document.getElementById('editPrimaryArtistSelect').value;
+        document.getElementById('editNewPrimaryArtistName').style.display = (val === '__new__') ? 'block' : 'none';
+    }
+
+    function renderChips(list, containerId, isEdit) {
+        const wrap = document.getElementById(containerId);
+        if (!list.length) {
+            wrap.innerHTML = '';
+            return;
+        }
+        wrap.innerHTML = list.map((item, idx) => `
+            <span class="artist-chip">
+                Feat. ${escapeHtml(item.name)}
+                <button type="button" onclick="${isEdit ? `removeEditFeatured(${idx})` : `removeUploadFeatured(${idx})`}">&times;</button>
+            </span>
+        `).join('');
+    }
+
+    function addUploadFeaturedFromSelect() {
+        const sel = document.getElementById('uploadFeaturedSelect');
+        const aid = parseInt(sel.value, 10);
+        if (!aid) return;
+        const art = allArtists.find(a => a.id === aid);
+        if (!art) return;
+        if (!uploadFeaturedList.some(x => x.id === aid || x.name.toLowerCase() === art.name.toLowerCase())) {
+            uploadFeaturedList.push({ id: aid, name: art.name });
+            renderChips(uploadFeaturedList, 'uploadFeaturedChips', false);
+        }
+        sel.value = "";
+    }
+
+    function addUploadFeaturedCustom() {
+        const inp = document.getElementById('uploadFeaturedCustomInput');
+        const name = inp.value.trim();
+        if (!name) return;
+        if (!uploadFeaturedList.some(x => x.name.toLowerCase() === name.toLowerCase())) {
+            uploadFeaturedList.push({ id: null, name });
+            renderChips(uploadFeaturedList, 'uploadFeaturedChips', false);
+        }
+        inp.value = "";
+    }
+
+    function removeUploadFeatured(idx) {
+        uploadFeaturedList.splice(idx, 1);
+        renderChips(uploadFeaturedList, 'uploadFeaturedChips', false);
+    }
+
+    function addEditFeaturedFromSelect() {
+        const sel = document.getElementById('editFeaturedSelect');
+        const aid = parseInt(sel.value, 10);
+        if (!aid) return;
+        const art = allArtists.find(a => a.id === aid);
+        if (!art) return;
+        if (!editFeaturedList.some(x => x.id === aid || x.name.toLowerCase() === art.name.toLowerCase())) {
+            editFeaturedList.push({ id: aid, name: art.name });
+            renderChips(editFeaturedList, 'editFeaturedChips', true);
+        }
+        sel.value = "";
+    }
+
+    function addEditFeaturedCustom() {
+        const inp = document.getElementById('editFeaturedCustomInput');
+        const name = inp.value.trim();
+        if (!name) return;
+        if (!editFeaturedList.some(x => x.name.toLowerCase() === name.toLowerCase())) {
+            editFeaturedList.push({ id: null, name });
+            renderChips(editFeaturedList, 'editFeaturedChips', true);
+        }
+        inp.value = "";
+    }
+
+    function removeEditFeatured(idx) {
+        editFeaturedList.splice(idx, 1);
+        renderChips(editFeaturedList, 'editFeaturedChips', true);
     }
 
     function renderCatalogSongs(songs) {
@@ -795,19 +1320,197 @@
             return;
         }
 
-        container.innerHTML = songs.map(s => `
-            <div class="song-item">
-                <img src="${s.cover_url}" class="song-cover" alt="Cover">
-                <div class="song-meta">
-                    <div class="song-title">${escapeHtml(s.title)}</div>
-                    <div class="song-artist">${escapeHtml(s.artist)}</div>
+        container.innerHTML = songs.map(s => {
+            const credits = Array.isArray(s.artists) && s.artists.length
+                ? s.artists.map(c => `<span class="mini-role-tag ${c.role === 'featured' ? 'feat' : ''}">${c.role === 'featured' ? 'Feat. ' : ''}${escapeHtml(c.name)}</span>`).join('')
+                : `<span>${escapeHtml(s.artist)}</span>`;
+
+            return `
+                <div class="song-item">
+                    <img src="${s.cover_url}" class="song-cover" alt="Cover">
+                    <div class="song-meta">
+                        <div class="song-title">${escapeHtml(s.title)}</div>
+                        <div class="song-artist">${credits}</div>
+                    </div>
+                    <div class="song-actions">
+                        <span class="color-indicator" style="background-color: ${s.dominant_color || '#00E599'};" title="${s.dominant_color || '#00E599'}"></span>
+                        <button class="btn-edit" onclick="openEditModal(${s.id})">Edit / Allot</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderClaimsQueue() {
+        const pending = allClaims.filter(c => c.status === 'pending');
+        const badge = document.getElementById('pendingClaimsBadge');
+        if (pending.length > 0) {
+            badge.textContent = String(pending.length);
+            badge.style.display = 'inline-block';
+        } else {
+            badge.style.display = 'none';
+        }
+
+        const container = document.getElementById('claimsListContainer');
+        if (pending.length === 0) {
+            container.innerHTML = `<div style="color: var(--text-muted); font-size: 0.88rem;">No pending artist claims awaiting review. Listeners can request an artist profile from the Alaktra Android app.</div>`;
+            return;
+        }
+
+        container.innerHTML = pending.map(c => `
+            <div class="claim-row">
+                <div>
+                    <div style="font-weight: 800; color: #fff; font-size: 0.96rem;">
+                        🎤 ${escapeHtml(c.requested_name)}
+                        ${c.artist_id ? `<span class="claim-owner-pill" style="margin-left: 6px;">Existing Catalog Artist #${c.artist_id}</span>` : `<span class="verified-pill" style="margin-left: 6px;">New Stage Profile</span>`}
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">
+                        Requested by listener <strong>@${escapeHtml(c.username)}</strong> (${escapeHtml(c.email)})
+                        ${c.note ? ` &bull; Note: "${escapeHtml(c.note)}"` : ''}
+                    </div>
                 </div>
                 <div class="song-actions">
-                    <span class="color-indicator" style="background-color: ${s.dominant_color || '#00E599'}; color: ${s.dominant_color || '#00E599'};" title="${s.dominant_color || '#00E599'}"></span>
-                    <button class="btn-edit" onclick="openEditModal(${s.id}, '${escapeQuote(s.title)}', '${escapeQuote(s.artist)}', '${s.dominant_color || '#00E599'}')">Edit</button>
+                    <button class="btn-edit" onclick="reviewClaim(${c.id}, 'approve')">✓ Approve & Verify</button>
+                    <button class="btn-danger-sm" onclick="reviewClaim(${c.id}, 'reject')">Reject</button>
                 </div>
             </div>
         `).join('');
+    }
+
+    async function reviewClaim(claimId, action) {
+        try {
+            const fd = new FormData();
+            fd.append("action", action);
+            const res = await fetch(`/artists/claims/${claimId}/review`, { method: 'POST', body: fd });
+            if (res.ok) {
+                await refreshAllPortalData();
+            } else {
+                const err = await res.text();
+                alert("Failed to review claim: " + err);
+            }
+        } catch (e) {
+            alert("Connection error reviewing claim.");
+        }
+    }
+
+    function renderArtistDirectory() {
+        const q = (document.getElementById('artistDirSearch')?.value || '').trim().toLowerCase();
+        const filtered = q
+            ? allArtists.filter(a => a.name.toLowerCase().includes(q) || (a.claimed_by_username || '').toLowerCase().includes(q))
+            : allArtists;
+
+        const container = document.getElementById('artistsListContainer');
+        if (!filtered.length) {
+            container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 3rem;">No artists found.</div>`;
+            return;
+        }
+
+        container.innerHTML = filtered.map(a => {
+            const avatarSrc = a.avatar_url || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><rect width="100%" height="100%" fill="%2318231d"/><text x="50%" y="55%" fill="%2300E599" font-family="sans-serif" font-size="22" font-weight="bold" text-anchor="middle">' + encodeURIComponent((a.name || 'A')[0].toUpperCase()) + '</text></svg>';
+            const claimTag = a.claimed_by_username
+                ? `<span class="claim-owner-pill">Claimed by @${escapeHtml(a.claimed_by_username)}</span>`
+                : `<span class="unclaimed-pill">Unclaimed Catalog</span>`;
+
+            return `
+                <div class="song-item">
+                    <img src="${avatarSrc}" class="artist-avatar" alt="Avatar">
+                    <div class="song-meta">
+                        <div class="song-title">
+                            <span>${escapeHtml(a.name)}</span>
+                            ${a.is_verified ? `<span class="verified-pill">✓ VERIFIED</span>` : ''}
+                        </div>
+                        <div class="song-artist" style="margin-top: 3px;">
+                            ${claimTag}
+                            <span>&bull; ${a.song_count || 0} songs</span>
+                            <span>&bull; ${a.total_plays || 0} plays</span>
+                        </div>
+                    </div>
+                    <div class="song-actions">
+                        <button class="btn-edit" onclick="loadArtistIntoEditor(${a.id})">Edit</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function loadArtistIntoEditor(artistId) {
+        const a = allArtists.find(x => x.id === artistId);
+        if (!a) return;
+        document.getElementById('editingArtistId').value = String(a.id);
+        document.getElementById('artistFormTitle').textContent = `Edit Artist: ${a.name}`;
+        document.getElementById('artistFormIcon').textContent = '✏️';
+        document.getElementById('resetArtistFormBtn').style.display = 'inline-block';
+        document.getElementById('saveArtistBtn').textContent = 'Update Artist Profile';
+
+        document.getElementById('artistStageName').value = a.name || '';
+        document.getElementById('artistBioInput').value = a.bio || '';
+        document.getElementById('artistVerifiedCheck').checked = Boolean(a.is_verified);
+        populateUserLinkDropdown(a.claimed_by_user_id || "");
+        document.getElementById('artistAvatarFile').value = '';
+        document.getElementById('artistBannerFile').value = '';
+    }
+
+    function resetArtistForm() {
+        document.getElementById('editingArtistId').value = '';
+        document.getElementById('artistFormTitle').textContent = 'Create Artist Profile';
+        document.getElementById('artistFormIcon').textContent = '✨';
+        document.getElementById('resetArtistFormBtn').style.display = 'none';
+        document.getElementById('saveArtistBtn').textContent = 'Create Artist Profile';
+        document.getElementById('artistStageName').value = '';
+        document.getElementById('artistBioInput').value = '';
+        document.getElementById('artistVerifiedCheck').checked = false;
+        populateUserLinkDropdown("");
+        document.getElementById('artistAvatarFile').value = '';
+        document.getElementById('artistBannerFile').value = '';
+    }
+
+    async function saveArtistProfile() {
+        const editingId = document.getElementById('editingArtistId').value.trim();
+        const name = document.getElementById('artistStageName').value.trim();
+        const bio = document.getElementById('artistBioInput').value.trim();
+        const verified = document.getElementById('artistVerifiedCheck').checked ? "1" : "0";
+        const linkedUid = document.getElementById('artistUserLinkSelect').value;
+        const avatar = document.getElementById('artistAvatarFile').files[0];
+        const banner = document.getElementById('artistBannerFile').files[0];
+        const btn = document.getElementById('saveArtistBtn');
+
+        if (!name) {
+            showArtistStatus("⚠️ Artist stage name is required.", true);
+            return;
+        }
+
+        btn.disabled = true;
+        const fd = new FormData();
+        fd.append("name", name);
+        fd.append("bio", bio);
+        fd.append("is_verified", verified);
+        fd.append("claimed_by_user_id", linkedUid || "0");
+        if (avatar) fd.append("avatar", avatar);
+        if (banner) fd.append("banner", banner);
+
+        const url = editingId ? `/artists/${editingId}/update` : `/artists`;
+        try {
+            const res = await fetch(url, { method: 'POST', body: fd });
+            if (res.ok) {
+                showArtistStatus(editingId ? `✅ Updated "${name}"!` : `✅ Created artist "${name}"!`);
+                resetArtistForm();
+                await refreshAllPortalData();
+            } else {
+                const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+                showArtistStatus("❌ " + (err.detail || "Failed to save artist"), true);
+            }
+        } catch (e) {
+            showArtistStatus("⚠️ Connection failed.", true);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function showArtistStatus(text, isError = false) {
+        const el = document.getElementById('artistStatusMsg');
+        el.textContent = text;
+        el.className = 'status-msg ' + (isError ? 'status-error' : 'status-success');
+        el.style.display = 'block';
     }
 
     async function filterCatalog(query) {
@@ -817,21 +1520,18 @@
             return;
         }
         try {
-            const res = await fetch(`/songs/search?q=${encodeURIComponent(q)}`);
+            const res = await fetch(`/songs/search?q=${encodeURIComponent(q)}`, { cache: 'no-store' });
             if (res.ok) {
                 const results = await res.json();
                 renderCatalogSongs(results);
+                return;
             }
-        } catch(e) {
-            console.error("Search failed:", e);
-            // Fallback to client-side filter
-            const qLower = q.toLowerCase();
-            const filtered = allCatalogSongs.filter(s => 
-                (s.title && s.title.toLowerCase().includes(qLower)) || 
-                (s.artist && s.artist.toLowerCase().includes(qLower))
-            );
-            renderCatalogSongs(filtered);
-        }
+        } catch (e) {}
+        const qLower = q.toLowerCase();
+        renderCatalogSongs(allCatalogSongs.filter(s =>
+            (s.title && s.title.toLowerCase().includes(qLower)) ||
+            (s.artist && s.artist.toLowerCase().includes(qLower))
+        ));
     }
 
     function checkLiveDuplicates(query) {
@@ -841,21 +1541,16 @@
             dropdown.style.display = 'none';
             return;
         }
-
-        const matches = allCatalogSongs.filter(s => 
-            s.title && s.title.toLowerCase().includes(q)
-        );
-
-        if (matches.length === 0) {
+        const matches = allCatalogSongs.filter(s => s.title && s.title.toLowerCase().includes(q));
+        if (!matches.length) {
             dropdown.style.display = 'none';
             return;
         }
-
         dropdown.innerHTML = matches.map(m => `
-            <div class="match-item" onclick="selectExistingSong(${m.id})">
+            <div class="match-item" onclick="openEditModal(${m.id}); document.getElementById('liveMatchDropdown').style.display='none';">
                 <img src="${m.cover_url}" alt="Cover">
                 <div>
-                    <div class="match-title">⚠️ Exists: ${escapeHtml(m.title)}</div>
+                    <div class="match-title">⚠️ Exists: ${escapeHtml(m.title)} (Click to Allot)</div>
                     <div class="match-artist">${escapeHtml(m.artist)}</div>
                 </div>
             </div>
@@ -863,30 +1558,34 @@
         dropdown.style.display = 'block';
     }
 
-    function selectExistingSong(id) {
-        const found = allCatalogSongs.find(s => s.id === id);
-        if (found) {
-            document.getElementById('songName').value = found.title;
-            document.getElementById('artistName').value = found.artist;
-            if (found.dominant_color) updateColorUI(found.dominant_color);
-        }
-        document.getElementById('liveMatchDropdown').style.display = 'none';
-    }
+    function openEditModal(songId) {
+        const song = allCatalogSongs.find(s => s.id === songId);
+        if (!song) return;
 
-    function escapeHtml(str) {
-        return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    }
-
-    function escapeQuote(str) {
-        return (str || '').replace(/'/g, "\\'");
-    }
-
-    function openEditModal(id, title, artist, color) {
-        document.getElementById('editSongId').value = id;
-        document.getElementById('editSongTitle').value = title;
-        document.getElementById('editSongArtist').value = artist;
+        document.getElementById('editSongId').value = String(song.id);
+        document.getElementById('editSongTitle').value = song.title || '';
+        const color = song.dominant_color || '#00E599';
         document.getElementById('editThemeColor').value = color;
         document.getElementById('editColorHex').value = color;
+
+        const credits = Array.isArray(song.artists) ? song.artists : [];
+        const prim = credits.find(c => c.role === 'primary') || credits[0];
+        const editPrimSel = document.getElementById('editPrimaryArtistSelect');
+        if (prim && allArtists.some(a => a.id === prim.id)) {
+            editPrimSel.value = String(prim.id);
+        } else if (allArtists.length > 0) {
+            editPrimSel.value = String(allArtists[0].id);
+        } else {
+            editPrimSel.value = '__new__';
+        }
+        document.getElementById('editNewPrimaryArtistName').value = '';
+        onEditPrimaryArtistChange();
+
+        editFeaturedList = credits
+            .filter(c => !prim || c.id !== prim.id)
+            .map(c => ({ id: c.id, name: c.name }));
+        renderChips(editFeaturedList, 'editFeaturedChips', true);
+
         document.getElementById('editModal').style.display = 'flex';
     }
 
@@ -896,25 +1595,40 @@
 
     async function saveEditedSong() {
         const id = document.getElementById('editSongId').value;
-        const color = document.getElementById('editColorHex').value;
+        const title = document.getElementById('editSongTitle').value.trim();
+        const color = document.getElementById('editColorHex').value.trim();
+        const primVal = document.getElementById('editPrimaryArtistSelect').value;
+        const newPrimName = document.getElementById('editNewPrimaryArtistName').value.trim();
+
+        const fd = new FormData();
+        if (title) fd.append("title", title);
+        if (color) fd.append("color", color);
+        if (primVal === '__new__') {
+            if (!newPrimName) {
+                alert("Please enter the new primary artist's name.");
+                return;
+            }
+            fd.append("primary_artist_name", newPrimName);
+        } else {
+            fd.append("primary_artist_id", primVal);
+        }
+
+        const featIds = editFeaturedList.filter(x => x.id).map(x => x.id);
+        const featNames = editFeaturedList.filter(x => !x.id).map(x => x.name);
+        fd.append("featured_artist_ids", JSON.stringify(featIds));
+        fd.append("featured_artist_names", JSON.stringify(featNames));
 
         try {
-            const formData = new FormData();
-            formData.append("color", color);
-
-            const res = await fetch(`/songs/${id}/update-cover-metadata`, {
-                method: "POST",
-                body: formData
-            });
-
+            const res = await fetch(`/songs/${id}/allot`, { method: 'POST', body: fd });
             if (res.ok) {
                 closeEditModal();
-                fetchCatalog();
+                await refreshAllPortalData();
             } else {
-                alert("Failed to update track theme.");
+                const err = await res.text();
+                alert("Failed to save allotment: " + err);
             }
-        } catch(e) {
-            alert("Error updating song.");
+        } catch (e) {
+            alert("Error updating song allotment.");
         }
     }
 
@@ -925,19 +1639,7 @@
         document.getElementById('themeColor').value = currentColor;
         document.getElementById('colorHex').value = currentColor;
         const badge = document.getElementById('previewBadge');
-        if (badge) {
-            badge.style.backgroundColor = currentColor;
-            badge.style.color = currentColor;
-        }
-
-        document.querySelectorAll('.swatch-btn').forEach(btn => {
-            const btnColor = btn.getAttribute('style')?.match(/background-color:\s*([^;]+)/i)?.[1]?.trim();
-            if (btnColor && (btnColor.toUpperCase() === currentColor || rgbToHex(btnColor) === currentColor)) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
-        });
+        if (badge) badge.style.backgroundColor = currentColor;
     }
 
     function syncColorFromPicker(val) { updateColorUI(val); }
@@ -947,23 +1649,11 @@
     }
     function selectSwatch(hex) { updateColorUI(hex); }
 
-    function rgbToHex(rgbStr) {
-        if (rgbStr.startsWith('#')) return rgbStr.toUpperCase();
-        const m = rgbStr.match(/\d+/g);
-        if (m && m.length >= 3) {
-            const r = parseInt(m[0]).toString(16).padStart(2, '0');
-            const g = parseInt(m[1]).toString(16).padStart(2, '0');
-            const b = parseInt(m[2]).toString(16).padStart(2, '0');
-            return (`#${r}${g}${b}`).toUpperCase();
-        }
-        return rgbStr.toUpperCase();
-    }
-
     function formatFileSize(bytes) {
         if (bytes === 0) return '0 Bytes';
-        const k = 1024, dm = 2, sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const k = 1024, sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
 
     function handleAudioSelect(event) {
@@ -1039,41 +1729,59 @@
 
     async function handleSubmit() {
         const song = document.getElementById('songName').value.trim();
-        const artist = document.getElementById('artistName').value.trim();
+        const primSelect = document.getElementById('uploadPrimaryArtistSelect').value;
+        const newPrimName = document.getElementById('uploadNewPrimaryArtistName').value.trim();
         const audio = document.getElementById('audioFile').files[0];
         const image = document.getElementById('imageFile').files[0];
         const colorVal = (document.getElementById('colorHex').value || currentColor || "#00E599").trim();
         const btn = document.getElementById('submitBtn');
 
-        if (!song || !artist || !audio || !image) {
-            showStatus("⚠️ Please fill in all fields and select both audio & cover.", true);
+        if (!song || !audio || !image) {
+            showStatus("⚠️ Please enter a song title and select both audio & cover files.", true);
+            return;
+        }
+        if (primSelect === '__new__' && !newPrimName) {
+            showStatus("⚠️ Please enter the new primary artist's stage name.", true);
             return;
         }
 
         btn.disabled = true;
-        btn.textContent = "Uploading & Sanitizing...";
+        btn.textContent = "Uploading & Allotting...";
 
         const formData = new FormData();
         formData.append("title", song);
-        formData.append("artist", artist);
         formData.append("audio", audio);
         formData.append("cover", image);
         formData.append("color", colorVal);
 
-        const uploadUrl = (window.location.origin && window.location.origin.startsWith("http")) 
+        if (primSelect === '__new__') {
+            formData.append("primary_artist_name", newPrimName);
+            formData.append("artist", newPrimName);
+        } else {
+            formData.append("primary_artist_id", primSelect);
+        }
+
+        const featIds = uploadFeaturedList.filter(x => x.id).map(x => x.id);
+        const featNames = uploadFeaturedList.filter(x => !x.id).map(x => x.name);
+        if (featIds.length > 0) formData.append("featured_artist_ids", JSON.stringify(featIds));
+        if (featNames.length > 0) formData.append("featured_artist_names", JSON.stringify(featNames));
+
+        const uploadUrl = (window.location.origin && window.location.origin.startsWith("http"))
             ? `${window.location.origin}/songs/upload`
-            : "http://100.65.126.106:8000/songs/upload";
+            : "/songs/upload";
 
         try {
             const response = await fetch(uploadUrl, { method: "POST", body: formData });
             if (response.ok) {
-                showStatus(`✅ Track "${song}" published successfully!`);
+                showStatus(`✅ Track "${song}" uploaded & allotted!`);
                 document.getElementById('songName').value = "";
-                document.getElementById('artistName').value = "";
+                document.getElementById('uploadNewPrimaryArtistName').value = "";
+                uploadFeaturedList = [];
+                renderChips(uploadFeaturedList, 'uploadFeaturedChips', false);
                 clearAudioFile();
                 clearCoverFile();
                 updateColorUI("#00E599");
-                fetchCatalog();
+                await refreshAllPortalData();
             } else {
                 const errorText = await response.text();
                 showStatus("❌ Upload failed: " + errorText, true);
@@ -1082,11 +1790,11 @@
             showStatus("⚠️ Server connection failed.", true);
         } finally {
             btn.disabled = false;
-            btn.textContent = "Release to Alaktra Player";
+            btn.textContent = "Release & Allot Track";
         }
     }
 
-    fetchCatalog();
+    refreshAllPortalData();
 </script>
 </body>
 </html>

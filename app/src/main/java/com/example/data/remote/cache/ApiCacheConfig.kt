@@ -19,6 +19,14 @@ object ApiCacheConfig {
     const val RECOMMENDATIONS_TTL_MS = 3L * 60 * 1000   // 3 minutes for recommendations
     const val RECENTLY_PLAYED_TTL_MS = 2L * 60 * 1000   // 2 minutes for recently played API results
 
+    // Listening History & Sound Capsule caching / batching policy
+    const val HISTORY_SYNC_INTERVAL_MS = 6L * 60 * 60 * 1000  // 6 hours scheduled background sync
+    const val HISTORY_PUSH_COOLDOWN_MS = 30L * 60 * 1000      // 30 minutes min gap between batch pushes
+    const val HISTORY_IDLE_DEBOUNCE_MS = 60L * 1000           // 60 seconds idle window to coalesce skips
+    const val HISTORY_BATCH_SIZE_THRESHOLD = 15               // Flush early only after 15+ local plays & cooldown
+    const val SOUND_CAPSULE_TTL_MS = 30L * 60 * 1000          // 30 minutes TTL for server Sound Capsule pull
+    const val HISTORY_SYNC_DIGEST_TTL_MS = 6L * 60 * 60 * 1000 // 6 hours TTL for deduplicating identical sync payloads
+
     // In-memory bounded LRU capacities
     const val MAX_SEARCH_ENTRIES = 50
     const val MAX_FEED_ENTRIES = 20
@@ -27,6 +35,7 @@ object ApiCacheConfig {
     const val MAX_ARTIST_ENTRIES = 50
     const val MAX_RECOMMENDATIONS_ENTRIES = 20
     const val MAX_RECENTLY_PLAYED_ENTRIES = 20
+    const val MAX_HISTORY_CACHE_ENTRIES = 10
 
     /**
      * Constructs a deterministic, normalized search cache key including pagination parameters.

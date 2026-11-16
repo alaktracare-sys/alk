@@ -32,8 +32,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.audio.AudioCache
 import com.example.audio.AudioController
 import com.example.data.repository.MusicRepository
@@ -61,7 +63,8 @@ fun ProfileScreen(
     repository: MusicRepository,
     audioController: AudioController,
     onBack: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onNavigateToSoundCapsule: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -87,10 +90,6 @@ fun ProfileScreen(
     var imageAndHttpCacheBytes by remember {
         mutableLongStateOf(AudioCache.getImageCacheSizeBytes(context) + AudioCache.getHttpCacheSizeBytes(context))
     }
-
-    // Listening history
-    var showHistoryPanel by remember { mutableStateOf(false) }
-    val historyList by repository.listeningHistory.collectAsState(initial = emptyList())
 
     LaunchedEffect(Unit) {
         val cachedUser = repository.getCachedUser()
@@ -250,12 +249,65 @@ fun ProfileScreen(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Listening History Summary Card
-                ListeningHistorySummaryCard(
-                    historyList = historyList,
-                    onOpenFullHistory = { showHistoryPanel = true },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // Your Sound Capsule Card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable(onClick = onNavigateToSoundCapsule)
+                        .testTag("profile_sound_capsule_card"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1F1F1F)),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Color.Black)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(Color(0xFF1ED760), Color(0xFF15803D))
+                                    )
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Equalizer,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.sound_capsule_title),
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp
+                                ),
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = stringResource(R.string.sound_capsule_subtitle),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFA7A7A7)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = stringResource(R.string.sound_capsule_title),
+                            tint = Color(0xFF1ED760)
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
@@ -410,7 +462,7 @@ fun ProfileScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Tailscale Server Card
+                // Music Server Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = AlaktraCard),
@@ -438,7 +490,7 @@ fun ProfileScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Tailscale Server",
+                                    text = "Music Server / Domain",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = AlaktraTextPrimary
                                 )
@@ -461,9 +513,9 @@ fun ProfileScreen(
 
                         Text(
                             text = when {
-                                isCheckingConnection -> "Testing Tailscale connection..."
+                                isCheckingConnection -> "Testing server connection..."
                                 isConnected == true -> "Connected to FastAPI music server"
-                                isConnected == false -> "Server not reachable (verify Tailscale VPN is active)"
+                                isConnected == false -> "Server not reachable (verify Cloudflare tunnel is running)"
                                 else -> "Status unknown"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -491,7 +543,7 @@ fun ProfileScreen(
                             } else {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp), tint = AlaktraMint)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Ping Tailscale Server")
+                                Text("Ping Server")
                             }
                         }
                     }
@@ -1088,11 +1140,11 @@ fun ProfileScreen(
         AlertDialog(
             onDismissRequest = { showServerConfigDialog = false },
             containerColor = AlaktraCard,
-            title = { Text("Tailscale Server URL", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
+            title = { Text("Server URL / Domain", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text(
-                        text = "Enter the Tailscale IP and port of your server:",
+                        text = "Enter the server domain or URL (e.g. https://api.alaktracare.in):",
                         style = MaterialTheme.typography.bodySmall,
                         color = AlaktraTextSecondary
                     )
@@ -1188,17 +1240,7 @@ fun ProfileScreen(
         )
     }
 
-    // 6. Full Listening History Modal Sheet
-    if (showHistoryPanel) {
-        FullListeningHistorySheet(
-            historyList = historyList,
-            repository = repository,
-            audioController = audioController,
-            onDismiss = { showHistoryPanel = false }
-        )
-    }
-
-    // 7. Song Cache Memory Cap Settings Dialog
+    // 6. Song Cache Memory Cap Settings Dialog
     if (showCacheCapDialog) {
         CacheCapSettingsDialog(
             currentCapMb = cacheCapMb,

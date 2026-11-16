@@ -57,6 +57,7 @@ import com.example.data.fuse.FusePollStatus
 import com.example.data.fuse.FuseSession
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
+import com.example.ui.components.FuseDualAvatarCover
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -129,9 +130,10 @@ fun FuseScreen(
             isJoining = false
             res.fold(
                 onSuccess = { joinResult ->
+                    val scoreLabel = if (joinResult.matchScore > 0) "${joinResult.matchScore}% Match • " else ""
                     Toast.makeText(
                         context,
-                        "Fuse ready: ${joinResult.playlist.name} (${joinResult.songs.size} tracks)",
+                        "Fuse Blend ready: $scoreLabel${joinResult.playlist.name}",
                         Toast.LENGTH_SHORT
                     ).show()
                     onOpenPlaylist(joinResult.playlist.id, joinResult.playlist.name)
@@ -654,24 +656,41 @@ fun FuseScreen(
                             }
 
                             is HostFuseUiState.Completed -> {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(60.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            Brush.linearGradient(listOf(AlaktraMint, AlaktraCyan))
-                                        )
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = "Fuse Ready",
-                                        tint = Color(0xFF041C12),
-                                        modifier = Modifier.size(32.dp)
-                                    )
+                                val fallbackNames = remember(state.playlist.name) {
+                                    FuseCodeCodec.parseFuseNamesFromTitle(state.playlist.name)
                                 }
+                                val u1 = state.playlist.fuseUser1Name.ifBlank { fallbackNames.first }
+                                val u2 = state.playlist.fuseUser2Name.ifBlank { fallbackNames.second }
+                                val score = state.playlist.fuseMatchScore
+
+                                FuseDualAvatarCover(
+                                    user1Name = u1,
+                                    user2Name = u2,
+                                    size = 72.dp,
+                                    cornerRadius = 18.dp
+                                )
 
                                 Spacer(modifier = Modifier.height(14.dp))
+
+                                if (score > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(AlaktraMint.copy(alpha = 0.16f))
+                                            .border(1.dp, AlaktraMint.copy(alpha = 0.45f), RoundedCornerShape(50))
+                                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "$score% TASTE MATCH",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.ExtraBold,
+                                                letterSpacing = 1.sp
+                                            ),
+                                            color = AlaktraMint
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
 
                                 Text(
                                     text = state.playlist.name,
@@ -683,9 +702,9 @@ fun FuseScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
 
                                 Text(
-                                    text = "${state.trackCount} shared songs added for both listeners",
+                                    text = "${state.trackCount} server-curated songs ready to stream for both listeners",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = AlaktraMint,
+                                    color = AlaktraCyan,
                                     textAlign = TextAlign.Center
                                 )
 

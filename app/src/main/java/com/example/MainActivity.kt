@@ -3,15 +3,21 @@ package com.example
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.example.data.fuse.FuseCodeCodec
 import com.example.ui.screens.MainShell
 import com.example.ui.screens.auth.LoginScreen
@@ -25,6 +31,29 @@ enum class AuthDestination {
 
 class MainActivity : ComponentActivity() {
     private var pendingFuseCodeState by mutableStateOf<String?>(null)
+
+    private fun updateSystemBarsForOrientation(isLandscape: Boolean) {
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        if (isLandscape) {
+            windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateSystemBarsForOrientation(newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            updateSystemBarsForOrientation(isLandscape)
+        }
+    }
 
     private fun extractFuseCodeFromIntent(intent: Intent?): String? {
         val dataString = intent?.dataString ?: return null
@@ -41,6 +70,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -48,6 +81,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
+
+        val initialLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        updateSystemBarsForOrientation(initialLandscape)
 
         // Request POST_NOTIFICATIONS permission on Android 13+ for persistent background media controls
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -65,6 +101,19 @@ class MainActivity : ComponentActivity() {
         val audioController = app.audioController
 
         setContent {
+            val configuration = LocalConfiguration.current
+            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            LaunchedEffect(isLandscape) {
+                updateSystemBarsForOrientation(isLandscape)
+            }
+
+            LaunchedEffect(Unit) {
+                val notifManager = com.example.data.notifications.AppNotificationManager(this@MainActivity)
+                val currentUserId = repository.authPreferences.getUser()?.id
+                notifManager.registerDeviceTokenWithServer(currentUserId)
+                notifManager.checkForNewNotifications(currentUserId)
+            }
+
             AlaktraTheme {
                 val initialAuth = remember {
                     if (repository.authPreferences.isLoggedIn() || pendingFuseCodeState != null) {

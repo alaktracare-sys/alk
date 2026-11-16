@@ -1,0 +1,181 @@
+package com.yourapp.soundcapsule // TODO: change to your app's package
+
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import kotlin.math.roundToInt
+
+/** One listening session of one track. Save one every time a track ends, is skipped or playback stops. */
+data class PlayEvent(
+    val trackId: String,
+    val trackTitle: String,
+    val artistId: String,
+    val artistName: String,
+    val artworkUrl: String?,
+    val startedAtMillis: Long, // System.currentTimeMillis() when the track started
+    val msPlayed: Long,        // how long it was actually played (pauses excluded)
+)
+
+/** A track counts as a "play" only after this much listening (same idea as Spotify's 30 s rule). */
+const val MIN_MS_FOR_PLAY = 30_000L
+
+enum class TimeBlock(val label: String, val range: String) {
+    NIGHT("Night", "21:00 – 03:00"),
+    MORNING("Morning", "03:00 – 09:00"),
+    DAY("Day", "09:00 – 15:00"),
+    EVENING("Evening", "15:00 – 21:00");
+
+    companion object {
+        fun forHour(hour: Int): TimeBlock = when (hour) {
+            in 3..8 -> MORNING
+            in 9..14 -> DAY
+            in 15..20 -> EVENING
+            else -> NIGHT // 21..23 and 0..2
+        }
+    }
+}
+
+data class ArtistStat(
+    val artistId: String,
+    val name: String,
+    val artworkUrl: String?,
+    val minutes: Int,
+    val plays: Int,
+    val sharePercent: Int,
+    val isNew: Boolean,
+)
+
+data class SongStat(
+    val trackId: String,
+    val title: String,
+    val artistName: String,
+    val artworkUrl: String?,
+    val plays: Int,
+    val minutes: Int,
+    val isNew: Boolean,
+)
+
+data class TimeBlockStat(val block: TimeBlock, val minutes: Int, val sharePercent: Int, val minutesPerDay: Int)
+
+data class SoundCapsuleStats(
+    val month: YearMonth,
+    val totalMinutes: Int,
+    val dailyMinutes: List<Int>, // index 0 = day 1 of the month
+    val dailyAverage: Int,
+    val weeklyAverage: Int,
+    val longestDayMinutes: Int,
+    val longestDay: Int,         // day of month, 0 when there is no listening
+    val timeBlocks: List<TimeBlockStat>, // always 4 items: night, morning, day, evening
+    val topArtists: List<ArtistStat>,    // up to 5, best first
+    val topSongs: List<SongStat>,        // up to 5, best first
+)
+
+/**
+ * Builds every number the Sound Capsule screens need.
+ * Pass ALL events up to the end of [month] (older ones are only used for the "New" badge).
+ */
+fun computeSoundCapsule(
+    events: List<PlayEvent>,
+    month: YearMonth,
+    zone: ZoneId = ZoneId.systemDefault(),
+): SoundCapsuleStats {
+    val daysInMonth = month.lengthOfMonth()
+    val startMs = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val endMs = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val inMonth = events.filter { it.startedAtMillis in startMs until endMs && it.msPlayed > 0 }
+
+    val dailyMs = LongArray(daysInMonth)
+    val blockMs = LongArray(TimeBlock.values().size)
+    for (e in inMonth) {
+        val t = Instant.ofEpochMilli(e.startedAtMillis).atZone(zone)
+        dailyMs[t.dayOfMonth - 1] += e.msPlayed
+        blockMs[TimeBlock.forHour(t.hour).ordinal] += e.msPlayed // block = hour the track STARTED
+    }
+    val totalMs = dailyMs.sum()
+    fun minutes(ms: Long) = (ms / 60_000.0).roundToInt()
+    fun percent(ms: Long) = if (totalMs == 0L) 0 else (ms * 100.0 / totalMs).roundToInt()
+
+    // For the running month, average over the days that have passed, not the whole month.
+    val today = LocalDate.now(zone)
+    val daysForAverage = if (month == YearMonth.from(today)) today.dayOfMonth else daysInMonth
+    val perDayMinutes = totalMs / 60_000.0 / daysForAverage
+
+    val longestIdx = dailyMs.indices.maxByOrNull { dailyMs[it] } ?: 0
+    val longestMs = dailyMs[longestIdx]
+
+    val artistsBefore = events.asSequence().filter { it.startedAtMillis < startMs }.map { it.artistId }.toHashSet()
+    val tracksBefore = events.asSequence().filter { it.startedAtMillis < startMs }.map { it.trackId }.toHashSet()
+
+    val topArtists = inMonth.groupBy { it.artistId }.map { (id, list) ->
+        val ms = list.sumOf { it.msPlayed }
+        ms to ArtistStat(
+            artistId = id,
+            name = list.first().artistName,
+            artworkUrl = list.firstNotNullOfOrNull { it.artworkUrl },
+            minutes = minutes(ms),
+            plays = list.count { it.msPlayed >= MIN_MS_FOR_PLAY },
+            sharePercent = percent(ms),
+            isNew = id !in artistsBefore,
+        )
+    }.sortedByDescending { it.first }.take(5).map { it.second }
+
+    val topSongs = inMonth.groupBy { it.trackId }.map { (id, list) ->
+        SongStat(
+            trackId = id,
+            title = list.first().trackTitle,
+            artistName = list.first().artistName,
+            artworkUrl = list.firstNotNullOfOrNull { it.artworkUrl },
+            plays = list.count { it.msPlayed >= MIN_MS_FOR_PLAY },
+            minutes = minutes(list.sumOf { it.msPlayed }),
+            isNew = id !in tracksBefore,
+        )
+    }.sortedWith(compareByDescending<SongStat> { it.plays }.thenByDescending { it.minutes }).take(5)
+
+    return SoundCapsuleStats(
+        month = month,
+        totalMinutes = minutes(totalMs),
+        dailyMinutes = dailyMs.map { minutes(it) },
+        dailyAverage = perDayMinutes.roundToInt(),
+        weeklyAverage = (perDayMinutes * 7).roundToInt(),
+        longestDayMinutes = minutes(longestMs),
+        longestDay = if (longestMs > 0) longestIdx + 1 else 0,
+        timeBlocks = TimeBlock.values().map { b ->
+            val ms = blockMs[b.ordinal]
+            TimeBlockStat(b, minutes(ms), percent(ms), (ms / 60_000.0 / daysForAverage).roundToInt())
+        },
+        topArtists = topArtists,
+        topSongs = topSongs,
+    )
+}
+
+/** Fake data matching the design mockup, so the screens can be tested before real tracking exists. */
+fun sampleSoundCapsule(): SoundCapsuleStats = SoundCapsuleStats(
+    month = YearMonth.of(2026, 10),
+    totalMinutes = 1248,
+    dailyMinutes = listOf(45, 33, 42, 56, 43, 28, 29, 44, 39, 41, 50, 46, 34, 25, 39, 44, 45, 44, 43, 41, 26, 32, 45, 52, 41, 37, 45, 31, 27, 42, 59),
+    dailyAverage = 40,
+    weeklyAverage = 282,
+    longestDayMinutes = 59,
+    longestDay = 31,
+    timeBlocks = listOf(
+        TimeBlockStat(TimeBlock.NIGHT, 215, 17, 7),
+        TimeBlockStat(TimeBlock.MORNING, 187, 15, 6),
+        TimeBlockStat(TimeBlock.DAY, 421, 34, 14),
+        TimeBlockStat(TimeBlock.EVENING, 425, 34, 14),
+    ),
+    topArtists = listOf(
+        ArtistStat("a1", "Artist One", null, 240, 61, 19, true),
+        ArtistStat("a2", "Artist Two", null, 186, 48, 15, false),
+        ArtistStat("a3", "Artist Three", null, 154, 39, 12, false),
+        ArtistStat("a4", "Artist Four", null, 121, 31, 10, false),
+        ArtistStat("a5", "Artist Five", null, 96, 25, 8, false),
+    ),
+    topSongs = listOf(
+        SongStat("s1", "Track Title One", "Artist One", null, 38, 122, true),
+        SongStat("s2", "Track Title Two", "Artist Two", null, 31, 99, false),
+        SongStat("s3", "Track Title Three", "Artist One", null, 27, 86, false),
+        SongStat("s4", "Track Title Four", "Artist Three", null, 22, 70, false),
+        SongStat("s5", "Track Title Five", "Artist Four", null, 19, 61, false),
+    ),
+)

@@ -64,15 +64,6 @@ fun LoginScreen(
                             )
                         }
                     },
-                    actions = {
-                        IconButton(onClick = { showServerConfigDialog = true }) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Tailscale Server Settings",
-                                tint = AlaktraMint
-                            )
-                        }
-                    },
                     expandedHeight = 52.dp,
                     windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(top = 8.dp)),
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
@@ -90,33 +81,13 @@ fun LoginScreen(
         ) {
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Tailscale Server connection chip
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = AlaktraSurface,
-                modifier = Modifier
-                    .clickable { showServerConfigDialog = true }
-                    .padding(vertical = 4.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(Color(0xFF10B981), shape = RoundedCornerShape(4.dp))
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Tailscale: ${serverUrl.replace("http://", "").trimEnd('/')}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AlaktraTextSecondary
-                    )
-                }
-            }
+            // Global Server Address Input Box
+            com.example.ui.components.ServerAddressBox(
+                repository = repository,
+                onServerUpdated = { serverUrl = it }
+            )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             OutlinedTextField(
                 value = identifier,
@@ -264,11 +235,11 @@ fun LoginScreen(
         AlertDialog(
             onDismissRequest = { showServerConfigDialog = false },
             containerColor = AlaktraCard,
-            title = { Text("Tailscale Server URL", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
+            title = { Text("Server URL / Domain", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text(
-                        text = "Configure your Tailscale endpoint:",
+                        text = "Configure your server endpoint (e.g. https://api.alaktracare.in):",
                         style = MaterialTheme.typography.bodySmall,
                         color = AlaktraTextSecondary
                     )

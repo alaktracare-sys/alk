@@ -1,6 +1,7 @@
 package com.example.data
 
 import com.example.data.local.ListeningHistoryEntity
+import com.example.ui.screens.profile.filterTodayHistory
 import com.example.ui.screens.profile.formatListeningSeconds
 import org.junit.Assert.*
 import org.junit.Test
@@ -96,15 +97,16 @@ class ListeningHistoryStorageTest {
             )
         )
 
-        // Filter for whole day (Today)
-        val todaySongs = historyList.filter {
-            val date = Instant.ofEpochMilli(it.playedAt).atZone(ZoneId.systemDefault()).toLocalDate()
-            date == today
-        }
+        // Filter strictly for current day (Today only — Yesterday & older excluded)
+        val todaySongs = filterTodayHistory(historyList, today = today, zone = ZoneId.systemDefault())
 
         // How many songs did user listen to today?
         val totalSongsToday = todaySongs.size
         assertEquals(3, totalSongsToday)
+        // Newest-first ordering preserved
+        assertEquals(1L, todaySongs[0].id)
+        assertEquals(2L, todaySongs[1].id)
+        assertEquals(3L, todaySongs[2].id)
 
         val uniqueSongsToday = todaySongs.map { it.songId }.distinct().size
         assertEquals(2, uniqueSongsToday)
@@ -117,7 +119,7 @@ class ListeningHistoryStorageTest {
         val formattedTime = formatListeningSeconds(totalListenTimeSecondsToday)
         assertEquals("6m", formattedTime)
 
-        // What songs did he listen to today?
+        // What songs did user listen to today? Yesterday's Song C must be completely excluded
         val songTitlesToday = todaySongs.map { it.title }
         assertTrue(songTitlesToday.contains("Song A"))
         assertTrue(songTitlesToday.contains("Song B"))

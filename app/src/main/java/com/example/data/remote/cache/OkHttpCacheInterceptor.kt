@@ -70,6 +70,7 @@ class NetworkCacheInterceptor : Interceptor {
                 path.contains("/search") -> 60        // 1 minute for search results
                 path.contains("/songs") -> 300        // 5 minutes for general songs catalog
                 path.contains("/playlists") -> 180    // 3 minutes for playlist endpoints
+                path.contains("/history") -> 600      // 10 minutes HTTP disk cache for history GET endpoints
                 path.contains("/artists") || path.contains("/albums") -> 1800 // 30 minutes for artist/album metadata
                 else -> 120                           // 2 minutes for general read-only endpoints
             }

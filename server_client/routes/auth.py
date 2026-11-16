@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
-import random
 import hashlib
 import secrets
 import smtplib
@@ -19,10 +18,9 @@ from database import get_db
 router = APIRouter(tags=["auth"])
 
 # ---------------- GMAIL SMTP CONFIGURATION ----------------
-# Recommended: Provide via environment variables (e.g. GMAIL_APP_PASSWORD)
-# Note: Google requires a 16-character App Password, NOT your regular Google password.
 GMAIL_USER = os.getenv("GMAIL_USER", "alaktracare@gmail.com")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+
 
 def send_otp_email(recipient_email: str, otp_code: str) -> bool:
     """Sends a verification email containing the OTP code using Gmail SMTP."""
@@ -95,6 +93,7 @@ def send_otp_email(recipient_email: str, otp_code: str) -> bool:
         print(f"❌ [SMTP ERROR] Failed to send email via Gmail SMTP: {e}")
         return False
 
+
 # ---------------- MODELS ----------------
 
 class SignupRequest(BaseModel):
@@ -103,9 +102,11 @@ class SignupRequest(BaseModel):
     password: str
     confirm_password: str
 
+
 class OTPVerifyRequest(BaseModel):
     email: EmailStr
     otp: str
+
 
 class LoginRequest(BaseModel):
     identifier: str  # username OR email
@@ -115,48 +116,46 @@ class LoginRequest(BaseModel):
 # ---------------- HELPERS ----------------
 
 def hash_password(password: str) -> str:
-    # Safely truncate to 72 bytes to adhere to bcrypt standard limits
-    pwd_bytes = password.encode('utf-8')[:72]
+    pwd_bytes = password.encode("utf-8")[:72]
     if HAS_BCRYPT:
         try:
             salt = bcrypt.gensalt()
-            return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
+            return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
         except Exception:
             pass
-    
-    # Secure fallback to PBKDF2-SHA256 (standard library)
+
     salt = secrets.token_hex(16)
-    key = hashlib.pbkdf2_hmac('sha256', pwd_bytes, salt.encode('utf-8'), 100000)
+    key = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt.encode("utf-8"), 100000)
     return f"pbkdf2_sha256${salt}${key.hex()}"
+
 
 def verify_password(password: str, hashed: str) -> bool:
     if not hashed or not password:
         return False
-    pwd_bytes = password.encode('utf-8')[:72]
-    
-    # Verify standard bcrypt hash ($2a$, $2b$, $2y$)
+    pwd_bytes = password.encode("utf-8")[:72]
+
     if (hashed.startswith("$2b$") or hashed.startswith("$2a$") or hashed.startswith("$2y$")) and HAS_BCRYPT:
         try:
-            return bcrypt.checkpw(pwd_bytes, hashed.encode('utf-8'))
+            return bcrypt.checkpw(pwd_bytes, hashed.encode("utf-8"))
         except Exception:
             return False
-            
-    # Verify PBKDF2-SHA256 hash
+
     if hashed.startswith("pbkdf2_sha256$"):
         try:
             parts = hashed.split("$")
             if len(parts) == 3:
-                salt = parts[1].encode('utf-8')
+                salt = parts[1].encode("utf-8")
                 stored_key_hex = parts[2]
-                computed = hashlib.pbkdf2_hmac('sha256', pwd_bytes, salt, 100000).hex()
+                computed = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt, 100000).hex()
                 return secrets.compare_digest(computed, stored_key_hex)
         except Exception:
             return False
-            
+
     return False
 
+
 def generate_otp() -> str:
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
 
 
 # ---------------- SIGNUP ----------------
@@ -169,58 +168,56 @@ def signup(data: SignupRequest):
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    conn = get_db()
-    cursor = conn.cursor()
-
-    # Check if username or email is already taken by a VERIFIED (really registered) user
-    cursor.execute("""
-        SELECT username, email FROM users 
-        WHERE (username=? OR email=?) AND is_verified=1
-    """, (data.username, data.email))
-    verified_user = cursor.fetchone()
-    if verified_user:
-        conn.close()
-        if verified_user["username"].lower() == data.username.lower():
-            raise HTTPException(status_code=400, detail="Username is already taken")
-        else:
-            raise HTTPException(status_code=400, detail="An account with this email already exists")
-
-    # Clean up any unverified signup attempts with this username or email
-    # so unverified attempts never lock the username or email
-    cursor.execute("""
-        DELETE FROM users 
-        WHERE (username=? OR email=?) AND is_verified=0
-    """, (data.username, data.email))
-
     otp = generate_otp()
     expiry = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
 
-    cursor.execute("""
-        INSERT INTO users (username, email, password_hash, is_verified, otp_code, otp_expiry)
-        VALUES (?, ?, ?, 0, ?, ?)
-    """, (
-        data.username,
-        data.email,
-        hash_password(data.password),
-        otp,
-        expiry
-    ))
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
 
-    conn.commit()
-    conn.close()
+        cursor.execute("""
+            SELECT username, email FROM users
+            WHERE (username=? OR email=?) AND is_verified=1
+        """, (data.username, data.email))
+        verified_user = cursor.fetchone()
+        if verified_user:
+            if verified_user["username"].lower() == data.username.lower():
+                raise HTTPException(status_code=400, detail="Username is already taken")
+            else:
+                raise HTTPException(status_code=400, detail="An account with this email already exists")
 
-    # Send OTP email via Gmail SMTP (if configured)
+        cursor.execute("""
+            DELETE FROM users
+            WHERE (username=? OR email=?) AND is_verified=0
+        """, (data.username, data.email))
+
+        cursor.execute("""
+            INSERT INTO users (username, email, password_hash, is_verified, otp_code, otp_expiry)
+            VALUES (?, ?, ?, 0, ?, ?)
+        """, (
+            data.username,
+            data.email,
+            hash_password(data.password),
+            otp,
+            expiry
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
     email_delivered = send_otp_email(data.email, otp)
 
     print(f"\n==========================================")
     print(f"🔑 [AUTH] Verification OTP for {data.email}: {otp} (Delivered via Gmail: {email_delivered})")
     print(f"==========================================\n")
 
-    return {
+    resp = {
         "message": f"OTP sent to {data.email}",
-        "otp": otp,
         "email_sent": email_delivered
     }
+    if not email_delivered or os.getenv("DEV_RETURN_OTP") == "1":
+        resp["otp"] = otp
+    return resp
 
 
 # ---------------- RESEND OTP ----------------
@@ -228,33 +225,33 @@ def signup(data: SignupRequest):
 class ResendOTPRequest(BaseModel):
     email: EmailStr
 
+
 @router.post("/resend-otp")
 def resend_otp(data: ResendOTPRequest):
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id, is_verified FROM users WHERE email=?", (data.email,))
-    user = cursor.fetchone()
-
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="No registered user found with this email")
-
-    if user["is_verified"]:
-        conn.close()
-        raise HTTPException(status_code=400, detail="This account is already verified. Please sign in.")
-
     new_otp = generate_otp()
     new_expiry = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
 
-    cursor.execute("""
-        UPDATE users
-        SET otp_code=?, otp_expiry=?
-        WHERE email=?
-    """, (new_otp, new_expiry, data.email))
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
 
-    conn.commit()
-    conn.close()
+        cursor.execute("SELECT id, is_verified FROM users WHERE email=?", (data.email,))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="No registered user found with this email")
+
+        if user["is_verified"]:
+            raise HTTPException(status_code=400, detail="This account is already verified. Please sign in.")
+
+        cursor.execute("""
+            UPDATE users
+            SET otp_code=?, otp_expiry=?
+            WHERE email=?
+        """, (new_otp, new_expiry, data.email))
+        conn.commit()
+    finally:
+        conn.close()
 
     email_delivered = send_otp_email(data.email, new_otp)
 
@@ -262,11 +259,13 @@ def resend_otp(data: ResendOTPRequest):
     print(f"🔄 [AUTH] Resent OTP for {data.email}: {new_otp} (Delivered via Gmail: {email_delivered})")
     print(f"==========================================\n")
 
-    return {
+    resp = {
         "message": f"New OTP sent to {data.email}",
-        "otp": new_otp,
         "email_sent": email_delivered
     }
+    if not email_delivered or os.getenv("DEV_RETURN_OTP") == "1":
+        resp["otp"] = new_otp
+    return resp
 
 
 # ---------------- VERIFY OTP ----------------
@@ -274,53 +273,50 @@ def resend_otp(data: ResendOTPRequest):
 @router.post("/verify-otp")
 def verify_otp(data: OTPVerifyRequest):
     conn = get_db()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM users WHERE email=?", (data.email,))
-    user = cursor.fetchone()
+        cursor.execute("SELECT * FROM users WHERE email=?", (data.email,))
+        user = cursor.fetchone()
 
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    if user["otp_code"] != data.otp:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Invalid OTP")
+        if user["otp_code"] != data.otp:
+            raise HTTPException(status_code=400, detail="Invalid OTP")
 
-    if user["otp_expiry"]:
-        try:
-            expiry_dt = datetime.fromisoformat(user["otp_expiry"])
-            if datetime.utcnow() > expiry_dt:
-                conn.close()
-                raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
-        except ValueError:
-            pass
+        if user["otp_expiry"]:
+            try:
+                expiry_dt = datetime.fromisoformat(user["otp_expiry"])
+                if datetime.utcnow() > expiry_dt:
+                    raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
+            except ValueError:
+                pass
 
-    cursor.execute("""
-        UPDATE users
-        SET is_verified=1, otp_code=NULL, otp_expiry=NULL
-        WHERE email=?
-    """, (data.email,))
-
-    user_id = user["id"]
-
-    # Ensure the system 'Liked Songs' playlist exists
-    cursor.execute("""
-        SELECT 1 FROM playlists
-        WHERE user_id=? AND is_system=1
-    """, (user_id,))
-    exists = cursor.fetchone()
-
-    if not exists:
         cursor.execute("""
-            INSERT INTO playlists (user_id, name, is_system)
-            VALUES (?, ?, 1)
-        """, (user_id, "Liked Songs"))
+            UPDATE users
+            SET is_verified=1, otp_code=NULL, otp_expiry=NULL
+            WHERE email=?
+        """, (data.email,))
 
-    conn.commit()
-    conn.close()
+        user_id = user["id"]
 
-    return {"message": "Account verified successfully"}
+        cursor.execute("""
+            SELECT 1 FROM playlists
+            WHERE user_id=? AND is_system=1
+        """, (user_id,))
+        exists = cursor.fetchone()
+
+        if not exists:
+            cursor.execute("""
+                INSERT INTO playlists (user_id, name, is_system)
+                VALUES (?, ?, 1)
+            """, (user_id, "Liked Songs"))
+
+        conn.commit()
+        return {"message": "Account verified successfully"}
+    finally:
+        conn.close()
 
 
 # ---------------- LOGIN ----------------
@@ -328,45 +324,49 @@ def verify_otp(data: OTPVerifyRequest):
 @router.post("/login")
 def login(data: LoginRequest):
     conn = get_db()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT * FROM users
-        WHERE username=? OR email=?
-    """, (data.identifier, data.identifier))
-
-    user = cursor.fetchone()
-
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Invalid credentials")
-
-    if not verify_password(data.password, user["password_hash"]):
-        conn.close()
-        raise HTTPException(status_code=400, detail="Invalid credentials")
-
-    if not user["is_verified"]:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Account not verified. Please verify with OTP first.")
-
-    # Ensure default system playlist exists
-    user_id = user["id"]
-    cursor.execute("""
-        SELECT 1 FROM playlists
-        WHERE user_id=? AND is_system=1
-    """, (user_id,))
-    if not cursor.fetchone():
         cursor.execute("""
-            INSERT INTO playlists (user_id, name, is_system)
-            VALUES (?, 'Liked Songs', 1)
+            SELECT * FROM users
+            WHERE username=? OR email=?
+        """, (data.identifier, data.identifier))
+
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+
+        if not verify_password(data.password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+
+        if not user["is_verified"]:
+            raise HTTPException(status_code=400, detail="Account not verified. Please verify with OTP first.")
+
+        user_id = user["id"]
+        cursor.execute("""
+            SELECT 1 FROM playlists
+            WHERE user_id=? AND is_system=1
         """, (user_id,))
-        conn.commit()
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO playlists (user_id, name, is_system)
+                VALUES (?, 'Liked Songs', 1)
+            """, (user_id,))
+            conn.commit()
 
-    conn.close()
+        claimed_artist = cursor.execute(
+            "SELECT id, name FROM artists WHERE claimed_by_user_id = ?",
+            (user_id,)
+        ).fetchone()
 
-    return {
-        "message": "Login successful",
-        "user_id": user["id"],
-        "username": user["username"],
-        "email": user["email"],
-    }
+        return {
+            "message": "Login successful",
+            "user_id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "claimed_artist_id": int(claimed_artist["id"]) if claimed_artist else None,
+            "claimed_artist_name": claimed_artist["name"] if claimed_artist else None,
+        }
+    finally:
+        conn.close()

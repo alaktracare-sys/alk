@@ -30,7 +30,8 @@ fun SongCover(
     imageUrl: String,
     size: Dp = 56.dp,
     cornerRadius: Dp = 8.dp,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onArtworkLoaded: ((android.graphics.drawable.Drawable) -> Unit)? = null
 ) {
     val shape = RoundedCornerShape(cornerRadius)
     val baseModifier = if (size != Dp.Unspecified) modifier.size(size) else modifier.aspectRatio(1f)
@@ -56,12 +57,23 @@ fun SongCover(
         )
 
         if (imageUrl.isNotBlank()) {
+            val needsSoftwareBitmap = onArtworkLoaded != null
             AsyncImage(
-                model = remember(imageUrl) {
+                model = remember(imageUrl, needsSoftwareBitmap) {
                     ImageRequest.Builder(context)
                         .data(imageUrl)
+                        .apply {
+                            if (needsSoftwareBitmap) {
+                                allowHardware(false)
+                            }
+                        }
                         .crossfade(true)
                         .build()
+                },
+                onSuccess = if (onArtworkLoaded != null) {
+                    { state -> onArtworkLoaded(state.result.drawable) }
+                } else {
+                    null
                 },
                 contentDescription = "Song Artwork",
                 contentScale = ContentScale.Crop,

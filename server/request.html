@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alaktra Music — Request a Song</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300E599'/%3E%3Ctext x='16' y='23' font-size='20' font-weight='800' text-anchor='middle' fill='%23050806' font-family='Arial'%3EA%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #050607;
+    --surface: #0b0d0f;
+    --raised: #101316;
+    --line: #1f2428;
+    --line-strong: #2d343a;
+    --text: #f5f7f8;
+    --muted: #8b949e;
+    --faint: #586069;
+    --accent: #00E599;
+    --accent-dim: rgba(0, 229, 153, 0.12);
+    --accent-border: rgba(0, 229, 153, 0.35);
+    --err: #ff6b6b;
+    --err-dim: rgba(255, 107, 107, 0.12);
+    --radius: 14px;
+    --font: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(0, 229, 153, 0.10) 0%, transparent 40%),
+      radial-gradient(circle at 88% 85%, rgba(0, 180, 255, 0.06) 0%, transparent 45%);
+    color: var(--text);
+    font: 15px/1.55 var(--font);
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 32px 20px 56px;
+    flex: 1;
+  }
+
+  /* Header */
+  header.top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 36px;
+    flex-wrap: wrap;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    color: inherit;
+  }
+  .mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #040806;
+    display: grid;
+    place-items: center;
+    font-weight: 850;
+    font-size: 18px;
+    box-shadow: 0 6px 20px rgba(0, 229, 153, 0.25);
+  }
+  .brand-text b {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .brand-text small {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .pill-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .pill-status i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+    display: inline-block;
+  }
+
+  /* Hero */
+  .hero {
+    margin-bottom: 30px;
+  }
+  .hero h1 {
+    font-size: clamp(26px, 4vw, 38px);
+    font-weight: 750;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin-bottom: 10px;
+  }
+  .hero h1 span {
+    color: var(--accent);
+  }
+  .hero p {
+    color: var(--muted);
+    max-width: 580px;
+    font-size: 15.5px;
+  }
+
+  /* Grid Layout */
+  .grid {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 22px;
+    align-items: start;
+  }
+  @media (max-width: 840px) {
+    .grid { grid-template-columns: 1fr; }
+    .wrap { padding: 22px 16px 40px; }
+  }
+
+  /* Cards */
+  .card {
+    background: var(--raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .card h2 {
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 13.5px;
+    margin-bottom: 20px;
+  }
+
+  /* Form */
+  .fld {
+    margin-bottom: 16px;
+  }
+  .fld label {
+    display: block;
+    font-size: 13px;
+    font-weight: 550;
+    color: #d6dde3;
+    margin-bottom: 6px;
+  }
+  .fld label span.req {
+    color: var(--accent);
+  }
+  .fld label span.opt {
+    color: var(--faint);
+    font-weight: 400;
+    font-size: 12px;
+  }
+  .in {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 11px 14px;
+    color: var(--text);
+    font: inherit;
+    font-size: 14.5px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .in::placeholder {
+    color: var(--faint);
+  }
+  .in:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  textarea.in {
+    resize: vertical;
+    min-height: 76px;
+  }
+
+  .btn {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 18px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #040806;
+    font: inherit;
+    font-weight: 700;
+    font-size: 14.5px;
+    cursor: pointer;
+    transition: transform 0.12s ease, opacity 0.15s ease;
+  }
+  .btn:hover:not(:disabled) { opacity: 0.92; }
+  .btn:active:not(:disabled) { transform: scale(0.99); }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .alert {
+    display: none;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+  .alert.show { display: block; }
+  .alert.ok {
+    background: var(--accent-dim);
+    border: 1px solid var(--accent-border);
+    color: #b7ffdf;
+  }
+  .alert.err {
+    background: var(--err-dim);
+    border: 1px solid rgba(255, 107, 107, 0.35);
+    color: #ffd2d2;
+  }
+
+  /* Recent Requests List */
+  .stats-row {
+    display: flex;
+    gap: 8px;
+  }
+  .chip {
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.added {
+    border-color: var(--accent-border);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .req-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 460px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .req-list::-webkit-scrollbar { width: 5px; }
+  .req-list::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; }
+
+  .req-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  .req-item:first-child { border-top: 0; padding-top: 2px; }
+  .req-info { min-width: 0; flex: 1; }
+  .req-title {
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .req-meta {
+    color: var(--muted);
+    font-size: 12.5px;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .badge {
+    flex: none;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+  }
+  .badge.fulfilled {
+    border-color: var(--accent-border);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+  .empty {
+    text-align: center;
+    padding: 32px 12px;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+
+  footer {
+    text-align: center;
+    padding: 18px 16px 26px;
+    color: var(--faint);
+    font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="/">
+        <div class="mark">A</div>
+        <div class="brand-text">
+          <b>ALAKTRA MUSIC</b>
+          <small>Community Track Requests</small>
+        </div>
+      </a>
+      <div class="pill-status"><i></i> Accepting new requests</div>
+    </header>
+
+    <section class="hero">
+      <h1>Missing a track? <span>Request it here.</span></h1>
+      <p>Tell us the song and artist you want in the Alaktra app. Requests go straight to our library queue for upload.</p>
+    </section>
+
+    <main class="grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>Submit a Song Request</h2>
+        </div>
+        <p class="sub">Enter the exact track title and artist name so we can add the right version.</p>
+
+        <div id="alertBox" class="alert" role="status"></div>
+
+        <form id="reqForm" autocomplete="off">
+          <div class="fld">
+            <label for="songName">Song Name <span class="req">*</span></label>
+            <input class="in" id="songName" name="song_name" maxlength="120" placeholder="e.g. Dilawara" required>
+          </div>
+          <div class="fld">
+            <label for="artistName">Artist Name <span class="req">*</span></label>
+            <input class="in" id="artistName" name="artist_name" maxlength="120" placeholder="e.g. Tegi Pannu" required>
+          </div>
+          <div class="fld">
+            <label for="requesterName">Your Name or Username <span class="opt">(optional)</span></label>
+            <input class="in" id="requesterName" name="requester_name" maxlength="80" placeholder="e.g. @alex or Alex">
+          </div>
+          <div class="fld">
+            <label for="note">Extra Details <span class="opt">(optional)</span></label>
+            <textarea class="in" id="note" name="note" maxlength="300" placeholder="Album name, remix/version, or featuring artist..."></textarea>
+          </div>
+          <button class="btn" id="submitBtn" type="submit">Send Song Request</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Recent Requests</h2>
+          <div class="stats-row">
+            <span class="chip" id="pendingChip">0 pending</span>
+            <span class="chip added" id="addedChip">0 added</span>
+          </div>
+        </div>
+        <p class="sub">Live queue from listeners. Check if your track is already listed.</p>
+        <div class="req-list" id="reqList">
+          <div class="empty">Loading recent requests…</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    Alaktra Music Server · Requests are reviewed directly by the admin
+  </footer>
+
+  <script>
+    'use strict';
+    const $ = s => document.querySelector(s);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    function ago(s) {
+      if (!s) return 'just now';
+      const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z');
+      if (isNaN(d.getTime())) return s;
+      const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+      if (sec < 60) return 'just now';
+      const m = Math.floor(sec / 60); if (m < 60) return m + 'm ago';
+      const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+      const days = Math.floor(h / 24); return days + 'd ago';
+    }
+
+    function showAlert(msg, kind) {
+      const box = $('#alertBox');
+      box.textContent = msg;
+      box.className = 'alert show ' + kind;
+    }
+
+    async function loadPublicRequests() {
+      const listEl = $('#reqList');
+      try {
+        const res = await fetch('/song-requests/public', { cache: 'no-store' });
+        if (!res.ok) throw new Error('Unable to load queue');
+        const data = await res.json();
+        const items = data.items || [];
+        const counts = data.counts || {};
+        $('#pendingChip').textContent = `${counts.pending || 0} pending`;
+        $('#addedChip').textContent = `${counts.fulfilled || 0} added`;
+
+        if (!items.length) {
+          listEl.innerHTML = '<div class="empty">No song requests yet. Be the first to request a track!</div>';
+          return;
+        }
+        listEl.innerHTML = items.map(it => {
+          const isAdded = it.status === 'fulfilled';
+          const by = it.requester_name ? ` · by ${esc(it.requester_name)}` : '';
+          return `
+            <div class="req-item">
+              <div class="req-info">
+                <div class="req-title">${esc(it.song_name)}</div>
+                <div class="req-meta">${esc(it.artist_name)}${by} · ${ago(it.created_at)}</div>
+              </div>
+              <span class="badge ${isAdded ? 'fulfilled' : ''}">${isAdded ? '✓ Added' : 'Pending'}</span>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        listEl.innerHTML = '<div class="empty">Could not load recent requests.</div>';
+      }
+    }
+
+    $('#reqForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const song_name = $('#songName').value.trim();
+      const artist_name = $('#artistName').value.trim();
+      const requester_name = $('#requesterName').value.trim();
+      const note = $('#note').value.trim();
+
+      if (!song_name || !artist_name) {
+        showAlert('Please enter both the song name and artist name.', 'err');
+        return;
+      }
+
+      const btn = $('#submitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Sending request…';
+      $('#alertBox').className = 'alert';
+
+      try {
+        const res = await fetch('/song-requests/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song_name, artist_name, requester_name, note })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.detail || `Error (${res.status})`);
+        }
+        showAlert(data.message || 'Song request submitted!', 'ok');
+        if (!data.duplicate) {
+          $('#songName').value = '';
+          $('#artistName').value = '';
+          $('#note').value = '';
+        }
+        loadPublicRequests();
+      } catch (err) {
+        showAlert(err.message || 'Could not send request. Please try again.', 'err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Send Song Request';
+      }
+    });
+
+    loadPublicRequests();
+  </script>
+</body>
+</html>

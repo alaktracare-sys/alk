@@ -23,13 +23,14 @@ if os.path.exists(env_file):
     except Exception as e:
         print(f"⚠️ Could not load .env file: {e}")
 
-from database import init_db, COVER_DIR, MUSIC_DIR, PIN_DIR
-from routes import songs, auth, playlists, history, pins
+from database import init_db, COVER_DIR, MUSIC_DIR, PIN_DIR, ARTIST_DIR
+from routes import songs, auth, playlists, history, pins, fuse, artists, club, admin
 
 # Ensure directories exist
 os.makedirs(COVER_DIR, exist_ok=True)
 os.makedirs(MUSIC_DIR, exist_ok=True)
 os.makedirs(PIN_DIR, exist_ok=True)
+os.makedirs(ARTIST_DIR, exist_ok=True)
 init_db()
 
 app = FastAPI(
@@ -51,13 +52,18 @@ app.add_middleware(
 app.mount("/covers", StaticFiles(directory=COVER_DIR), name="covers")
 app.mount("/music", StaticFiles(directory=MUSIC_DIR), name="music")
 app.mount("/pins", StaticFiles(directory=PIN_DIR), name="pins")
+app.mount("/artist-media", StaticFiles(directory=ARTIST_DIR), name="artist_media")
 
 # Include Routers with exact prefix compatibility for the Android app
 app.include_router(auth.router, prefix="/auth")
 app.include_router(songs.router)
+app.include_router(artists.router)
 app.include_router(playlists.router)
 app.include_router(history.router)
 app.include_router(pins.router)
+app.include_router(fuse.router)
+app.include_router(club.router)
+app.include_router(admin.router)
 
 
 # Web Upload Portal

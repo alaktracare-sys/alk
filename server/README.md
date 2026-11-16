@@ -1,0 +1,191 @@
+# 🎵 Alaktra Music - Self-Hosted Server Package
+
+This folder contains everything needed to self-host your own **Alaktra Music Server** on **Windows**, **Linux**, or a **Raspberry Pi**. It includes an interactive **1-Click Launcher** with **automatic Tailscale IP detection**, letting you stream your personal music library anywhere in the world on your Android phone with zero port-forwarding!
+
+---
+
+## 🛡️ Admin Console (port 8080 - works even when the server is off)
+
+```bash
+python launcher.py              # opens http://localhost:8080
+python launcher.py --start-api  # ...and also starts the API + tunnel
+```
+
+- Runs **independently** of the streaming API (port 8000): it reads `music.db`
+  directly, so you can browse, edit, upload and delete while the API is stopped.
+- The **power button** (bottom of the sidebar) starts/stops the API and the
+  Cloudflare tunnel. Output from both appears on the **Logs** page.
+- Pages: Overview, Songs, Artists (with claim approvals), Users, Playlists,
+  Location pins, Clubs, Blends, Logs. Every list has search, filters, paging and CSV export.
+- Standard library only: no venv needed just to open the console. (Song uploads
+  and the API itself use the project venv automatically if `venv/` exists.)
+- Login: `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`. With the factory
+  password the console only listens on `localhost`; set your own password to
+  reach it from your LAN / Tailscale. It is **not** exposed through the public
+  API any more (the old `/admin` routes were removed from `main.py`).
+- To reach it through Cloudflare too, add a second ingress rule, e.g.
+  `hostname: admin.alaktracare.in -> http://localhost:8080`, and use a strong password.
+
+---
+
+## ⚡ 1-Click Quick Start
+
+### 🪟 Windows Users:
+1. Make sure you have **Python 3.10+** installed from [python.org](https://www.python.org/downloads/) (check the box *"Add Python to PATH"* during install).
+2. Simply double-click **`start_windows.bat`**.
+3. The launcher will open! Click the big green **▶ START SERVER** button.
+4. Click **📋 Copy App URL** to get your connection link.
+
+---
+
+### 🐧 Linux & Raspberry Pi Users:
+1. Open a terminal in this folder.
+2. Run:
+   ```bash
+   chmod +x start_linux.sh
+   ./start_linux.sh
+   ```
+3. If running on a desktop, the modern Dark Mode GUI opens. If running on a headless server or over SSH, it automatically runs in an interactive colored terminal menu!
+4. Press **Ctrl+C** anytime to stop.
+
+## ☁️ Streaming with Cloudflare Tunnel & Custom Domain (Active Setup: https://api.alaktracare.in)
+
+You can run your Alaktra Music server globally with your custom GoDaddy domain and Cloudflare Tunnel (`cloudflared`). This gives you:
+- **Zero Port Forwarding**: No open router ports needed.
+- **Global High-Speed CDN & SSL**: Fully encrypted `https://` with WebSocket `wss://` support.
+- **No VPN client required on your phone**: Works natively on any cellular or Wi-Fi network worldwide.
+
+### Quick Setup with `cloudflared`:
+1. **Download cloudflared**:
+   - **Windows**: Download from [Cloudflare Releases](https://github.com/cloudflare/cloudflared/releases)
+   - **Linux / Raspberry Pi**: `curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | ...` or `brew install cloudflare/cloudflare/cloudflared`
+2. **Authenticate & Create Tunnel**:
+   ```bash
+   cloudflared tunnel login
+   cloudflared tunnel create alaktra-tunnel
+   ```
+3. **Route your DNS to your Custom Domain**:
+   ```bash
+   cloudflared tunnel route dns alaktra-tunnel api.alaktracare.in
+   ```
+4. **Configure `~/.cloudflared/config.yml`**:
+   ```yaml
+   tunnel: <TUNNEL_UUID>
+   credentials-file: /path/to/<TUNNEL_UUID>.json
+   ingress:
+     - hostname: api.alaktracare.in
+       service: http://localhost:8000
+     - service: http_status:404
+   ```
+5. **Run the Tunnel**:
+   ```bash
+   cloudflared tunnel run alaktra-tunnel
+   ```
+6. **Access Upload Panel & App**:
+   - Web Upload Panel: `https://api.alaktracare.in/`
+   - Android App: Already pre-configured by default to `https://api.alaktracare.in/`!
+
+---
+
+## 🌐 Streaming with Tailscale (Alternative Option)
+
+Tailscale creates a free, secure, private network between your PC and your phone. You **do not** need a static IP, a public IP, or router port-forwarding.
+
+### Step 1: Install Tailscale on your Host Computer
+- **Windows:** Download & install from [tailscale.com/download/windows](https://tailscale.com/download/windows)
+- **Linux / Raspberry Pi:** Run:
+  ```bash
+  curl -fsSL https://tailscale.com/install.sh | sh
+  sudo tailscale up
+  ```
+- Sign in with your Google, Microsoft, or GitHub account.
+
+### Step 2: Install Tailscale on your Android Phone
+- Download **Tailscale** from the Google Play Store.
+- Sign in using the **exact same account** as your computer.
+- Flip the switch to **Active**.
+
+### Step 3: Connect Alaktra Music App
+1. Open the **Alaktra Server Launcher** on your computer.
+2. The launcher will automatically detect your Tailscale IP (e.g. `100.85.12.34`) and display:
+   ```
+   http://100.85.12.34:8000
+   ```
+3. Click **📋 Copy App URL**.
+4. Open the **Alaktra Music** app on your phone, navigate to **Settings ⚙️ -> Server Configuration**, and paste the URL.
+5. That's it! You can now stream, sync playlists, and download songs on mobile data (4G/5G) or any Wi-Fi network worldwide.
+
+---
+
+## 🎶 Uploading Songs to your Server
+
+The server includes a built-in web portal for easily uploading your audio files and metadata:
+
+1. In the launcher, click **🌐 Open Web Upload Portal** (or visit `http://localhost:8000` in any web browser).
+2. Drag and drop your audio files (`.mp3`, `.flac`, `.m4a`, `.wav`).
+3. The server automatically:
+   - Extracts ID3 title, artist, and album tags.
+   - Extracts embedded album artwork.
+   - Generates the dynamic Material 3 dominant theme color palette for each song!
+4. The songs will immediately show up in your Android player!
+
+---
+
+## ⚙️ Optional Configuration (.env)
+
+The `.env` file contains server configuration:
+- `PORT=8000`: Port the server listens on.
+- `HOST=0.0.0.0`: Binds to all network interfaces so Tailscale, local LAN, and localhost all work.
+- `GMAIL_USER` & `GMAIL_APP_PASSWORD`: (Optional) If you want the server to send verification codes via email. If not set, OTP codes are logged directly in the launcher output window.
+
+---
+
+## 🍓 Running as a Background Service on Linux / Raspberry Pi (Optional)
+
+If you want the server to automatically start when your Raspberry Pi or Linux box boots up:
+
+1. Create a systemd service file:
+   ```bash
+   sudo nano /etc/systemd/system/alaktra.service
+   ```
+2. Paste the following (replace `/path/to/server_client` and `youruser`):
+   ```ini
+   [Unit]
+   Description=Alaktra Music Streaming Server
+   After=network.target tailscaled.service
+
+   [Service]
+   Type=simple
+   User=youruser
+   WorkingDirectory=/path/to/server_client
+   ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+   Restart=always
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+3. Enable and start:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable alaktra.service
+   sudo systemctl start alaktra.service
+   ```
+
+---
+
+## 📁 Folder Structure
+
+- `launcher.py` - Starts the Admin Console (port 8080).
+- `admin_server.py` - Admin Console backend (standard library only).
+- `admin.html` - Admin Console UI.
+- `start_windows.bat` - 1-click double-clickable script for Windows.
+- `start_linux.sh` - 1-click executable script for Linux & Raspberry Pi.
+- `main.py` - FastAPI server application entrypoint.
+- `database.py` - SQLite database engine and file storage paths.
+- `index.html` - Web upload portal.
+- `migrate_art.html` - Artwork & color palette migration utility.
+- `requirements.txt` - Python package requirements.
+- `routes/` - API endpoints for authentication, songs, streaming, playlists, history, and pins.
+- `covers/` - Stored song cover artwork images.
+- `music/` - Stored audio tracks.
+- `pins/` - Stored playlist & artist pin banners.

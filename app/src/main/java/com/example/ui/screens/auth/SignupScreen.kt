@@ -113,6 +113,14 @@ fun SignupScreen(
         ) {
             Spacer(modifier = Modifier.height(10.dp))
 
+            if (!showOtpField) {
+                // Global Server Address Input Box
+                com.example.ui.components.ServerAddressBox(
+                    repository = repository
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+            }
+
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },

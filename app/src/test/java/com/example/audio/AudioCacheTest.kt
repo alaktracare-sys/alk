@@ -25,15 +25,15 @@ class AudioCacheTest {
     @Test
     fun testCacheKeyFactory_extractsSongIdFromStandardUrl() {
         val key = AudioCache.buildCacheKey(
-            uriString = "http://100.65.126.106:8000/songs/5/stream"
+            uriString = "https://api.alaktracare.in/songs/5/stream"
         )
         assertEquals("song:5", key)
     }
 
     @Test
     fun testCacheKeyFactory_stabilizesChangingQueryParameters() {
-        val urlWithToken1 = "http://100.65.126.106:8000/songs/12/stream?token=abc123xyz&expires=1000"
-        val urlWithToken2 = "http://100.65.126.106:8000/songs/12/stream?token=newtoken456&expires=2000"
+        val urlWithToken1 = "https://api.alaktracare.in/songs/12/stream?token=abc123xyz&expires=1000"
+        val urlWithToken2 = "https://api.alaktracare.in/songs/12/stream?token=newtoken456&expires=2000"
 
         val key1 = AudioCache.buildCacheKey(urlWithToken1)
         val key2 = AudioCache.buildCacheKey(urlWithToken2)

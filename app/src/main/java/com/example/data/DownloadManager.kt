@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit
 class DownloadManager(private val context: Context) {
     private val songDao = AppDatabase.getInstance(context).songDao()
     private val client = OkHttpClient.Builder()
+        .addInterceptor(com.example.data.remote.AppSecurityInterceptor())
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -77,8 +78,19 @@ class DownloadManager(private val context: Context) {
                 }
             }
 
+            // Fallback: if HTTP cover fetch failed or was offline, copy from Coil disk cache if already cached
+            if ((!targetCoverFile.exists() || targetCoverFile.length() == 0L) && song.coverUrl.isNotBlank()) {
+                com.example.audio.ArtworkColorExtractor.copyCachedCoverToFile(
+                    context = context,
+                    imageUrl = song.coverUrl,
+                    destFile = targetCoverFile
+                )
+            }
+
+            var extractedCoverHex: String? = null
             if (targetCoverFile.exists() && targetCoverFile.length() > 0) {
                 savedCoverUriString = Uri.fromFile(targetCoverFile).toString()
+                extractedCoverHex = com.example.audio.ArtworkColorExtractor.extractMetadataColorHexFromFile(targetCoverFile)
                 try {
                     val imgReq = ImageRequest.Builder(context)
                         .data(targetCoverFile)
@@ -122,13 +134,20 @@ class DownloadManager(private val context: Context) {
                 }
             }
 
-            // 3. Record in Room Database with local audio path and local cover URI
+            // 3. Record in Room Database with local audio path, local cover URI, and extracted cover color metadata
+            val resolvedColorHex = extractedCoverHex ?: song.dominantColorHex
             val entity = DownloadedSongEntity.fromSong(
-                song = song.copy(coverUrl = savedCoverUriString),
+                song = song.copy(
+                    coverUrl = savedCoverUriString,
+                    dominantColorHex = resolvedColorHex
+                ),
                 localPath = targetAudioFile.absolutePath,
                 fileSize = targetAudioFile.length()
             )
             songDao.insertDownloadedSong(entity)
+            if (!resolvedColorHex.isNullOrBlank()) {
+                songDao.updateSongDominantColor(song.id, resolvedColorHex)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             if (targetAudioFile.exists()) targetAudioFile.delete()

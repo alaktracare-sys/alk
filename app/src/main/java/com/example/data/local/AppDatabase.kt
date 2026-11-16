@@ -54,7 +54,9 @@ class AppDatabase private constructor(context: Context) :
                 duration REAL NOT NULL,
                 downloaded_at INTEGER NOT NULL,
                 file_size INTEGER NOT NULL,
-                dominant_color TEXT
+                dominant_color TEXT,
+                primary_artist_id INTEGER,
+                artists_json TEXT
             )
             """.trimIndent()
         )
@@ -89,6 +91,8 @@ class AppDatabase private constructor(context: Context) :
                 duration REAL NOT NULL,
                 is_liked INTEGER NOT NULL DEFAULT 0,
                 dominant_color TEXT,
+                primary_artist_id INTEGER,
+                artists_json TEXT,
                 last_synced_at INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
@@ -223,7 +227,11 @@ class AppDatabase private constructor(context: Context) :
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         addColumnIfNotExists(db, "songs", "dominant_color", "TEXT")
+        addColumnIfNotExists(db, "songs", "primary_artist_id", "INTEGER")
+        addColumnIfNotExists(db, "songs", "artists_json", "TEXT")
         addColumnIfNotExists(db, "downloaded_songs", "dominant_color", "TEXT")
+        addColumnIfNotExists(db, "downloaded_songs", "primary_artist_id", "INTEGER")
+        addColumnIfNotExists(db, "downloaded_songs", "artists_json", "TEXT")
     }
 
     private fun addColumnIfNotExists(db: SQLiteDatabase, table: String, column: String, type: String) {
@@ -286,6 +294,8 @@ class AppDatabase private constructor(context: Context) :
             val dateCol = it.getColumnIndexOrThrow("downloaded_at")
             val sizeCol = it.getColumnIndexOrThrow("file_size")
             val colorCol = it.getColumnIndex("dominant_color")
+            val primCol = it.getColumnIndex("primary_artist_id")
+            val artJsonCol = it.getColumnIndex("artists_json")
 
             while (it.moveToNext()) {
                 list.add(
@@ -299,7 +309,9 @@ class AppDatabase private constructor(context: Context) :
                         duration = it.getDouble(durCol),
                         downloadedAt = it.getLong(dateCol),
                         fileSize = it.getLong(sizeCol),
-                        dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null
+                        dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                        primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                        artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null
                     )
                 )
             }
@@ -325,6 +337,8 @@ class AppDatabase private constructor(context: Context) :
         cursor.use {
             if (it.moveToFirst()) {
                 val colorCol = it.getColumnIndex("dominant_color")
+                val primCol = it.getColumnIndex("primary_artist_id")
+                val artJsonCol = it.getColumnIndex("artists_json")
                 DownloadedSongEntity(
                     songId = it.getInt(it.getColumnIndexOrThrow("song_id")),
                     title = it.getString(it.getColumnIndexOrThrow("title")),
@@ -335,7 +349,9 @@ class AppDatabase private constructor(context: Context) :
                     duration = it.getDouble(it.getColumnIndexOrThrow("duration")),
                     downloadedAt = it.getLong(it.getColumnIndexOrThrow("downloaded_at")),
                     fileSize = it.getLong(it.getColumnIndexOrThrow("file_size")),
-                    dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null
+                    dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                    primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                    artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null
                 )
             } else null
         }
@@ -372,6 +388,12 @@ class AppDatabase private constructor(context: Context) :
             if (song.dominantColorHex != null) {
                 put("dominant_color", song.dominantColorHex)
             }
+            if (song.primaryArtistId != null) {
+                put("primary_artist_id", song.primaryArtistId)
+            }
+            if (song.artistsJson != null) {
+                put("artists_json", song.artistsJson)
+            }
         }
         db.insertWithOnConflict("downloaded_songs", null, values, SQLiteDatabase.CONFLICT_REPLACE)
         refreshFlow()
@@ -407,6 +429,8 @@ class AppDatabase private constructor(context: Context) :
             val likedCol = it.getColumnIndexOrThrow("is_liked")
             val syncCol = it.getColumnIndexOrThrow("last_synced_at")
             val colorCol = it.getColumnIndex("dominant_color")
+            val primCol = it.getColumnIndex("primary_artist_id")
+            val artJsonCol = it.getColumnIndex("artists_json")
 
             while (it.moveToNext()) {
                 list.add(
@@ -419,6 +443,8 @@ class AppDatabase private constructor(context: Context) :
                         duration = it.getDouble(durCol),
                         isLiked = it.getInt(likedCol) == 1,
                         dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                        primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                        artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null,
                         lastSyncedAt = it.getLong(syncCol)
                     )
                 )
@@ -439,6 +465,8 @@ class AppDatabase private constructor(context: Context) :
         cursor.use {
             if (it.moveToFirst()) {
                 val colorCol = it.getColumnIndex("dominant_color")
+                val primCol = it.getColumnIndex("primary_artist_id")
+                val artJsonCol = it.getColumnIndex("artists_json")
                 SongEntity(
                     id = it.getInt(it.getColumnIndexOrThrow("id")),
                     title = it.getString(it.getColumnIndexOrThrow("title")),
@@ -448,6 +476,8 @@ class AppDatabase private constructor(context: Context) :
                     duration = it.getDouble(it.getColumnIndexOrThrow("duration")),
                     isLiked = it.getInt(it.getColumnIndexOrThrow("is_liked")) == 1,
                     dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                    primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                    artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null,
                     lastSyncedAt = it.getLong(it.getColumnIndexOrThrow("last_synced_at"))
                 )
             } else null
@@ -470,6 +500,12 @@ class AppDatabase private constructor(context: Context) :
                     put("is_liked", if (song.isLiked) 1 else 0)
                     if (song.dominantColorHex != null) {
                         put("dominant_color", song.dominantColorHex)
+                    }
+                    if (song.primaryArtistId != null) {
+                        put("primary_artist_id", song.primaryArtistId)
+                    }
+                    if (song.artistsJson != null) {
+                        put("artists_json", song.artistsJson)
                     }
                     put("last_synced_at", song.lastSyncedAt)
                 }
@@ -495,6 +531,12 @@ class AppDatabase private constructor(context: Context) :
             if (song.dominantColorHex != null) {
                 put("dominant_color", song.dominantColorHex)
             }
+            if (song.primaryArtistId != null) {
+                put("primary_artist_id", song.primaryArtistId)
+            }
+            if (song.artistsJson != null) {
+                put("artists_json", song.artistsJson)
+            }
             put("last_synced_at", song.lastSyncedAt)
         }
         db.insertWithOnConflict("songs", null, values, SQLiteDatabase.CONFLICT_REPLACE)
@@ -510,6 +552,16 @@ class AppDatabase private constructor(context: Context) :
         refreshFlow()
     }
 
+    override suspend fun updateSongDominantColor(songId: Int, dominantColorHex: String): Unit = withContext(Dispatchers.IO) {
+        if (dominantColorHex.isBlank()) return@withContext
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("dominant_color", dominantColorHex)
+        }
+        db.update("songs", values, "id = ?", arrayOf(songId.toString()))
+        db.update("downloaded_songs", values, "song_id = ?", arrayOf(songId.toString()))
+    }
+
     override suspend fun getLikedSongs(): List<SongEntity> = withContext(Dispatchers.IO) {
         val list = mutableListOf<SongEntity>()
         val db = readableDatabase
@@ -523,6 +575,8 @@ class AppDatabase private constructor(context: Context) :
             val durCol = it.getColumnIndexOrThrow("duration")
             val syncCol = it.getColumnIndexOrThrow("last_synced_at")
             val colorCol = it.getColumnIndex("dominant_color")
+            val primCol = it.getColumnIndex("primary_artist_id")
+            val artJsonCol = it.getColumnIndex("artists_json")
 
             while (it.moveToNext()) {
                 list.add(
@@ -535,6 +589,8 @@ class AppDatabase private constructor(context: Context) :
                         duration = it.getDouble(durCol),
                         isLiked = true,
                         dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                        primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                        artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null,
                         lastSyncedAt = it.getLong(syncCol)
                     )
                 )
@@ -564,6 +620,8 @@ class AppDatabase private constructor(context: Context) :
             val likedCol = it.getColumnIndexOrThrow("is_liked")
             val syncCol = it.getColumnIndexOrThrow("last_synced_at")
             val colorCol = it.getColumnIndex("dominant_color")
+            val primCol = it.getColumnIndex("primary_artist_id")
+            val artJsonCol = it.getColumnIndex("artists_json")
 
             while (it.moveToNext()) {
                 list.add(
@@ -576,6 +634,8 @@ class AppDatabase private constructor(context: Context) :
                         duration = it.getDouble(durCol),
                         isLiked = it.getInt(likedCol) == 1,
                         dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                        primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                        artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null,
                         lastSyncedAt = it.getLong(syncCol)
                     )
                 )
@@ -733,7 +793,7 @@ class AppDatabase private constructor(context: Context) :
         val list = mutableListOf<SongEntity>()
         val db = readableDatabase
         val sql = """
-            SELECT s.id, s.title, s.artist, s.audio_url, s.cover_url, s.duration, s.is_liked, s.dominant_color, s.last_synced_at
+            SELECT s.id, s.title, s.artist, s.audio_url, s.cover_url, s.duration, s.is_liked, s.dominant_color, s.primary_artist_id, s.artists_json, s.last_synced_at
             FROM songs s
             INNER JOIN playlist_songs ps ON s.id = ps.song_id
             WHERE ps.playlist_id = ?
@@ -750,6 +810,8 @@ class AppDatabase private constructor(context: Context) :
             val likedCol = it.getColumnIndexOrThrow("is_liked")
             val syncCol = it.getColumnIndexOrThrow("last_synced_at")
             val colorCol = it.getColumnIndex("dominant_color")
+            val primCol = it.getColumnIndex("primary_artist_id")
+            val artJsonCol = it.getColumnIndex("artists_json")
 
             while (it.moveToNext()) {
                 list.add(
@@ -762,6 +824,8 @@ class AppDatabase private constructor(context: Context) :
                         duration = it.getDouble(durCol),
                         isLiked = it.getInt(likedCol) == 1,
                         dominantColorHex = if (colorCol >= 0 && !it.isNull(colorCol)) it.getString(colorCol) else null,
+                        primaryArtistId = if (primCol >= 0 && !it.isNull(primCol)) it.getInt(primCol) else null,
+                        artistsJson = if (artJsonCol >= 0 && !it.isNull(artJsonCol)) it.getString(artJsonCol) else null,
                         lastSyncedAt = it.getLong(syncCol)
                     )
                 )
@@ -787,6 +851,12 @@ class AppDatabase private constructor(context: Context) :
                     put("is_liked", if (song.isLiked) 1 else 0)
                     if (song.dominantColorHex != null) {
                         put("dominant_color", song.dominantColorHex)
+                    }
+                    if (song.primaryArtistId != null) {
+                        put("primary_artist_id", song.primaryArtistId)
+                    }
+                    if (song.artistsJson != null) {
+                        put("artists_json", song.artistsJson)
                     }
                     put("last_synced_at", song.lastSyncedAt)
                 }

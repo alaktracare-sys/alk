@@ -1,4 +1,5 @@
 package com.example.audio
+import kotlin.math.abs
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -127,6 +128,9 @@ class AudioController private constructor(private val context: Context) {
 
     private var progressJob: Job? = null
     private var paletteJob: Job? = null
+    @Volatile
+    private var paletteResolvedFromArtSongId: Int? = null
+    private val resolvedArtColorCache = java.util.concurrent.ConcurrentHashMap<Int, Color>()
 
     private var headsetClickCount = 0
     private var headsetClickJob: Job? = null
@@ -217,6 +221,7 @@ class AudioController private constructor(private val context: Context) {
                             preloadUpcomingTrack()
                         }
                     }
+                    ensureCurrentSongPalette()
                 }
             }
         }
@@ -225,7 +230,7 @@ class AudioController private constructor(private val context: Context) {
     private fun restoreOnlineContextOrStream() {
         val snapshotToRestore = preOfflineSnapshot
         scope.launch(Dispatchers.IO) {
-            val repo = MusicRepository(context)
+            val repo = MusicRepository.getInstance(context)
             val needsCatalogSongs = snapshotToRestore == null ||
                 isRestoredContext(snapshotToRestore.context) ||
                 snapshotToRestore.context.uri == "alaktra:playlist:alaktra_stream"
@@ -256,6 +261,7 @@ class AudioController private constructor(private val context: Context) {
                     checkNearbyPinsLocationTracking(restoredState.context?.name)
                     persistCurrentState()
                     preloadUpcomingTrack()
+                    ensureCurrentSongPalette()
                 } else if (isOfflineBackupContext(currentContext) || isRestoredContext(currentContext)) {
                     if (catalogSongs.isNotEmpty()) {
                         val upgradedState = upgradeToStreamState(currentState, catalogSongs)
@@ -263,6 +269,7 @@ class AudioController private constructor(private val context: Context) {
                         _playbackState.value = upgradedState
                         persistCurrentState()
                         preloadUpcomingTrack()
+                        ensureCurrentSongPalette()
                     }
                 }
             }
@@ -562,6 +569,84 @@ class AudioController private constructor(private val context: Context) {
     private var currentSongRecordedAsPlayed: Boolean = false
     private var lastTickTimeMs: Long = 0L
 
+    private var currentCapsuleSessionStartMs: Long = 0L
+    private var currentCapsuleMsPlayed: Long = 0L
+    private var lastCapsulePersistedMs: Long = 0L
+    private var lastCapsuleTickMs: Long = 0L
+    private val soundCapsuleRepo by lazy { MusicRepository.getInstance(context).soundCapsuleRepository }
+
+    private fun persistCurrentCapsuleSession(
+        syncToServer: Boolean = false,
+        finalizeSession: Boolean = false
+    ) {
+        val song = currentSessionSong ?: _playbackState.value.currentSong ?: return
+        val startedAt = currentCapsuleSessionStartMs
+        val msPlayed = currentCapsuleMsPlayed
+        if (startedAt > 0L && msPlayed > 0L && (finalizeSession || syncToServer || msPlayed > lastCapsulePersistedMs)) {
+            lastCapsulePersistedMs = msPlayed
+            scope.launch(Dispatchers.IO) {
+                try {
+                    soundCapsuleRepo.recordSessionPlayEvent(
+                        song = song,
+                        startedAtMillis = startedAt,
+                        msPlayed = msPlayed,
+                        syncToServer = syncToServer,
+                        sessionCompleted = finalizeSession
+                    )
+                } catch (e: Exception) {
+                    Log.w("AudioController", "Failed to persist Sound Capsule PlayEvent", e)
+                }
+            }
+        }
+        if (finalizeSession) {
+            val now = System.currentTimeMillis()
+            currentCapsuleSessionStartMs = 0L
+            currentCapsuleMsPlayed = 0L
+            lastCapsulePersistedMs = 0L
+            lastCapsuleTickMs = now
+        }
+    }
+
+    /**
+     * Synchronously flushes any active or paused track's up-to-the-millisecond listen duration
+     * into SoundCapsuleRepository's in-memory accumulator so opening Sound Capsule displays
+     * exact current stats on its very first frame without main-thread disk I/O.
+     */
+    fun flushLiveSessionForUi() {
+        val song = currentSessionSong ?: _playbackState.value.currentSong ?: return
+        if (player.isPlaying && currentCapsuleSessionStartMs > 0L) {
+            val now = System.currentTimeMillis()
+            val delta = (now - lastCapsuleTickMs).coerceIn(0L, 2_000L)
+            if (delta > 0L) {
+                lastCapsuleTickMs = now
+                currentCapsuleMsPlayed += delta
+            }
+        }
+        checkAndRecordIfPlayedThresholdMet()
+        val sessionId = currentSessionHistoryId
+        val listenedSec = currentSessionListenedSec
+        if (sessionId != null && listenedSec > 0L) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    com.example.data.local.AppDatabase.getInstance(context)
+                        .updateListeningDuration(sessionId, listenedSec)
+                } catch (_: Exception) {}
+            }
+        }
+        val startedAt = currentCapsuleSessionStartMs
+        val msPlayed = currentCapsuleMsPlayed
+        if (startedAt > 0L && msPlayed > 0L) {
+            soundCapsuleRepo.applyLiveSessionInMemory(
+                song = song,
+                startedAtMillis = startedAt,
+                msPlayed = msPlayed
+            )
+            if (msPlayed - lastCapsulePersistedMs >= 2_000L) {
+                persistCurrentCapsuleSession(syncToServer = false, finalizeSession = false)
+            }
+        }
+    }
+
     private fun checkAndRecordIfPlayedThresholdMet() {
         if (currentSongRecordedAsPlayed) return
         val song = currentSessionSong ?: _playbackState.value.currentSong ?: return
@@ -593,6 +678,7 @@ class AudioController private constructor(private val context: Context) {
     }
 
     private fun flushCurrentListeningSession() {
+        persistCurrentCapsuleSession(syncToServer = false, finalizeSession = false)
         checkAndRecordIfPlayedThresholdMet()
         val sessionId = currentSessionHistoryId ?: return
         val listenedSec = currentSessionListenedSec
@@ -610,7 +696,9 @@ class AudioController private constructor(private val context: Context) {
     private fun startProgressTracker() {
         if (progressJob?.isActive == true) return
         progressJob?.cancel()
-        lastTickTimeMs = System.currentTimeMillis()
+        val startNow = System.currentTimeMillis()
+        lastTickTimeMs = startNow
+        lastCapsuleTickMs = startNow
         progressJob = scope.launch {
             try {
                 var counter = 0
@@ -627,6 +715,39 @@ class AudioController private constructor(private val context: Context) {
 
                     val now = System.currentTimeMillis()
                     if (isActivelyPlaying) {
+                        if (currentCapsuleSessionStartMs <= 0L) {
+                            val activeSong = currentSessionSong ?: _playbackState.value.currentSong
+                            if (activeSong != null) {
+                                currentSessionSong = activeSong
+                                currentSessionSongId = activeSong.id
+                                currentCapsuleSessionStartMs = now
+                                currentCapsuleMsPlayed = 0L
+                                lastCapsulePersistedMs = 0L
+                                lastCapsuleTickMs = now
+                            }
+                        }
+                        val capsuleDeltaMs = (now - lastCapsuleTickMs).coerceIn(0L, 2_000L)
+                        lastCapsuleTickMs = now
+                        if (capsuleDeltaMs > 0L) {
+                            val prevMs = currentCapsuleMsPlayed
+                            currentCapsuleMsPlayed += capsuleDeltaMs
+                            val crossedPlayThreshold = prevMs < 30_000L && currentCapsuleMsPlayed >= 30_000L
+                            val crossedMinuteMark = (prevMs / 15_000L) != (currentCapsuleMsPlayed / 15_000L)
+                            if (crossedPlayThreshold || crossedMinuteMark) {
+                                val activeSong = currentSessionSong ?: _playbackState.value.currentSong
+                                if (activeSong != null && currentCapsuleSessionStartMs > 0L) {
+                                    soundCapsuleRepo.applyLiveSessionInMemory(
+                                        song = activeSong,
+                                        startedAtMillis = currentCapsuleSessionStartMs,
+                                        msPlayed = currentCapsuleMsPlayed
+                                    )
+                                }
+                            }
+                            if (currentCapsuleMsPlayed - lastCapsulePersistedMs >= 15_000L) {
+                                persistCurrentCapsuleSession(syncToServer = false, finalizeSession = false)
+                            }
+                        }
+
                         // Accurately accumulate active listening seconds ONLY when audio is genuinely playing
                         val deltaMs = now - lastTickTimeMs
                         if (deltaMs >= 1000L) {
@@ -651,8 +772,9 @@ class AudioController private constructor(private val context: Context) {
                         }
                     } else {
                         // Not actively playing (paused, buffering, loading, idle, audio focus loss, etc.)
-                        // Continuously reset lastTickTimeMs so time spent paused or loading is NEVER credited!
+                        // Continuously reset lastTickTimeMs & lastCapsuleTickMs so time spent paused or loading is NEVER credited!
                         lastTickTimeMs = now
+                        lastCapsuleTickMs = now
 
                         // Check if player has truly paused or stopped
                         if (!player.playWhenReady || player.playbackState == Player.STATE_ENDED || player.playbackState == Player.STATE_IDLE) {
@@ -827,7 +949,7 @@ class AudioController private constructor(private val context: Context) {
             override fun onLocationChanged(loc: Location) {
                 scope.launch(Dispatchers.IO) {
                     try {
-                        val repo = MusicRepository(context)
+                        val repo = MusicRepository.getInstance(context)
                         val freshPins = repo.getNearbyPins(loc.latitude, loc.longitude)
                         withContext(Dispatchers.Main) {
                             updateNearbyPinsQueue(freshPins.map { it.song })
@@ -1114,8 +1236,9 @@ class AudioController private constructor(private val context: Context) {
     private var lastRecordedTimeMs: Long = 0L
 
     private fun prepareNewSongListeningSession(song: Song) {
-        // Flush previous session if active and qualified
+        // Flush previous session if active and cache outgoing track's PlayEvent locally on skip/switch
         flushCurrentListeningSession()
+        persistCurrentCapsuleSession(syncToServer = false, finalizeSession = true)
 
         val isDifferentSong = song.id != currentSessionSongId
         currentSessionSong = song
@@ -1125,7 +1248,12 @@ class AudioController private constructor(private val context: Context) {
             currentSessionHistoryId = null
             currentSongRecordedAsPlayed = false
         }
-        lastTickTimeMs = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        lastTickTimeMs = now
+        currentCapsuleSessionStartMs = now
+        currentCapsuleMsPlayed = 0L
+        lastCapsulePersistedMs = 0L
+        lastCapsuleTickMs = now
     }
 
     private fun recordSongAsPlayed(song: Song, initialListenedSec: Long) {
@@ -1137,6 +1265,7 @@ class AudioController private constructor(private val context: Context) {
         }
         lastRecordedSongId = song.id
         lastRecordedTimeMs = now
+        val sessionPlayedAt = currentCapsuleSessionStartMs.takeIf { it > 0L } ?: now
 
         scope.launch(Dispatchers.IO) {
             try {
@@ -1150,7 +1279,7 @@ class AudioController private constructor(private val context: Context) {
                         coverUrl = song.coverUrl,
                         duration = song.duration,
                         listenedSeconds = initialListenedSec.coerceAtLeast(0L),
-                        playedAt = now
+                        playedAt = sessionPlayedAt
                     )
                 )
                 currentSessionHistoryId = newId
@@ -1176,6 +1305,7 @@ class AudioController private constructor(private val context: Context) {
             currentPositionMs = if (currentPos > 0L) currentPos else _playbackState.value.currentPositionMs
         )
         stopProgressTracker()
+        flushCurrentListeningSession()
         scope.launch(Dispatchers.IO) {
             persistCurrentState()
         }
@@ -1190,6 +1320,7 @@ class AudioController private constructor(private val context: Context) {
             currentPositionMs = 0L
         )
         stopProgressTracker()
+        persistCurrentCapsuleSession(syncToServer = false, finalizeSession = true)
         scope.launch(Dispatchers.IO) {
             persistCurrentState()
         }
@@ -1208,6 +1339,7 @@ class AudioController private constructor(private val context: Context) {
             player.play()
             _playbackState.value = _playbackState.value.copy(isPlaying = true)
             startProgressTracker()
+            ensureCurrentSongPalette()
             scope.launch(Dispatchers.IO) {
                 persistCurrentState()
             }
@@ -1554,7 +1686,7 @@ class AudioController private constructor(private val context: Context) {
         }
         val shouldShuffle = autoShuffle || _playbackState.value.shuffle
         scope.launch(Dispatchers.IO) {
-            val repo = MusicRepository(context)
+            val repo = MusicRepository.getInstance(context)
             val offlineSongs = repo.getOfflineBackupSongs()
             withContext(Dispatchers.Main) {
                 if (isAutomaticFallback && NetworkMonitor.isOnline(context)) {
@@ -1828,6 +1960,7 @@ class AudioController private constructor(private val context: Context) {
 
     private fun handleTrackEnded() {
         flushCurrentListeningSession()
+        persistCurrentCapsuleSession(syncToServer = false, finalizeSession = true)
         if (_stopAtEndOfTrack.value) {
             _stopAtEndOfTrack.value = false
             _isSleepTimerActive.value = false
@@ -1857,6 +1990,7 @@ class AudioController private constructor(private val context: Context) {
     }
 
     fun resetForLogout() {
+        persistCurrentCapsuleSession(syncToServer = false, finalizeSession = true)
         preOfflineSnapshot = null
         lastTransientRetrySongId = null
         player.stop()
@@ -1868,123 +2002,279 @@ class AudioController private constructor(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    private fun extractColorFromExif(pathOrFile: Any?): Color? {
-        return try {
-            val exif = when (pathOrFile) {
-                is File -> if (pathOrFile.exists()) android.media.ExifInterface(pathOrFile.absolutePath) else null
-                is String -> {
-                    val cleanPath = pathOrFile.removePrefix("file://")
-                    val f = File(cleanPath)
-                    if (f.exists()) android.media.ExifInterface(f.absolutePath) else null
-                }
-                else -> null
-            } ?: return null
-
-            val rawMeta = exif.getAttribute(android.media.ExifInterface.TAG_USER_COMMENT)
-                ?: exif.getAttribute(android.media.ExifInterface.TAG_IMAGE_DESCRIPTION)
-                ?: exif.getAttribute(android.media.ExifInterface.TAG_SOFTWARE)
-            if (!rawMeta.isNullOrBlank()) {
-                val hexRegex = Regex("#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
-                val match = hexRegex.find(rawMeta)
-                if (match != null) {
-                    Color(android.graphics.Color.parseColor(match.value))
-                } else null
-            } else null
-        } catch (_: Exception) {
-            null
+    fun ensureCurrentSongPalette() {
+        val song = _playbackState.value.currentSong ?: return
+        val currentDom = _playbackState.value.dominantColor
+        val hasValidColor = currentDom != Color.Unspecified && currentDom != Color.Transparent
+        if (paletteResolvedFromArtSongId != song.id || !hasValidColor) {
+            if (paletteJob?.isActive != true) {
+                extractPalette(
+                    imageUrl = song.coverUrl,
+                    overrideHex = song.dominantColorHex,
+                    songId = song.id,
+                    forceRetry = true
+                )
+            }
         }
     }
 
-    private fun extractPalette(imageUrl: String, overrideHex: String? = null, songId: Int? = null) {
-        paletteJob?.cancel()
+    fun onCurrentSongArtworkLoaded(
+        songId: Int,
+        imageUrl: String,
+        drawable: android.graphics.drawable.Drawable?
+    ) {
+        val currentSong = _playbackState.value.currentSong ?: return
+        if (currentSong.id != songId) return
+        val currentDom = _playbackState.value.dominantColor
+        val hasValidColor = currentDom != Color.Unspecified && currentDom != Color.Transparent
+        if (paletteResolvedFromArtSongId == songId && hasValidColor) return
 
-        // 1. Check if the song has a locally saved cover artwork file (e.g. downloaded covers)
-        var localCoverFile: File? = null
-        if (songId != null) {
-            val downloadsCover = File(context.filesDir, "downloads/${songId}_cover.jpg")
-            if (downloadsCover.exists()) {
-                localCoverFile = downloadsCover
+        scope.launch(Dispatchers.IO) {
+            // 1. Check local / disk-cached cover file (retry briefly if DiskCache editor lock is just closing)
+            val urls = buildList {
+                if (imageUrl.isNotBlank()) add(imageUrl)
+                if (currentSong.coverUrl.isNotBlank()) add(currentSong.coverUrl)
+            }
+            var metadataHex: String? = null
+            val localCover = ArtworkColorExtractor.resolveLocalCoverFile(context, songId, imageUrl)
+            if (localCover != null) {
+                metadataHex = ArtworkColorExtractor.extractMetadataColorHexFromFile(localCover)
+            }
+            if (metadataHex == null) {
+                for (attempt in 0 until 3) {
+                    if (attempt > 0) delay(60L)
+                    metadataHex = ArtworkColorExtractor.extractFromCaches(context, urls)
+                    if (metadataHex != null) break
+                }
+            }
+
+            if (metadataHex != null) {
+                applyResolvedSongPalette(songId = songId, hex = metadataHex, resolvedFromArt = true)
+                return@launch
+            }
+
+            // 2. Fallback if image file has no embedded DOMINANT_COLOR tag at all
+            val dbDao = com.example.data.local.AppDatabase.getInstance(context).songDao()
+            val storedHex = currentSong.dominantColorHex?.takeIf { it.isNotBlank() }
+                ?: dbDao.getDownloadedSong(songId)?.dominantColorHex?.takeIf { it.isNotBlank() }
+                ?: dbDao.getCachedSong(songId)?.dominantColorHex?.takeIf { it.isNotBlank() }
+
+            if (storedHex != null) {
+                applyResolvedSongPalette(songId = songId, hex = storedHex, resolvedFromArt = true)
+            } else {
+                val visualHex = ArtworkColorExtractor.extractVisualPaletteHex(drawable)
+                if (visualHex != null) {
+                    applyResolvedSongPalette(songId = songId, hex = visualHex, resolvedFromArt = true)
+                }
             }
         }
-        if (localCoverFile == null && (imageUrl.startsWith("file://") || imageUrl.startsWith("/"))) {
-            val f = File(imageUrl.removePrefix("file://"))
-            if (f.exists()) localCoverFile = f
+    }
+
+    private suspend fun applyResolvedSongPalette(
+        songId: Int?,
+        hex: String,
+        resolvedFromArt: Boolean
+    ) {
+        val normalizedHex = ArtworkColorExtractor.normalizeHex(hex) ?: return
+        val parsedColor = ArtworkColorExtractor.parseHexColor(normalizedHex) ?: return
+
+        if (resolvedFromArt && songId != null) {
+            if (resolvedArtColorCache.size >= 128) {
+                resolvedArtColorCache.clear()
+            }
+            resolvedArtColorCache[songId] = parsedColor
+            paletteResolvedFromArtSongId = songId
         }
 
-        // If local cover file exists, read embedded color metadata from the cover image EXIF directly
-        if (localCoverFile != null) {
-            val exifColor = extractColorFromExif(localCoverFile)
-            if (exifColor != null) {
+        var shouldPersistPlayback = false
+        withContext(Dispatchers.Main) {
+            val state = _playbackState.value
+            val activeSong = state.currentSong
+            if (songId == null || activeSong?.id == songId) {
+                val updatedSong = if (activeSong != null && activeSong.dominantColorHex != normalizedHex) {
+                    shouldPersistPlayback = true
+                    activeSong.copy(dominantColorHex = normalizedHex)
+                } else {
+                    activeSong
+                }
+                val updatedOrder = if (songId != null && state.contextOrder.any { it.id == songId && it.dominantColorHex != normalizedHex }) {
+                    state.contextOrder.map { s ->
+                        if (s.id == songId) s.copy(dominantColorHex = normalizedHex) else s
+                    }
+                } else {
+                    state.contextOrder
+                }
+                _playbackState.value = state.copy(
+                    currentSong = updatedSong,
+                    contextOrder = updatedOrder,
+                    dominantColor = parsedColor,
+                    secondaryColor = parsedColor
+                )
+            }
+        }
+
+        if (resolvedFromArt && songId != null) {
+            try {
+                com.example.data.local.AppDatabase.getInstance(context)
+                    .songDao()
+                    .updateSongDominantColor(songId, normalizedHex)
+            } catch (_: Exception) {}
+            if (shouldPersistPlayback) {
+                persistCurrentState()
+            }
+        }
+    }
+
+    private fun extractPalette(
+        imageUrl: String,
+        overrideHex: String? = null,
+        songId: Int? = null,
+        forceRetry: Boolean = false
+    ) {
+        paletteJob?.cancel()
+
+        // Fast 0ms session cache hit if this song's artwork metadata was already extracted
+        if (songId != null && !forceRetry) {
+            val cachedColor = resolvedArtColorCache[songId]
+            if (cachedColor != null) {
+                paletteResolvedFromArtSongId = songId
                 _playbackState.value = _playbackState.value.copy(
-                    dominantColor = exifColor,
-                    secondaryColor = exifColor
+                    dominantColor = cachedColor,
+                    secondaryColor = cachedColor
                 )
                 return
             }
         }
 
-        // 2. Check Coil disk cache for previously cached cover image file to read EXIF color metadata
-        try {
-            val snapshot = context.imageLoader.diskCache?.openSnapshot(imageUrl)
-            if (snapshot != null) {
-                val cachedFile = snapshot.data.toFile()
-                snapshot.close()
-                if (cachedFile.exists()) {
-                    val exifColor = extractColorFromExif(cachedFile)
-                    if (exifColor != null) {
-                        _playbackState.value = _playbackState.value.copy(
-                            dominantColor = exifColor,
-                            secondaryColor = exifColor
-                        )
-                        return
-                    }
-                }
-            }
-        } catch (_: Exception) {}
+        if (paletteResolvedFromArtSongId != songId) {
+            paletteResolvedFromArtSongId = null
+        }
 
-        // 3. Fallback to song record overrideHex if the cover file EXIF is not yet cached on disk
-        if (!overrideHex.isNullOrBlank()) {
-            try {
-                val parsed = Color(android.graphics.Color.parseColor(overrideHex))
-                _playbackState.value = _playbackState.value.copy(
-                    dominantColor = parsed,
-                    secondaryColor = parsed
-                )
-            } catch (_: Exception) {}
-        } else {
-            // Default fallback
+        // Apply provisional color immediately while background IO reads cover art metadata
+        val provisionalColor = ArtworkColorExtractor.parseHexColor(overrideHex)
+        if (provisionalColor != null) {
+            _playbackState.value = _playbackState.value.copy(
+                dominantColor = provisionalColor,
+                secondaryColor = provisionalColor
+            )
+        } else if (!forceRetry) {
             _playbackState.value = _playbackState.value.copy(
                 dominantColor = Color.Transparent,
                 secondaryColor = Color.Transparent
             )
         }
 
-        // 4. Asynchronously fetch the cover image and extract embedded color metadata directly from the cover file
-        if (imageUrl.isNotBlank() && (imageUrl.startsWith("http://") || imageUrl.startsWith("https://"))) {
-            paletteJob = scope.launch(Dispatchers.IO) {
-                try {
-                    val request = ImageRequest.Builder(context)
-                        .data(imageUrl)
-                        .allowHardware(false)
-                        .build()
-                    val result = context.imageLoader.execute(request)
-                    if (result is SuccessResult) {
-                        val diskSnapshot = context.imageLoader.diskCache?.openSnapshot(imageUrl)
-                        if (diskSnapshot != null) {
-                            val cachedFile = diskSnapshot.data.toFile()
-                            diskSnapshot.close()
-                            val exifColor = extractColorFromExif(cachedFile)
-                            if (exifColor != null) {
-                                withContext(Dispatchers.Main) {
-                                    _playbackState.value = _playbackState.value.copy(
-                                        dominantColor = exifColor,
-                                        secondaryColor = exifColor
-                                    )
+        paletteJob = scope.launch(Dispatchers.IO) {
+            val dbDao = try {
+                com.example.data.local.AppDatabase.getInstance(context).songDao()
+            } catch (_: Exception) {
+                null
+            }
+            val downloadedEntity = if (songId != null) {
+                try { dbDao?.getDownloadedSong(songId) } catch (_: Exception) { null }
+            } else null
+            val cachedEntity = if (songId != null) {
+                try { dbDao?.getCachedSong(songId) } catch (_: Exception) { null }
+            } else null
+
+            // Hydrate provisional color from local SQLite if overrideHex was missing (e.g. offline/history/restored state)
+            val dbFallbackHex = downloadedEntity?.dominantColorHex?.takeIf { it.isNotBlank() }
+                ?: cachedEntity?.dominantColorHex?.takeIf { it.isNotBlank() }
+            if (provisionalColor == null && dbFallbackHex != null) {
+                applyResolvedSongPalette(songId = songId, hex = dbFallbackHex, resolvedFromArt = false)
+            }
+
+            val candidateUrls = buildList {
+                if (imageUrl.isNotBlank()) add(imageUrl)
+                downloadedEntity?.coverUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
+                cachedEntity?.coverUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }.distinct()
+
+            val retryDelaysMs = longArrayOf(0L, 350L, 1000L, 2500L)
+            for ((attemptIdx, delayMs) in retryDelaysMs.withIndex()) {
+                if (!isActive) return@launch
+                if (delayMs > 0L) delay(delayMs)
+                if (songId != null && _playbackState.value.currentSong?.id != songId) return@launch
+                if (songId != null && paletteResolvedFromArtSongId == songId) return@launch
+
+                // 1. Check local cover file(s) directly (works 100% offline & online)
+                val localCoverFile = ArtworkColorExtractor.resolveLocalCoverFile(
+                    context = context,
+                    songId = songId,
+                    imageUrl = downloadedEntity?.coverUrl?.takeIf { it.isNotBlank() } ?: imageUrl
+                )
+                if (localCoverFile != null) {
+                    val fileHex = ArtworkColorExtractor.extractMetadataColorHexFromFile(localCoverFile)
+                    if (fileHex != null) {
+                        applyResolvedSongPalette(songId = songId, hex = fileHex, resolvedFromArt = true)
+                        return@launch
+                    }
+                }
+
+                // 2. Check Coil DiskCache (`image_cache`) and OkHttp (`okhttp_image_cache`) directly (works 100% offline!)
+                val cachedHex = ArtworkColorExtractor.extractFromCaches(context, candidateUrls)
+                if (cachedHex != null) {
+                    applyResolvedSongPalette(songId = songId, hex = cachedHex, resolvedFromArt = true)
+                    return@launch
+                }
+
+                // 3. Execute Coil ImageLoader request (works online via network AND offline via MemoryCache/DiskCache/local file)
+                val isOnline = NetworkMonitor.isOnline(context)
+                val requestDataList = buildList<Any> {
+                    if (localCoverFile != null) add(localCoverFile)
+                    addAll(candidateUrls)
+                }
+
+                for (dataTarget in requestDataList) {
+                    if (!isActive) return@launch
+                    try {
+                        val isRemoteTarget = dataTarget is String &&
+                            (dataTarget.startsWith("http://", ignoreCase = true) ||
+                                dataTarget.startsWith("https://", ignoreCase = true))
+                        val reqBuilder = ImageRequest.Builder(context)
+                            .data(dataTarget)
+                            .allowHardware(false)
+                        if (!isOnline && isRemoteTarget) {
+                            // Force offline cache lookup so Coil never aborts with OfflineException before checking caches
+                            reqBuilder.networkCachePolicy(coil.request.CachePolicy.DISABLED)
+                        }
+
+                        val result = context.imageLoader.execute(reqBuilder.build())
+                        if (result is SuccessResult) {
+                            // Poll briefly in case a concurrent SongCover DiskCache.Editor is finishing its write lock
+                            var postFetchHex: String? = localCoverFile?.let {
+                                ArtworkColorExtractor.extractMetadataColorHexFromFile(it)
+                            }
+                            if (postFetchHex == null) {
+                                for (poll in 0 until 3) {
+                                    if (poll > 0) delay(60L)
+                                    postFetchHex = ArtworkColorExtractor.extractFromCaches(context, candidateUrls)
+                                    if (postFetchHex != null) break
                                 }
                             }
+
+                            if (postFetchHex != null) {
+                                applyResolvedSongPalette(songId = songId, hex = postFetchHex, resolvedFromArt = true)
+                                return@launch
+                            }
+
+                            // Artwork is loaded, but image file has no embedded DOMINANT_COLOR tag:
+                            // prefer known song hex if present, otherwise compute visual Palette from decoded bitmap
+                            val effectiveFallbackHex = overrideHex?.takeIf { it.isNotBlank() }
+                                ?: dbFallbackHex
+                                ?: ArtworkColorExtractor.extractVisualPaletteHex(result.drawable)
+                            if (effectiveFallbackHex != null) {
+                                applyResolvedSongPalette(songId = songId, hex = effectiveFallbackHex, resolvedFromArt = true)
+                                return@launch
+                            }
                         }
-                    }
-                } catch (_: Exception) {}
+                    } catch (_: Exception) {}
+                }
+
+                // When offline, stop after 2 local/cache attempts; onCurrentSongArtworkLoaded or network reconnect will retry
+                if (!isOnline && attemptIdx >= 1) {
+                    break
+                }
             }
         }
     }

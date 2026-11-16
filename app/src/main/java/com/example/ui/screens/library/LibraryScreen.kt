@@ -27,7 +27,9 @@ import com.example.data.fuse.FuseCodeCodec
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.components.FuseDualAvatarCover
 import com.example.ui.theme.*
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,13 +39,25 @@ fun LibraryScreen(
     onNavigateToPlaylist: (Int, String) -> Unit,
     onNavigateToLikedSongs: () -> Unit,
     onNavigateToDownloadedSongs: () -> Unit,
-    onNavigateToFuse: () -> Unit = {}
+    onNavigateToFuse: () -> Unit = {},
+    onNavigateToClub: (Int?) -> Unit = {},
+    onNavigateToSoundCapsule: () -> Unit = {}
 ) {
     var playlists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
+    var myClubs by remember { mutableStateOf<List<com.example.model.ClubPlaylistSummary>>(emptyList()) }
     val downloadedSongs by repository.downloadedSongsFlow.collectAsState(initial = emptyList())
     var likedSongsCount by remember { mutableIntStateOf(0) }
     var plusMenuExpanded by remember { mutableStateOf(false) }
+
+    // Dialog states
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showCreateClubDialog by remember { mutableStateOf(false) }
+    var showJoinClubDialog by remember { mutableStateOf(false) }
+    var createClubNameInput by remember { mutableStateOf("") }
+    var joinClubCodeInput by remember { mutableStateOf("") }
+    var isSubmittingClub by remember { mutableStateOf(false) }
+    var clubErrorMessage by remember { mutableStateOf<String?>(null) }
+
     var playlistToEdit by remember { mutableStateOf<Playlist?>(null) }
     var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
     val scope = rememberCoroutineScope()
@@ -53,10 +67,21 @@ fun LibraryScreen(
         if (cached.isNotEmpty()) {
             playlists = cached
         }
+        val cachedClubs = repository.getCachedMyClubs()
+        if (cachedClubs.isNotEmpty()) {
+            myClubs = cachedClubs
+        }
         likedSongsCount = repository.authPreferences.getLikedSongIds().size
 
-        val fresh = repository.getPlaylists(forceRefresh = true)
-        playlists = fresh
+        // Fetch fresh playlists and club playlists in parallel
+        val freshPlaylistsDeferred = async { repository.getPlaylists(forceRefresh = true) }
+        val freshClubsDeferred = async { repository.getMyClubs() }
+
+        playlists = freshPlaylistsDeferred.await()
+        val clubRes = freshClubsDeferred.await()
+        if (clubRes.isSuccess) {
+            myClubs = clubRes.getOrNull() ?: emptyList()
+        }
     }
 
     Scaffold(
@@ -139,6 +164,52 @@ fun LibraryScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
+                                    text = "Create Club Playlist",
+                                    color = AlaktraTextPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Groups,
+                                    contentDescription = null,
+                                    tint = AlaktraMint
+                                )
+                            },
+                            onClick = {
+                                plusMenuExpanded = false
+                                createClubNameInput = ""
+                                clubErrorMessage = null
+                                showCreateClubDialog = true
+                            },
+                            modifier = Modifier.testTag("menu_create_club")
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Join Club Playlist",
+                                    color = AlaktraTextPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Key,
+                                    contentDescription = null,
+                                    tint = AlaktraMint
+                                )
+                            },
+                            onClick = {
+                                plusMenuExpanded = false
+                                joinClubCodeInput = ""
+                                clubErrorMessage = null
+                                showJoinClubDialog = true
+                            },
+                            modifier = Modifier.testTag("menu_join_club")
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
                                     text = stringResource(R.string.menu_create_fuse),
                                     color = AlaktraTextPrimary,
                                     fontWeight = FontWeight.Medium
@@ -207,21 +278,19 @@ fun LibraryScreen(
                                 color = AlaktraTextPrimary
                             )
                             Spacer(modifier = Modifier.height(3.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.PushPin,
-                                    contentDescription = "Pinned",
-                                    tint = AlaktraMint,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Auto playlist • $likedSongsCount tracks",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = AlaktraTextSecondary
-                                )
-                            }
+                            Text(
+                                text = "$likedSongsCount tracks",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AlaktraTextSecondary
+                            )
                         }
+
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "Pinned",
+                            tint = AlaktraMint,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
 
@@ -265,16 +334,89 @@ fun LibraryScreen(
                                 color = AlaktraTextPrimary
                             )
                             Spacer(modifier = Modifier.height(3.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "${downloadedSongs.size} tracks",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AlaktraTextSecondary
+                            )
+                        }
+
+                        Icon(
+                            imageVector = Icons.Default.OfflinePin,
+                            contentDescription = "Offline ready",
+                            tint = AlaktraMint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                // Collaborative Club Playlists Items
+                if (myClubs.isNotEmpty()) {
+                    items(
+                        items = myClubs,
+                        key = { "club_${it.clubId}" },
+                        contentType = { "library_club_row" }
+                    ) { club ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onNavigateToClub(club.clubId) }
+                                .padding(horizontal = 20.dp, vertical = 8.dp)
+                                .testTag("library_club_item_${club.clubId}")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(Color(0xFF7C3AED), Color(0xFF8B5CF6), AlaktraMint)
+                                        )
+                                    )
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.OfflinePin,
-                                    contentDescription = "Offline ready",
-                                    tint = AlaktraMint,
-                                    modifier = Modifier.size(14.dp)
+                                    imageVector = Icons.Default.Groups,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(32.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+
+                            Spacer(modifier = Modifier.width(16.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = club.name,
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 16.sp
+                                        ),
+                                        color = AlaktraTextPrimary,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(AlaktraMint.copy(alpha = 0.15f))
+                                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                                    ) {
+                                        Text(
+                                            text = "#${club.code}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = AlaktraMint
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = "Permanent offline playlist • ${downloadedSongs.size} tracks",
+                                    text = "${club.memberCount} members • ${club.songCount} tracks",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = AlaktraTextSecondary
                                 )
@@ -314,9 +456,14 @@ fun LibraryScreen(
                         contentType = { "library_playlist_row" }
                     ) { playlist ->
                             var menuExpanded by remember { mutableStateOf(false) }
-                            val isFusePlaylist = remember(playlist.name) {
-                                FuseCodeCodec.isFusePlaylistName(playlist.name)
+                            val isFusePlaylist = remember(playlist.id, playlist.name, playlist.isFuse) {
+                                playlist.isFuse || FuseCodeCodec.isFusePlaylistName(playlist.name)
                             }
+                            val fallbackNames = remember(playlist.name, isFusePlaylist) {
+                                if (isFusePlaylist) FuseCodeCodec.parseFuseNamesFromTitle(playlist.name) else ("" to "")
+                            }
+                            val fuseU1 = playlist.fuseUser1Name.ifBlank { fallbackNames.first }
+                            val fuseU2 = playlist.fuseUser2Name.ifBlank { fallbackNames.second }
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -325,31 +472,29 @@ fun LibraryScreen(
                                     .clickable { onNavigateToPlaylist(playlist.id, playlist.name) }
                                     .padding(horizontal = 20.dp, vertical = 8.dp)
                             ) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(64.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .then(
-                                            if (isFusePlaylist) {
-                                                Modifier.background(
-                                                    Brush.linearGradient(
-                                                        listOf(AlaktraViolet, AlaktraCyan, AlaktraMint)
-                                                    )
-                                                )
-                                            } else {
-                                                Modifier
-                                                    .background(AlaktraSurface)
-                                                    .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
-                                            }
-                                        )
-                                ) {
-                                    Icon(
-                                        imageVector = if (isFusePlaylist) Icons.Default.MergeType else Icons.Default.QueueMusic,
-                                        contentDescription = null,
-                                        tint = if (isFusePlaylist) Color(0xFF041C12) else AlaktraMint,
-                                        modifier = Modifier.size(32.dp)
+                                if (isFusePlaylist) {
+                                    FuseDualAvatarCover(
+                                        user1Name = fuseU1,
+                                        user2Name = fuseU2,
+                                        size = 64.dp,
+                                        cornerRadius = 12.dp
                                     )
+                                } else {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(64.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(AlaktraSurface)
+                                            .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.QueueMusic,
+                                            contentDescription = null,
+                                            tint = AlaktraMint,
+                                            modifier = Modifier.size(32.dp)
+                                        )
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.width(16.dp))
@@ -366,46 +511,49 @@ fun LibraryScreen(
                                     Spacer(modifier = Modifier.height(3.dp))
                                     Text(
                                         text = if (isFusePlaylist) {
-                                            "Fuse • ${playlist.songCount} tracks"
+                                            val scorePart = if (playlist.fuseMatchScore > 0) "${playlist.fuseMatchScore}% match • " else ""
+                                            "$scorePart${playlist.songCount} tracks"
                                         } else {
-                                            "Playlist • ${playlist.songCount} tracks"
+                                            "${playlist.songCount} tracks"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (isFusePlaylist) AlaktraCyan else AlaktraTextSecondary
                                     )
                                 }
 
-                                Box {
-                                    IconButton(onClick = { menuExpanded = true }) {
-                                        Icon(
-                                            imageVector = Icons.Default.MoreVert,
-                                            contentDescription = "Options",
-                                            tint = AlaktraTextSecondary
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = menuExpanded,
-                                        onDismissRequest = { menuExpanded = false },
-                                        modifier = Modifier
-                                            .background(AlaktraCard)
-                                            .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Rename", color = AlaktraTextPrimary) },
-                                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = AlaktraMint) },
-                                            onClick = {
-                                                menuExpanded = false
-                                                playlistToEdit = playlist
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Delete", color = Color(0xFFEF4444)) },
-                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFEF4444)) },
-                                            onClick = {
-                                                menuExpanded = false
-                                                playlistToDelete = playlist
-                                            }
-                                        )
+                                if (!isFusePlaylist) {
+                                    Box {
+                                        IconButton(onClick = { menuExpanded = true }) {
+                                            Icon(
+                                                imageVector = Icons.Default.MoreVert,
+                                                contentDescription = "Options",
+                                                tint = AlaktraTextSecondary
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = menuExpanded,
+                                            onDismissRequest = { menuExpanded = false },
+                                            modifier = Modifier
+                                                .background(AlaktraCard)
+                                                .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Rename", color = AlaktraTextPrimary) },
+                                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = AlaktraMint) },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    playlistToEdit = playlist
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete", color = Color(0xFFEF4444)) },
+                                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFEF4444)) },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    playlistToDelete = playlist
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -454,6 +602,147 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) {
+                    Text("Cancel", color = AlaktraTextSecondary)
+                }
+            }
+        )
+    }
+
+    // Create Club Playlist Dialog (Simple dialog asking ONLY for Club Name + Create button)
+    if (showCreateClubDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isSubmittingClub) showCreateClubDialog = false },
+            containerColor = AlaktraCard,
+            title = { Text("New Club Playlist", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = createClubNameInput,
+                        onValueChange = { createClubNameInput = it },
+                        placeholder = { Text("e.g. Chill Beats, Roadtrip", color = AlaktraTextMuted) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = AlaktraTextPrimary,
+                            unfocusedTextColor = AlaktraTextPrimary,
+                            focusedBorderColor = AlaktraMint,
+                            unfocusedBorderColor = AlaktraBorder
+                        ),
+                        modifier = Modifier.fillMaxWidth().testTag("library_club_name_input")
+                    )
+                    if (clubErrorMessage != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(text = clubErrorMessage!!, color = Color(0xFFEF4444), fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = createClubNameInput.trim().ifEmpty { "Collaborative Playlist" }
+                        isSubmittingClub = true
+                        clubErrorMessage = null
+                        scope.launch {
+                            val res = repository.createClub(name)
+                            isSubmittingClub = false
+                            if (res.isSuccess) {
+                                showCreateClubDialog = false
+                                val created = res.getOrNull()!!
+                                onNavigateToClub(created.clubId)
+                            } else {
+                                clubErrorMessage = res.exceptionOrNull()?.message ?: "Could not create club playlist"
+                            }
+                        }
+                    },
+                    enabled = !isSubmittingClub,
+                    colors = ButtonDefaults.buttonColors(containerColor = AlaktraMint, contentColor = Color(0xFF041C12)),
+                    modifier = Modifier.testTag("library_club_create_confirm")
+                ) {
+                    if (isSubmittingClub) {
+                        CircularProgressIndicator(color = Color(0xFF041C12), modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Create", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCreateClubDialog = false },
+                    enabled = !isSubmittingClub
+                ) {
+                    Text("Cancel", color = AlaktraTextSecondary)
+                }
+            }
+        )
+    }
+
+    // Join Club Playlist Dialog
+    if (showJoinClubDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isSubmittingClub) showJoinClubDialog = false },
+            containerColor = AlaktraCard,
+            title = { Text("Join Club Playlist", color = AlaktraTextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        text = "Enter the 6-character invite code shared by your friend:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AlaktraTextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = joinClubCodeInput,
+                        onValueChange = { joinClubCodeInput = it.uppercase() },
+                        placeholder = { Text("e.g. AK89Z2", color = AlaktraTextMuted) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = AlaktraTextPrimary,
+                            unfocusedTextColor = AlaktraTextPrimary,
+                            focusedBorderColor = AlaktraMint,
+                            unfocusedBorderColor = AlaktraBorder
+                        ),
+                        modifier = Modifier.fillMaxWidth().testTag("library_club_code_input")
+                    )
+                    if (clubErrorMessage != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(text = clubErrorMessage!!, color = Color(0xFFEF4444), fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val code = joinClubCodeInput.trim().uppercase()
+                        if (code.isBlank()) return@Button
+                        isSubmittingClub = true
+                        clubErrorMessage = null
+                        scope.launch {
+                            val res = repository.joinClub(code)
+                            isSubmittingClub = false
+                            if (res.isSuccess) {
+                                showJoinClubDialog = false
+                                val joined = res.getOrNull()!!
+                                onNavigateToClub(joined.clubId)
+                            } else {
+                                clubErrorMessage = res.exceptionOrNull()?.message ?: "Club playlist not found"
+                            }
+                        }
+                    },
+                    enabled = !isSubmittingClub,
+                    colors = ButtonDefaults.buttonColors(containerColor = AlaktraMint, contentColor = Color(0xFF041C12)),
+                    modifier = Modifier.testTag("library_club_join_confirm")
+                ) {
+                    if (isSubmittingClub) {
+                        CircularProgressIndicator(color = Color(0xFF041C12), modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Join", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showJoinClubDialog = false },
+                    enabled = !isSubmittingClub
+                ) {
                     Text("Cancel", color = AlaktraTextSecondary)
                 }
             }

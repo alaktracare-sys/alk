@@ -169,6 +169,7 @@ class AuthPreferences(context: Context) {
                 put("isLiked", song.isLiked)
                 put("localPath", song.localPath ?: "")
                 put("isDownloaded", song.isDownloaded)
+                put("dominantColorHex", song.dominantColorHex ?: "")
             }
             editor.putString(KEY_LAST_SONG_JSON, json.toString())
         }
@@ -180,6 +181,7 @@ class AuthPreferences(context: Context) {
         return try {
             val json = JSONObject(jsonStr)
             val localPathStr = json.optString("localPath", "")
+            val dominantHexStr = json.optString("dominantColorHex", "")
             Song(
                 id = json.getInt("id"),
                 title = json.getString("title"),
@@ -189,7 +191,8 @@ class AuthPreferences(context: Context) {
                 duration = json.optDouble("duration", 0.0),
                 isLiked = json.optBoolean("isLiked", false),
                 localPath = if (localPathStr.isNotBlank()) localPathStr else null,
-                isDownloaded = json.optBoolean("isDownloaded", false)
+                isDownloaded = json.optBoolean("isDownloaded", false),
+                dominantColorHex = if (dominantHexStr.isNotBlank()) dominantHexStr else null
             )
         } catch (_: Exception) {
             null
@@ -239,6 +242,7 @@ class AuthPreferences(context: Context) {
                 put("isLiked", song.isLiked)
                 put("localPath", song.localPath ?: "")
                 put("isDownloaded", song.isDownloaded)
+                put("dominantColorHex", song.dominantColorHex ?: "")
             }
             arr.put(json)
         }
@@ -253,6 +257,7 @@ class AuthPreferences(context: Context) {
             for (i in 0 until arr.length()) {
                 val json = arr.getJSONObject(i)
                 val localPathStr = json.optString("localPath", "")
+                val dominantHexStr = json.optString("dominantColorHex", "")
                 list.add(
                     Song(
                         id = json.getInt("id"),
@@ -263,7 +268,8 @@ class AuthPreferences(context: Context) {
                         duration = json.optDouble("duration", 0.0),
                         isLiked = json.optBoolean("isLiked", false),
                         localPath = if (localPathStr.isNotBlank()) localPathStr else null,
-                        isDownloaded = json.optBoolean("isDownloaded", false)
+                        isDownloaded = json.optBoolean("isDownloaded", false),
+                        dominantColorHex = if (dominantHexStr.isNotBlank()) dominantHexStr else null
                     )
                 )
             }
@@ -291,6 +297,7 @@ class AuthPreferences(context: Context) {
                 put("isLiked", song.isLiked)
                 put("localPath", song.localPath ?: "")
                 put("isDownloaded", song.isDownloaded)
+                put("dominantColorHex", song.dominantColorHex ?: "")
             }
             arr.put(json)
         }
@@ -313,6 +320,7 @@ class AuthPreferences(context: Context) {
             for (i in 0 until arr.length()) {
                 val json = arr.getJSONObject(i)
                 val localPathStr = json.optString("localPath", "")
+                val dominantHexStr = json.optString("dominantColorHex", "")
                 tracks.add(
                     Song(
                         id = json.getInt("id"),
@@ -323,7 +331,8 @@ class AuthPreferences(context: Context) {
                         duration = json.optDouble("duration", 0.0),
                         isLiked = json.optBoolean("isLiked", false),
                         localPath = if (localPathStr.isNotBlank()) localPathStr else null,
-                        isDownloaded = json.optBoolean("isDownloaded", false)
+                        isDownloaded = json.optBoolean("isDownloaded", false),
+                        dominantColorHex = if (dominantHexStr.isNotBlank()) dominantHexStr else null
                     )
                 )
             }
@@ -352,6 +361,14 @@ class AuthPreferences(context: Context) {
 
     fun setLastSyncTime(syncKey: String, timestamp: Long = System.currentTimeMillis()) {
         prefs.edit().putLong("sync_time_$syncKey", timestamp).apply()
+    }
+
+    fun getCachedCapsuleSnapshot(userId: Int): String? {
+        return prefs.getString("capsule_snapshot_v1_$userId", null)
+    }
+
+    fun setCachedCapsuleSnapshot(userId: Int, json: String) {
+        prefs.edit().putString("capsule_snapshot_v1_$userId", json).apply()
     }
 
     fun getAudioCacheCapMb(): Int {
@@ -492,8 +509,17 @@ class AuthPreferences(context: Context) {
         return list
     }
 
+    fun getDeviceId(): String {
+        var devId = prefs.getString("device_id", null)
+        if (devId.isNullOrBlank()) {
+            devId = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("device_id", devId).apply()
+        }
+        return devId!!
+    }
+
     companion object {
-        const val DEFAULT_SERVER_URL = "http://100.65.126.106:8000/"
+        const val DEFAULT_SERVER_URL = "https://api.alaktracare.in/"
         private const val KEY_SERVER_URL = "server_base_url"
         private const val KEY_LIKED_PLAYLIST_ID = "liked_playlist_id"
         private const val KEY_USER_ID = "user_id"

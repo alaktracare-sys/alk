@@ -1,6 +1,7 @@
 package com.example.ui.screens.profile
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,7 +12,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,32 +25,29 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.example.audio.AudioController
+import com.example.R
 import com.example.data.local.ListeningHistoryEntity
-import com.example.data.repository.MusicRepository
-import com.example.ui.theme.*
-import kotlinx.coroutines.launch
+import com.example.model.Song
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
-import java.util.Locale
 
-data class DaywiseGroup(
-    val date: LocalDate,
-    val dayTitle: String,
-    val fullDateFormatted: String,
-    val songs: List<ListeningHistoryEntity>,
-    val totalSeconds: Long,
-    val uniqueSongCount: Int
-)
+private val CapsuleBg = Color(0xFF121212)
+private val CapsuleCardBg = Color(0xFF1F1F1F)
+private val CapsuleSubSurface = Color(0xFF282828)
+private val CapsuleGreen = Color(0xFF1ED760)
+private val CapsuleDarkGreen = Color(0xFF15803D)
+private val CapsuleMuted = Color(0xFFB3B3B3)
+private val CapsuleBorder = Color(0xFF2E2E2E)
 
 fun formatListeningSeconds(seconds: Long): String {
     val safeSec = seconds.coerceAtLeast(0L)
@@ -58,55 +60,424 @@ fun formatListeningSeconds(seconds: Long): String {
     }
 }
 
-fun formatTimeShort(timestampMs: Long): String {
+fun formatTimeShort(timestampMs: Long, zone: ZoneId = ZoneId.systemDefault()): String {
     return try {
         Instant.ofEpochMilli(timestampMs)
-            .atZone(ZoneId.systemDefault())
+            .atZone(zone)
             .format(DateTimeFormatter.ofPattern("h:mm a"))
     } catch (_: Exception) {
         ""
     }
 }
 
-@Composable
-fun ListeningHistorySummaryCard(
+/**
+ * Filters listening history strictly to items played on [today] in [zone], sorted newest-first.
+ * Past days (Yesterday or older) are excluded so Listening History shows ONLY the current day.
+ */
+fun filterTodayHistory(
     historyList: List<ListeningHistoryEntity>,
-    onOpenFullHistory: () -> Unit,
+    today: LocalDate = LocalDate.now(),
+    zone: ZoneId = ZoneId.systemDefault()
+): List<ListeningHistoryEntity> {
+    return historyList
+        .asSequence()
+        .filter { item ->
+            item.playedAt > 0L &&
+                Instant.ofEpochMilli(item.playedAt).atZone(zone).toLocalDate() == today
+        }
+        .sortedByDescending { it.playedAt }
+        .toList()
+}
+
+/**
+ * Compact anchored Listening History bar pinned to the top of the Sound Capsule screen
+ * (above the scrolling monthly feed). Displays ONLY today's track count & listen time.
+ */
+@Composable
+fun AnchoredTodayHistoryBar(
+    historyList: List<ListeningHistoryEntity>,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val today = remember { LocalDate.now() }
+    val zone = remember { ZoneId.systemDefault() }
+    val today = LocalDate.now(zone)
 
-    val todayItems = remember(historyList) {
-        historyList.filter {
-            val d = Instant.ofEpochMilli(it.playedAt).atZone(ZoneId.systemDefault()).toLocalDate()
-            d == today
-        }
+    val todayItems = remember(historyList, today) {
+        filterTodayHistory(historyList, today, zone)
     }
-
     val todaySeconds = remember(todayItems) {
         todayItems.sumOf { it.effectiveListenedSeconds }
     }
 
-    val monthItems = remember(historyList) {
-        historyList.filter {
-            val d = Instant.ofEpochMilli(it.playedAt).atZone(ZoneId.systemDefault()).toLocalDate()
-            d.year == today.year && d.monthValue == today.monthValue
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(CapsuleBg)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 60.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(onClick = onClick)
+                .testTag("sound_capsule_listening_history_card"),
+            colors = CardDefaults.cardColors(containerColor = CapsuleCardBg),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, CapsuleBorder)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Brush.linearGradient(listOf(CapsuleGreen, CapsuleDarkGreen)))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = null,
+                        tint = Color.Black,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = stringResource(R.string.listening_history_title),
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = if (todayItems.isNotEmpty()) {
+                            val label = if (todayItems.size == 1) "1 track today" else "${todayItems.size} tracks today"
+                            "$label • ${formatListeningSeconds(todaySeconds)} listened"
+                        } else {
+                            stringResource(R.string.listening_history_empty_anchored)
+                        },
+                        color = CapsuleMuted,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (todayItems.isNotEmpty()) {
+                    val latestCover = todayItems.first().coverUrl
+                    if (latestCover.isNotBlank()) {
+                        AsyncImage(
+                            model = latestCover,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(CapsuleSubSurface)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                }
+
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = stringResource(R.string.listening_history_open_cd),
+                    tint = CapsuleGreen,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
     }
+}
 
-    val monthName = remember {
-        today.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
+/**
+ * Today-only Listening History page opened from the anchored top bar in Sound Capsule.
+ * Shows strictly the current day's played tracks and listen time.
+ */
+@Composable
+fun TodayListeningHistoryScreen(
+    historyList: List<ListeningHistoryEntity>,
+    onBack: () -> Unit,
+    onPlayTodayQueue: (songs: List<Song>, startIndex: Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BackHandler(onBack = onBack)
+
+    val zone = remember { ZoneId.systemDefault() }
+    val today = LocalDate.now(zone)
+    val todayFormatted = remember(today) {
+        today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d"))
     }
 
+    val todayItems = remember(historyList, today) {
+        filterTodayHistory(historyList, today, zone)
+    }
+
+    val totalSecondsToday = remember(todayItems) {
+        todayItems.sumOf { it.effectiveListenedSeconds }
+    }
+    val uniqueSongsToday = remember(todayItems) {
+        todayItems.map { it.songId }.distinct().size
+    }
+
+    val bottomDockClearance = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 168.dp
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(CapsuleBg)
+            .statusBarsPadding()
+    ) {
+        // Top Header Bar
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .padding(horizontal = 8.dp)
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(48.dp)
+                    .testTag("today_history_back_button")
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = stringResource(R.string.playlist_back),
+                    tint = Color.White
+                )
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Text(
+                    text = stringResource(R.string.listening_history_title),
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = todayFormatted,
+                    color = CapsuleMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = 720.dp)
+            ) {
+                // Today's Tracks List & Scrollable Summary Card (ONLY Today — no Yesterday or older days)
+                if (todayItems.isEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = bottomDockClearance / 2)
+                    ) {
+                        TodayStatsSummaryCard(
+                            todayFormatted = todayFormatted,
+                            todayItemsCount = 0,
+                            uniqueSongsToday = 0,
+                            totalSecondsToday = totalSecondsToday
+                        )
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 32.dp)
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .clip(CircleShape)
+                                        .background(CapsuleCardBg)
+                                        .border(1.dp, CapsuleBorder, CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MusicNote,
+                                        contentDescription = null,
+                                        tint = CapsuleGreen,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                Text(
+                                    text = stringResource(R.string.listening_history_empty_today_title),
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Text(
+                                    text = stringResource(R.string.listening_history_empty_today_body),
+                                    color = CapsuleMuted,
+                                    fontSize = 13.sp,
+                                    lineHeight = 18.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("today_history_songs_list"),
+                        contentPadding = PaddingValues(
+                            top = 4.dp,
+                            bottom = bottomDockClearance
+                        )
+                    ) {
+                        item(key = "today_stats_summary_card") {
+                            TodayStatsSummaryCard(
+                                todayFormatted = todayFormatted,
+                                todayItemsCount = todayItems.size,
+                                uniqueSongsToday = uniqueSongsToday,
+                                totalSecondsToday = totalSecondsToday
+                            )
+                        }
+
+                        items(
+                            items = todayItems,
+                            key = { "${it.id}_${it.playedAt}" },
+                            contentType = { "today_history_song_row" }
+                        ) { historyItem ->
+                            HistorySongRow(
+                                item = historyItem,
+                                zone = zone,
+                                onPlay = {
+                                    val queue = todayItems.map { it.toSong() }
+                                    val idx = todayItems.indexOfFirst {
+                                        it.id == historyItem.id && it.playedAt == historyItem.playedAt
+                                    }.coerceAtLeast(0)
+                                    onPlayTodayQueue(queue, idx)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HistorySongRow(
+    item: ListeningHistoryEntity,
+    zone: ZoneId = ZoneId.systemDefault(),
+    onPlay: () -> Unit
+) {
+    val timeLabel = remember(item.playedAt, zone) { formatTimeShort(item.playedAt, zone) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .clickable(onClick = onPlay)
+            .padding(horizontal = 16.dp, vertical = 7.dp)
+            .testTag("today_history_song_${item.id}")
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(CapsuleSubSurface)
+                .border(1.dp, CapsuleBorder, RoundedCornerShape(8.dp))
+        ) {
+            AsyncImage(
+                model = item.coverUrl,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.title,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Text(
+                text = item.artist,
+                color = CapsuleMuted,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        if (timeLabel.isNotBlank()) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = timeLabel,
+                color = CapsuleMuted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun TodayStatsSummaryCard(
+    todayFormatted: String,
+    todayItemsCount: Int,
+    uniqueSongsToday: Int,
+    totalSecondsToday: Long,
+    modifier: Modifier = Modifier
+) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onOpenFullHistory() },
-        colors = CardDefaults.cardColors(containerColor = AlaktraCard),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = CapsuleCardBg),
         shape = RoundedCornerShape(16.dp),
-        border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.linearGradient(listOf(AlaktraBorder, AlaktraBorder))
-        )
+        border = BorderStroke(1.dp, CapsuleBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -116,565 +487,103 @@ fun ListeningHistorySummaryCard(
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AlaktraSurface)
-                        .border(1.dp, AlaktraBorder, RoundedCornerShape(12.dp))
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Brush.linearGradient(listOf(CapsuleGreen, CapsuleDarkGreen)))
                 ) {
                     Icon(
-                        imageVector = Icons.Default.History,
+                        imageVector = Icons.Default.GraphicEq,
                         contentDescription = null,
-                        tint = AlaktraMint,
-                        modifier = Modifier.size(24.dp)
+                        tint = Color.Black,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-
-                Spacer(modifier = Modifier.width(14.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "Listening History",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = AlaktraTextPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(AlaktraMint.copy(alpha = 0.15f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = if (todayItems.isNotEmpty()) "Today" else monthName,
-                                color = AlaktraMint,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(3.dp))
-
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
                     Text(
-                        text = if (todayItems.isNotEmpty()) {
-                            "${todayItems.size} tracks played today • ${formatListeningSeconds(todaySeconds)} listened"
-                        } else if (monthItems.isNotEmpty()) {
-                            "${monthItems.size} tracks this month • ${formatListeningSeconds(monthItems.sumOf { it.effectiveListenedSeconds })} listened"
-                        } else {
-                            "Track songs listened to day by day with real listen time"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AlaktraTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = stringResource(R.string.listening_history_today_stats_title),
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = todayFormatted,
+                        color = CapsuleMuted,
+                        fontSize = 12.sp
                     )
                 }
-
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = "View History",
-                    tint = AlaktraTextSecondary
-                )
             }
 
-            // Preview of recent played tracks
-            if (historyList.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                HorizontalDivider(color = AlaktraBorder.copy(alpha = 0.5f))
-                Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(CapsuleSubSurface)
+                        .padding(12.dp)
                 ) {
-                    Text(
-                        text = if (todayItems.isNotEmpty()) "PLAYED TODAY" else "RECENT PLAYS",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = AlaktraTextMuted,
-                        letterSpacing = 1.sp
-                    )
-
-                    Text(
-                        text = "Full Day Stats →",
-                        color = AlaktraMint,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val previewItems = if (todayItems.isNotEmpty()) todayItems.take(2) else historyList.take(2)
-                previewItems.forEach { item ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        AsyncImage(
-                            model = item.coverUrl,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(AlaktraSurface)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                color = AlaktraTextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = item.artist,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AlaktraTextSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun FullListeningHistorySheet(
-    historyList: List<ListeningHistoryEntity>,
-    repository: MusicRepository,
-    audioController: AudioController,
-    onDismiss: () -> Unit
-) {
-    BackHandler(onBack = onDismiss)
-    val today = remember { LocalDate.now() }
-    var searchQuery by remember { mutableStateOf("") }
-
-    val filteredItems = remember(historyList, searchQuery) {
-        if (searchQuery.isBlank()) {
-            historyList
-        } else {
-            historyList.filter {
-                it.title.contains(searchQuery, ignoreCase = true) ||
-                it.artist.contains(searchQuery, ignoreCase = true)
-            }
-        }
-    }
-
-    // Group items daywise, newest day first
-    val daywiseGroups = remember(filteredItems) {
-        filteredItems.groupBy { item ->
-            Instant.ofEpochMilli(item.playedAt).atZone(ZoneId.systemDefault()).toLocalDate()
-        }.entries
-            .sortedByDescending { it.key }
-            .map { (date, songList) ->
-                val dayTitle = when {
-                    date == today -> "Today"
-                    date == today.minusDays(1) -> "Yesterday"
-                    else -> date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault())
-                }
-                val fullDate = date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy"))
-                val totalSec = songList.sumOf { it.effectiveListenedSeconds }
-                val uniqueSongs = songList.map { it.songId }.distinct().size
-                DaywiseGroup(
-                    date = date,
-                    dayTitle = dayTitle,
-                    fullDateFormatted = fullDate,
-                    songs = songList.sortedByDescending { it.playedAt },
-                    totalSeconds = totalSec,
-                    uniqueSongCount = uniqueSongs
-                )
-            }
-    }
-
-    // Today specific stats
-    val todayStats = remember(historyList) {
-        val items = historyList.filter {
-            val d = Instant.ofEpochMilli(it.playedAt).atZone(ZoneId.systemDefault()).toLocalDate()
-            d == today
-        }
-        val totalSec = items.sumOf { it.effectiveListenedSeconds }
-        val uniqueCount = items.map { it.songId }.distinct().size
-        Triple(items.size, uniqueCount, totalSec)
-    }
-
-    Scaffold(
-        containerColor = AlaktraBackground,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = {
                     Column {
                         Text(
-                            text = "Listening History",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = AlaktraTextPrimary
+                            text = stringResource(R.string.listening_history_songs_today_label),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CapsuleMuted,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "$todayItemsCount",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "$uniqueSongsToday unique",
+                            fontSize = 11.sp,
+                            color = CapsuleMuted
                         )
                     }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = AlaktraTextPrimary
-                        )
-                    }
-                },
-                expandedHeight = 52.dp,
-                windowInsets = WindowInsets(top = 8.dp),
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = AlaktraBackground)
-            )
-        }
-    ) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = paddingValues.calculateTopPadding()),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .widthIn(max = 840.dp)
-            ) {
-                // Today's Live Listening Banner (Always visible at top)
-                Card(
+                }
+
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    colors = CardDefaults.cardColors(containerColor = AlaktraCard),
-                    shape = RoundedCornerShape(16.dp),
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.linearGradient(listOf(AlaktraBorder, AlaktraBorder))
-                    )
+                        .weight(1.25f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(CapsuleSubSurface)
+                        .padding(12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(CircleShape)
-                                        .background(Brush.linearGradient(listOf(AlaktraMint, AlaktraCyan)))
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.GraphicEq,
-                                        contentDescription = null,
-                                        tint = Color(0xFF041C12),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Today's Stats",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = AlaktraTextPrimary
-                                    )
-                                    Text(
-                                        text = today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = AlaktraTextSecondary
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Stats Pillars (Songs listened to, time listened for the whole day, unique songs)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            // Total Songs Played Today
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(AlaktraSurface)
-                                    .padding(12.dp)
-                            ) {
-                                Column {
-                                    Text(
-                                        text = "SONGS TODAY",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = AlaktraTextMuted,
-                                        letterSpacing = 0.5.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "${todayStats.first}",
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = AlaktraTextPrimary
-                                    )
-                                    Text(
-                                        text = "${todayStats.second} unique",
-                                        fontSize = 11.sp,
-                                        color = AlaktraTextSecondary
-                                    )
-                                }
-                            }
-
-                            // Total Time Listened for the Whole Day
-                            Box(
-                                modifier = Modifier
-                                    .weight(1.3f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(AlaktraSurface)
-                                    .padding(12.dp)
-                            ) {
-                                Column {
-                                    Text(
-                                        text = "LISTEN TIME TODAY",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = AlaktraTextMuted,
-                                        letterSpacing = 0.5.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = formatListeningSeconds(todayStats.third),
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = AlaktraMint
-                                    )
-                                    Text(
-                                        text = if (todayStats.first > 0) "Updates after each hour" else "No plays yet today",
-                                        fontSize = 11.sp,
-                                        color = AlaktraTextSecondary
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Main Content: Daywise List or Empty State
-                if (daywiseGroups.isEmpty()) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(32.dp)
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(68.dp)
-                                    .clip(CircleShape)
-                                    .background(AlaktraSurface)
-                                    .border(1.dp, AlaktraBorder, CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MusicNote,
-                                    contentDescription = null,
-                                    tint = AlaktraMint,
-                                    modifier = Modifier.size(34.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Text(
-                                text = if (searchQuery.isNotBlank()) "No songs match \"$searchQuery\"" else "No listening history recorded yet",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = AlaktraTextPrimary
-                            )
-
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            Text(
-                                text = if (searchQuery.isNotBlank()) "Try checking the spelling or searching another artist or song title." else "Play songs from your library — each played track and your exact listening time will be recorded here automatically.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AlaktraTextSecondary,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 160.dp)
-                    ) {
-                        daywiseGroups.forEach { dayGroup ->
-                            // Sticky Day Header showing: Date, Songs count for the day, and Total listen time for the whole day!
-                            item(key = "header_${dayGroup.date}") {
-                                DaywiseHeader(
-                                    group = dayGroup,
-                                    onPlayAllDay = {
-                                        val daySongs = dayGroup.songs.map { it.toSong() }
-                                        audioController.playQueue(daySongs, 0, dayGroup.dayTitle)
-                                    }
-                                )
-                            }
-
-                            // Individual songs listened to during that day
-                            items(
-                                items = dayGroup.songs,
-                                key = { it.id },
-                                contentType = { "history_song_row" }
-                            ) { historyItem ->
-                                HistorySongRow(
-                                    item = historyItem,
-                                    onPlay = {
-                                        val song = historyItem.toSong()
-                                        val allSongs = dayGroup.songs.map { it.toSong() }
-                                        val index = allSongs.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
-                                        audioController.playQueue(allSongs, index, dayGroup.dayTitle)
-                                    }
-                                )
-                            }
-                        }
+                    Column {
+                        Text(
+                            text = stringResource(R.string.listening_history_listen_time_today_label),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CapsuleMuted,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = formatListeningSeconds(totalSecondsToday),
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = CapsuleGreen
+                        )
+                        Text(
+                            text = if (todayItemsCount > 0) "Current day only" else "No plays yet today",
+                            fontSize = 11.sp,
+                            color = CapsuleMuted
+                        )
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-fun DaywiseHeader(
-    group: DaywiseGroup,
-    onPlayAllDay: () -> Unit
-) {
-    val durationText = formatListeningSeconds(group.totalSeconds)
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AlaktraBackground)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(AlaktraSurface)
-                    .border(1.dp, AlaktraBorder, CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CalendarToday,
-                    contentDescription = null,
-                    tint = AlaktraMint,
-                    modifier = Modifier.size(15.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(10.dp))
-
-            Column {
-                Text(
-                    text = group.dayTitle,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = AlaktraTextPrimary
-                )
-                Text(
-                    text = group.fullDateFormatted,
-                    fontSize = 11.sp,
-                    color = AlaktraTextMuted
-                )
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // Day Summary Pill: exact song count and total listen time for the day
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(AlaktraSurface)
-                    .border(1.dp, AlaktraBorder, RoundedCornerShape(8.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = "${group.songs.size} ${if (group.songs.size == 1) "song" else "songs"} • $durationText",
-                    color = AlaktraMint,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Spacer(modifier = Modifier.width(6.dp))
-        }
-    }
-}
-
-@Composable
-fun HistorySongRow(
-    item: ListeningHistoryEntity,
-    onPlay: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onPlay() }
-            .padding(horizontal = 16.dp, vertical = 7.dp)
-    ) {
-        // Cover Art
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(AlaktraSurface)
-                .border(1.dp, AlaktraBorder, RoundedCornerShape(8.dp))
-        ) {
-            AsyncImage(
-                model = item.coverUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        // Title and Artist (Clean pellet: no played time or duration badge)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = AlaktraTextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Text(
-                text = item.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = AlaktraTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
     }
 }

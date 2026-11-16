@@ -3,10 +3,15 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone
 import os
+import re
 import traceback
 from database import get_db, rollup_and_clean_listen_times
 
 router = APIRouter(prefix="/history", tags=["history"])
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MIN_MS_FOR_PLAY = 30_000
+
 
 def get_base_url(request: Request) -> str:
     env_host = os.getenv("HOST_URL")
@@ -17,7 +22,21 @@ def get_base_url(request: Request) -> str:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
         if host:
             return f"{proto}://{host}"
-    return "http://100.65.126.106:8000"
+    return "https://api.alaktracare.in"
+
+
+def canonical_artist_id(artist_name: Optional[str]) -> str:
+    cleaned = " ".join((artist_name or "").strip().lower().split())
+    return cleaned if cleaned else "unknown artist"
+
+
+def build_cover_url(base_url: str, cover_path: Optional[str]) -> str:
+    if not cover_path:
+        return ""
+    normalized = cover_path.replace(os.sep, "/").lstrip("/")
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"{base_url}/{normalized}"
 
 
 # ---------------- DATA MODELS ----------------
@@ -25,7 +44,9 @@ def get_base_url(request: Request) -> str:
 class HistoryEventDto(BaseModel):
     song_id: int
     listened_seconds: int = 0
-    played_at: int  # Epoch timestamp in milliseconds
+    ms_played: Optional[int] = None
+    played_at: int  # Epoch timestamp in milliseconds (when track started)
+    local_date: Optional[str] = None  # Optional YYYY-MM-DD in device local timezone
 
 
 class HistorySyncRequest(BaseModel):
@@ -33,118 +54,175 @@ class HistorySyncRequest(BaseModel):
     events: List[HistoryEventDto] = []
 
 
-# ---------------- 1. GET TODAY'S LISTEN TIME ----------------
-# Requirement: "get user listen time for today (save till the end of this month)."
-# Requirement: "do not show the user the seconds in the history only hr and min."
+# ---------------- 1. GET SOUND CAPSULE DATA (UNIFIED REAL SERVER FEED) ----------------
+# Combines listening_history PlayEvents + songs artwork/metadata + daily & monthly listen-time tables.
 
-@router.get("/today/{user_id}")
-def get_today_listen_time(user_id: int):
-    conn = get_db()
-    try:
-        # Check and perform any month-end or past-month rollup
-        rollup_and_clean_listen_times(conn)
-
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
-        row = conn.execute("""
-            SELECT seconds FROM user_daily_listen_time
-            WHERE user_id = ? AND date = ?
-        """, (user_id, today_str)).fetchone()
-
-        today_sec = row["seconds"] if row and row["seconds"] else 0
-        hrs = today_sec // 3600
-        mins = (today_sec % 3600) // 60
-        formatted = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
-
-        return {
-            "user_id": user_id,
-            "date": today_str,
-            "today_seconds": today_sec,
-            "formatted": formatted,
-            "hours": hrs,
-            "minutes": mins
-        }
-    finally:
-        conn.close()
-
-
-# ---------------- 2. GET USER SONG PLAYS (PLAY COUNTS) ----------------
-# Requirement: "get users plays like which song they played how many times not how much just the no of times. (save till end of year)."
-
-@router.get("/plays/{user_id}")
-def get_user_song_plays(user_id: int, request: Request, year: Optional[int] = None):
-    if year is None:
-        year = datetime.utcnow().year
-
+@router.get("/sound-capsule/{user_id}")
+def get_sound_capsule_data(user_id: int, request: Request):
     conn = get_db()
     try:
         rollup_and_clean_listen_times(conn)
         base_url = get_base_url(request)
 
-        rows = conn.execute("""
-            SELECT usp.song_id, usp.play_count, usp.year, usp.last_played_at,
-                   s.title, s.artist, s.cover_path, s.duration
-            FROM user_song_plays usp
-            LEFT JOIN songs s ON usp.song_id = s.id
-            WHERE usp.user_id = ? AND usp.year = ?
-            ORDER BY usp.play_count DESC
-        """, (user_id, year)).fetchall()
+        history_rows = conn.execute("""
+            SELECT lh.song_id, lh.listened_seconds, lh.ms_played, lh.played_at,
+                   s.title, s.artist, s.cover_path, s.duration,
+                   a.id AS primary_artist_id,
+                   a.name AS primary_artist_name,
+                   a.avatar_path AS primary_artist_avatar
+            FROM listening_history lh
+            LEFT JOIN songs s ON lh.song_id = s.id
+            LEFT JOIN song_artists sa ON sa.song_id = s.id AND sa.role = 'primary'
+            LEFT JOIN artists a ON a.id = sa.artist_id
+            WHERE lh.user_id = ?
+            ORDER BY lh.played_at ASC
+        """, (user_id,)).fetchall()
 
-        data = [
+        events = []
+        months_with_events = set()
+
+        for r in history_rows:
+            song_id = r["song_id"]
+            raw_ms = r["ms_played"] if ("ms_played" in r.keys() and r["ms_played"] is not None) else 0
+            raw_sec = r["listened_seconds"] or 0
+            dur_sec = float(r["duration"]) if r["duration"] else 0.0
+
+            if raw_ms and raw_ms > 0:
+                ms_played = int(raw_ms)
+            elif raw_sec > 0:
+                ms_played = int(raw_sec) * 1000
+            elif dur_sec > 0:
+                ms_played = int(round(dur_sec * 1000))
+            else:
+                ms_played = 0
+
+            if ms_played <= 0:
+                continue
+
+            played_at = int(r["played_at"] or 0)
+            if played_at <= 0:
+                continue
+
+            try:
+                dt = datetime.fromtimestamp(played_at / 1000.0, tz=timezone.utc)
+                months_with_events.add(f"{dt.year:04d}-{dt.month:02d}")
+            except Exception:
+                pass
+
+            prim_id = r["primary_artist_id"]
+            prim_name = (r["primary_artist_name"] or r["artist"] or "Unknown Artist").strip() or "Unknown Artist"
+            track_title = (r["title"] or "Unknown Song").strip() or "Unknown Song"
+            cover_url = build_cover_url(base_url, r["cover_path"]) or None
+            artist_art_url = build_cover_url(base_url, r["primary_artist_avatar"]) or cover_url
+
+            events.append({
+                "song_id": song_id,
+                "track_id": str(song_id),
+                "track_title": track_title,
+                "artist_id": str(prim_id) if prim_id is not None else canonical_artist_id(prim_name),
+                "artist_name": prim_name,
+                "artwork_url": cover_url,
+                "artist_artwork_url": artist_art_url,
+                "duration": dur_sec,
+                "started_at_millis": played_at,
+                "ms_played": ms_played
+            })
+
+        # Fetch active-month daily listen time rows
+        daily_rows = conn.execute("""
+            SELECT date, seconds
+            FROM user_daily_listen_time
+            WHERE user_id = ?
+            ORDER BY date ASC
+        """, (user_id,)).fetchall()
+
+        daily_listen_time = [
             {
-                "song_id": r["song_id"],
-                "title": r["title"] or "Unknown Song",
-                "artist": r["artist"] or "Unknown Artist",
-                "cover_url": f"{base_url}/{r['cover_path'].replace(os.sep, '/')}" if r["cover_path"] else "",
-                "play_count": r["play_count"],
-                "year": r["year"],
-                "last_played_at": r["last_played_at"]
+                "date": r["date"],
+                "seconds": int(r["seconds"] or 0),
+                "minutes": round((r["seconds"] or 0) / 60.0)
             }
-            for r in rows
+            for r in daily_rows
         ]
-        return data
-    finally:
-        conn.close()
 
-
-# ---------------- 3. GET MONTHLY LISTEN TIME ----------------
-# Requirement: "on the last day of month calculate the to total listen time of the user and save it till the end of year and also delete the per day listen time for that month after saving the total."
-
-@router.get("/monthly/{user_id}")
-def get_user_monthly_listen_time(user_id: int, year: Optional[int] = None):
-    if year is None:
-        year = datetime.utcnow().year
-
-    conn = get_db()
-    try:
-        rollup_and_clean_listen_times(conn)
-
-        rows = conn.execute("""
+        # Fetch monthly listen time rows across all recorded months
+        monthly_rows = conn.execute("""
             SELECT year, month, total_seconds
             FROM user_monthly_listen_time
-            WHERE user_id = ? AND year = ?
-            ORDER BY month ASC
-        """, (user_id, year)).fetchall()
+            WHERE user_id = ?
+            ORDER BY year ASC, month ASC
+        """, (user_id,)).fetchall()
 
-        data = []
-        for r in rows:
-            tot = r["total_seconds"] or 0
-            hrs = tot // 3600
-            mins = (tot % 3600) // 60
-            data.append({
-                "year": r["year"],
-                "month": r["month"],
-                "total_seconds": tot,
-                "formatted": f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m",
-                "hours": hrs,
-                "minutes": mins
-            })
-        return data
+        monthly_listen_time = [
+            {
+                "year": int(r["year"]),
+                "month": int(r["month"]),
+                "total_seconds": int(r["total_seconds"] or 0),
+                "minutes": round((r["total_seconds"] or 0) / 60.0)
+            }
+            for r in monthly_rows
+        ]
+
+        available_months = set(months_with_events)
+        for d in daily_listen_time:
+            if d["seconds"] > 0 and len(d["date"]) >= 7:
+                available_months.add(d["date"][:7])
+
+        for m in monthly_listen_time:
+            ym_str = f"{m['year']:04d}-{m['month']:02d}"
+            if m["total_seconds"] > 0:
+                available_months.add(ym_str)
+                if ym_str not in months_with_events:
+                    top_year_song = conn.execute("""
+                        SELECT usp.song_id, s.title, s.artist, s.cover_path, s.duration,
+                               a.id AS primary_artist_id,
+                               a.name AS primary_artist_name,
+                               a.avatar_path AS primary_artist_avatar
+                        FROM user_song_plays usp
+                        INNER JOIN songs s ON usp.song_id = s.id
+                        LEFT JOIN song_artists sa ON sa.song_id = s.id AND sa.role = 'primary'
+                        LEFT JOIN artists a ON a.id = sa.artist_id
+                        WHERE usp.user_id = ? AND usp.year = ?
+                        ORDER BY usp.play_count DESC
+                        LIMIT 1
+                    """, (user_id, m["year"])).fetchone()
+                    if top_year_song:
+                        dt_mid = datetime(m["year"], m["month"], 15, 12, 0, 0, tzinfo=timezone.utc)
+                        synth_ts = int(dt_mid.timestamp() * 1000)
+                        prim_id = top_year_song["primary_artist_id"]
+                        prim_name = (top_year_song["primary_artist_name"] or top_year_song["artist"] or "Unknown Artist").strip() or "Unknown Artist"
+                        cover_url = build_cover_url(base_url, top_year_song["cover_path"]) or None
+                        artist_art_url = build_cover_url(base_url, top_year_song["primary_artist_avatar"]) or cover_url
+                        events.append({
+                            "song_id": top_year_song["song_id"],
+                            "track_id": str(top_year_song["song_id"]),
+                            "track_title": (top_year_song["title"] or "Unknown Song").strip() or "Unknown Song",
+                            "artist_id": str(prim_id) if prim_id is not None else canonical_artist_id(prim_name),
+                            "artist_name": prim_name,
+                            "artwork_url": cover_url,
+                            "artist_artwork_url": artist_art_url,
+                            "duration": float(top_year_song["duration"]) if top_year_song["duration"] else 0.0,
+                            "started_at_millis": synth_ts,
+                            "ms_played": int(m["total_seconds"]) * 1000
+                        })
+                        months_with_events.add(ym_str)
+
+        events.sort(key=lambda item: item["started_at_millis"])
+
+        return {
+            "user_id": user_id,
+            "events": events,
+            "daily_listen_time": daily_listen_time,
+            "monthly_listen_time": monthly_listen_time,
+            "available_months": sorted(available_months, reverse=True)
+        }
     finally:
         conn.close()
 
 
-# ---------------- 4. SYNC HISTORY FROM CLIENT ----------------
-# Requirement: "make a way to send the history to sync after every 6 hrs and it the 6 hr mark is missed then whenever the user is online."
+# ---------------- 2. SYNC HISTORY FROM CLIENT ----------------
+# Idempotent per (user_id, song_id, played_at): updates ms_played & listened_seconds in-place,
+# adds only delta seconds to user_daily_listen_time, and counts plays >= 30s once per session.
 
 @router.post("/sync")
 def sync_history(data: HistorySyncRequest):
@@ -154,7 +232,6 @@ def sync_history(data: HistorySyncRequest):
     conn = get_db()
     synced_count = 0
     try:
-        # Prevent any foreign key issues if user or songs table is being populated or modified
         conn.execute("PRAGMA foreign_keys = OFF")
 
         for ev in data.events:
@@ -164,40 +241,75 @@ def sync_history(data: HistorySyncRequest):
                 except Exception:
                     ev_dt = datetime.now(timezone.utc)
 
-                date_str = ev_dt.strftime("%Y-%m-%d")
-                year = ev_dt.year
-                listened_sec = max(0, int(ev.listened_seconds))
+                if ev.local_date and DATE_RE.match(ev.local_date):
+                    date_str = ev.local_date
+                    year = int(date_str[:4])
+                else:
+                    date_str = ev_dt.strftime("%Y-%m-%d")
+                    year = ev_dt.year
 
-                # A. Update daily listen time (saved till end of this month)
-                if listened_sec > 0:
+                raw_sec = max(0, int(ev.listened_seconds or 0))
+                if ev.ms_played is not None:
+                    effective_ms = max(0, int(ev.ms_played))
+                    effective_sec = max(raw_sec, int(round(effective_ms / 1000.0)))
+                else:
+                    effective_sec = raw_sec
+                    effective_ms = effective_sec * 1000
+
+                existing = conn.execute("""
+                    SELECT id, listened_seconds, ms_played
+                    FROM listening_history
+                    WHERE user_id = ? AND song_id = ? AND played_at = ?
+                """, (data.user_id, ev.song_id, ev.played_at)).fetchone()
+
+                if existing:
+                    prev_sec = int(existing["listened_seconds"] or 0)
+                    prev_ms_col = existing["ms_played"] if ("ms_played" in existing.keys() and existing["ms_played"] is not None) else 0
+                    prev_ms = int(prev_ms_col) if int(prev_ms_col) > 0 else (prev_sec * 1000)
+
+                    new_sec = max(prev_sec, effective_sec)
+                    new_ms = max(prev_ms, effective_ms)
+                    delta_sec = max(0, new_sec - prev_sec)
+                    crossed_play_threshold = (prev_ms < MIN_MS_FOR_PLAY <= new_ms)
+
+                    if new_sec != prev_sec or new_ms != prev_ms:
+                        conn.execute("""
+                            UPDATE listening_history
+                            SET listened_seconds = ?, ms_played = ?
+                            WHERE id = ?
+                        """, (new_sec, new_ms, existing["id"]))
+                else:
+                    delta_sec = effective_sec
+                    crossed_play_threshold = (effective_ms >= MIN_MS_FOR_PLAY)
+                    conn.execute("""
+                        INSERT INTO listening_history (user_id, song_id, listened_seconds, ms_played, played_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (data.user_id, ev.song_id, effective_sec, effective_ms, ev.played_at))
+
+                # A. Update daily listen time with delta seconds only (no double counting)
+                if delta_sec > 0:
                     conn.execute("""
                         INSERT INTO user_daily_listen_time (user_id, date, seconds, updated_at)
                         VALUES (?, ?, ?, datetime('now'))
                         ON CONFLICT(user_id, date) DO UPDATE SET
                             seconds = seconds + EXCLUDED.seconds,
                             updated_at = datetime('now')
-                    """, (data.user_id, date_str, listened_sec))
+                    """, (data.user_id, date_str, delta_sec))
 
-                # B. Increment user song play count for this year (saved till end of year)
-                conn.execute("""
-                    INSERT INTO user_song_plays (user_id, song_id, play_count, year, last_played_at)
-                    VALUES (?, ?, 1, ?, datetime('now'))
-                    ON CONFLICT(user_id, song_id, year) DO UPDATE SET
-                        play_count = play_count + 1,
-                        last_played_at = datetime('now')
-                """, (data.user_id, ev.song_id, year))
-
-                # C. Save event into server listening_history (for fetching when logging in)
-                conn.execute("""
-                    INSERT OR IGNORE INTO listening_history (user_id, song_id, listened_seconds, played_at)
-                    VALUES (?, ?, ?, ?)
-                """, (data.user_id, ev.song_id, listened_sec, ev.played_at))
+                # B. Increment yearly song play count once when >= 30s threshold is reached
+                if crossed_play_threshold:
+                    conn.execute("""
+                        INSERT INTO user_song_plays (user_id, song_id, play_count, year, last_played_at)
+                        VALUES (?, ?, 1, ?, datetime('now'))
+                        ON CONFLICT(user_id, song_id, year) DO UPDATE SET
+                            play_count = play_count + 1,
+                            last_played_at = datetime('now')
+                    """, (data.user_id, ev.song_id, year))
 
                 synced_count += 1
             except Exception as ev_err:
                 print(f"Warning: Failed to process history event for song {ev.song_id}: {ev_err}")
 
-        # Check and process monthly rollups and year cleanup
         try:
             rollup_and_clean_listen_times(conn)
         except Exception as rollup_err:
@@ -215,54 +327,3 @@ def sync_history(data: HistorySyncRequest):
         "message": f"Successfully synced {synced_count} history events",
         "synced_count": synced_count
     }
-
-
-# ---------------- 5. FETCH HISTORY ON LOGIN ----------------
-# Requirement: "if the user logging in is already registered try fetching history data from the server."
-
-@router.get("/{user_id}")
-def get_user_history(user_id: int, request: Request, limit: int = 100):
-    conn = get_db()
-    try:
-        base_url = get_base_url(request)
-        rows = conn.execute("""
-            SELECT lh.song_id, lh.listened_seconds, lh.played_at,
-                   s.title, s.artist, s.audio_path, s.cover_path, s.duration
-            FROM listening_history lh
-            LEFT JOIN songs s ON lh.song_id = s.id
-            WHERE lh.user_id = ?
-            ORDER BY lh.played_at DESC
-            LIMIT ?
-        """, (user_id, limit)).fetchall()
-
-        data = [
-            {
-                "song_id": r["song_id"],
-                "title": r["title"] or "Unknown Song",
-                "artist": r["artist"] or "Unknown Artist",
-                "audio_url": f"{base_url}/songs/{r['song_id']}/stream" if r["song_id"] else "",
-                "cover_url": f"{base_url}/{r['cover_path'].replace(os.sep, '/')}" if r["cover_path"] else "",
-                "duration": float(r["duration"]) if r["duration"] else 0.0,
-                "listened_seconds": r["listened_seconds"] or 0,
-                "played_at": r["played_at"]
-            }
-            for r in rows
-        ]
-        return data
-    finally:
-        conn.close()
-
-
-# ---------------- 6. MANUAL / SCHEDULED ROLLUP TRIGGER ----------------
-
-@router.post("/rollup")
-def trigger_monthly_rollup():
-    conn = get_db()
-    try:
-        rollup_and_clean_listen_times(conn)
-        return {
-            "success": True,
-            "message": "Monthly rollup and yearly cleanup completed successfully"
-        }
-    finally:
-        conn.close()

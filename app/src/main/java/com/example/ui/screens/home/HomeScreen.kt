@@ -54,7 +54,8 @@ fun HomeScreen(
     onNavigateToPlaylistSelect: (Song) -> Unit,
     onNavigateToPlaylist: (Int, String) -> Unit = { _, _ -> },
     onNavigateToLikedSongs: () -> Unit = {},
-    onNavigateToDownloadedSongs: () -> Unit = {}
+    onNavigateToDownloadedSongs: () -> Unit = {},
+    onViewSongArtist: (Song) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isOnline by remember { com.example.util.NetworkMonitor.observeNetwork(context) }
@@ -292,7 +293,7 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Connect to your Tailscale server to stream your music library.",
+                                text = "Connect to your music server to stream your music library.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = AlaktraTextSecondary,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -567,6 +568,7 @@ fun HomeScreen(
                 Toast.makeText(context, "Added to queue: ${song.title}", Toast.LENGTH_SHORT).show()
             },
             onAddToPlaylist = { onNavigateToPlaylistSelect(song) },
+            onViewArtist = { onViewSongArtist(song) },
             onToggleDownload = {
                 scope.launch {
                     if (isDownloaded) {

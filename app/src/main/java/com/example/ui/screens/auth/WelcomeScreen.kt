@@ -92,7 +92,7 @@ fun WelcomeScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             Text(
-                text = "Private high-fidelity streaming powered by your Tailscale mesh server",
+                text = "Private high-fidelity streaming powered by your personal music server",
                 style = MaterialTheme.typography.bodyLarge,
                 color = AlaktraTextSecondary,
                 textAlign = TextAlign.Center,
@@ -140,17 +140,6 @@ fun WelcomeScreen(
             }
 
             Spacer(modifier = Modifier.height(14.dp))
-
-            // Continue as guest
-            TextButton(onClick = onContinueAsGuest) {
-                Text(
-                    text = "Continue Offline / Browse as Guest",
-                    color = AlaktraTextMuted,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
