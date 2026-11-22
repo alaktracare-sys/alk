@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -44,7 +45,14 @@ import com.example.audio.AudioController
 import com.example.data.repository.MusicRepository
 import com.example.model.LocationPin
 import com.example.model.Song
+import com.example.ui.components.LocalCacheIndexWarmed
+import com.example.ui.components.LocalIsOnline
+import com.example.ui.components.LocalOfflinePlayableIds
+import com.example.ui.components.PinsListSkeleton
 import com.example.ui.components.SongCover
+import com.example.ui.components.SongListSkeleton
+import com.example.ui.components.isSongPlayableInUi
+import com.example.ui.components.showOfflineUnplayableToast
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asExecutor
@@ -141,10 +149,11 @@ fun LocationPinsScreen(
     var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showSongPicker by remember { mutableStateOf(false) }
     var allSongs by remember { mutableStateOf<List<Song>>(emptyList()) }
+    var isLoadingSongs by remember { mutableStateOf(false) }
     var isUploadingPin by remember { mutableStateOf(false) }
 
     // Isolate playback state reads so 10Hz currentPositionMs ticks never recompose LocationPinsScreen
-    val playbackStateHolder = audioController.playbackState.collectAsState()
+    val playbackStateHolder = audioController.stablePlaybackState.collectAsState()
     val isMiniPlayerActive by remember {
         derivedStateOf { playbackStateHolder.value.currentSong != null }
     }
@@ -246,6 +255,9 @@ fun LocationPinsScreen(
 
                 // Dynamically update proximity queue so upcoming tracks match current 50m range
                 audioController.updateNearbyPinsQueue(freshPins.map { it.song })
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                isServerOffline = true
             } finally {
                 isLoadingPins = false
             }
@@ -451,12 +463,23 @@ fun LocationPinsScreen(
     // Lazy-load song catalog ONLY when the user opens the Pin Song picker dialog
     LaunchedEffect(showSongPicker) {
         if (showSongPicker) {
-            if (allSongs.isEmpty()) {
-                allSongs = repository.getCachedSongs().ifEmpty { repository.getDownloadedSongs() }
-            }
-            val freshSongs = repository.getSongs()
-            if (freshSongs.isNotEmpty()) {
-                allSongs = freshSongs
+            isLoadingSongs = allSongs.isEmpty()
+            try {
+                if (allSongs.isEmpty()) {
+                    val cached = repository.getCachedSongs().ifEmpty { repository.getDownloadedSongs() }
+                    if (cached.isNotEmpty()) {
+                        allSongs = cached
+                        isLoadingSongs = false
+                    }
+                }
+                if (com.example.util.NetworkMonitor.isOnline(appContext)) {
+                    val page = repository.getSongsPage(limit = 40, offset = 0)
+                    if (page.songs.isNotEmpty()) {
+                        allSongs = (page.songs + allSongs).distinctBy { it.id }
+                    }
+                }
+            } finally {
+                isLoadingSongs = false
             }
         }
     }
@@ -673,12 +696,10 @@ fun LocationPinsScreen(
             }
 
             if (isLoadingPins && pins.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(color = AlaktraMint)
-                }
+                PinsListSkeleton(
+                    count = 4,
+                    modifier = Modifier.fillMaxSize()
+                )
             } else if (pins.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -849,6 +870,11 @@ fun LocationPinsScreen(
                                 Text("Uploading your location pin...", color = AlaktraTextPrimary)
                             }
                         }
+                    } else if (isLoadingSongs) {
+                        SongListSkeleton(
+                            count = 4,
+                            horizontalPadding = 0.dp
+                        )
                     } else if (allSongs.isEmpty()) {
                         Box(
                             modifier = Modifier
@@ -1020,10 +1046,18 @@ private fun LocationPinCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
+            val isPlayableNow = isPlaying || isSongPlayableInUi(
+                song = pin.song,
+                isOnline = LocalIsOnline.current,
+                offlinePlayableIds = LocalOfflinePlayableIds.current,
+                cacheIndexWarmed = LocalCacheIndexWarmed.current
+            )
             // Attached Song Info & Play Button
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.42f }
             ) {
                 SongCover(
                     imageUrl = pin.song.coverUrl,
@@ -1036,16 +1070,16 @@ private fun LocationPinCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.MusicNote,
+                            imageVector = if (isPlayableNow) Icons.Default.MusicNote else Icons.Default.WifiOff,
                             contentDescription = null,
-                            tint = AlaktraMint,
+                            tint = if (isPlayableNow) AlaktraMint else AlaktraTextMuted,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Attached Music Pin",
+                            text = if (isPlayableNow) "Attached Music Pin" else "Available online",
                             style = MaterialTheme.typography.labelSmall,
-                            color = AlaktraMint
+                            color = if (isPlayableNow) AlaktraMint else AlaktraTextMuted
                         )
                     }
                     Spacer(modifier = Modifier.height(2.dp))
@@ -1066,16 +1100,18 @@ private fun LocationPinCard(
                 }
 
                 IconButton(
-                    onClick = onPlay,
+                    onClick = {
+                        if (isPlayableNow) onPlay() else showOfflineUnplayableToast(context)
+                    },
                     modifier = Modifier
                         .size(46.dp)
                         .clip(CircleShape)
-                        .background(AlaktraMint)
+                        .background(if (isPlayableNow) AlaktraMint else AlaktraSurface)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = "Play",
-                        tint = Color(0xFF0A2218),
+                        tint = if (isPlayableNow) Color(0xFF0A2218) else AlaktraTextMuted,
                         modifier = Modifier.size(24.dp)
                     )
                 }

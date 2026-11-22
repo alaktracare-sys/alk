@@ -60,7 +60,7 @@ fun ArtistCreditsBottomSheet(
         }
     }
 
-    ModalBottomSheet(
+    AlaktraModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = AlaktraCard,
         contentColor = AlaktraTextPrimary,
@@ -126,6 +126,7 @@ fun ArtistCreditsBottomSheet(
                     }
                 }
 
+                Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
@@ -171,7 +172,7 @@ private fun ArtistCreditRow(
                     model = remember(avatarModelUrl) {
                         ImageRequest.Builder(context)
                             .data(avatarModelUrl)
-                            .crossfade(true)
+                            .size(144)
                             .build()
                     },
                     contentDescription = credit.name,

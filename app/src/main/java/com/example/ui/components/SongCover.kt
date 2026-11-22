@@ -22,8 +22,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Size
 import com.example.ui.theme.AlaktraCard
 import com.example.ui.theme.AlaktraMint
+
+private val SongCoverPlaceholderBrush = Brush.linearGradient(
+    colors = listOf(Color(0xFF222433), AlaktraCard)
+)
 
 @Composable
 fun SongCover(
@@ -31,9 +36,9 @@ fun SongCover(
     size: Dp = 56.dp,
     cornerRadius: Dp = 8.dp,
     modifier: Modifier = Modifier,
-    onArtworkLoaded: ((android.graphics.drawable.Drawable) -> Unit)? = null
+    onArtworkLoaded: (() -> Unit)? = null
 ) {
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     val baseModifier = if (size != Dp.Unspecified) modifier.size(size) else modifier.aspectRatio(1f)
     val iconFallbackSize = if (size != Dp.Unspecified) size / 2.2f else 28.dp
     val context = LocalContext.current
@@ -41,11 +46,7 @@ fun SongCover(
     Box(
         modifier = baseModifier
             .clip(shape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Color(0xFF222433), AlaktraCard)
-                )
-            ),
+            .background(SongCoverPlaceholderBrush),
         contentAlignment = Alignment.Center
     ) {
         // Fast background placeholder icon visible during load or on failure
@@ -57,21 +58,15 @@ fun SongCover(
         )
 
         if (imageUrl.isNotBlank()) {
-            val needsSoftwareBitmap = onArtworkLoaded != null
             AsyncImage(
-                model = remember(imageUrl, needsSoftwareBitmap) {
+                model = remember(imageUrl) {
                     ImageRequest.Builder(context)
                         .data(imageUrl)
-                        .apply {
-                            if (needsSoftwareBitmap) {
-                                allowHardware(false)
-                            }
-                        }
-                        .crossfade(true)
+                        .size(Size.ORIGINAL)
                         .build()
                 },
                 onSuccess = if (onArtworkLoaded != null) {
-                    { state -> onArtworkLoaded(state.result.drawable) }
+                    { onArtworkLoaded() }
                 } else {
                     null
                 },

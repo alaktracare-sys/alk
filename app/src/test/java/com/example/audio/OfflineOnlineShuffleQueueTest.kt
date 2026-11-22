@@ -300,4 +300,50 @@ class OfflineOnlineShuffleQueueTest {
         assertTrue(updated.shuffle)
         assertEquals(listOf(3, 6, 1, 5, 2, 4), updated.contextOrder.map { it.id })
     }
+
+    @Test
+    fun `non-shuffle queue restoration inserts offline track at resumeIndex instead of resetting to 0`() {
+        val playlistTracks = listOf(1, 2, 3, 4, 5).map { song(it) }
+        val playlistCtx = PlaybackContext(
+            uri = "alaktra:playlist:77",
+            type = ContextType.PLAYLIST,
+            name = "Drive Mix",
+            trackIds = playlistTracks.map { it.id },
+            tracks = playlistTracks
+        )
+        // User had played up to index 3 (before Song 4) before going offline
+        val snapshot = PreOfflineSnapshot(
+            context = playlistCtx,
+            contextOrder = playlistTracks,
+            resumeIndex = 3,
+            preserveExactRandomOrder = false
+        )
+
+        // Offline backup played cached Song 99 (outside playlist) with shuffle OFF
+        val offlineSong = song(99)
+        val offlineState = PlaybackState(
+            context = PlaybackContext(
+                uri = "alaktra:playlist:offline_backup",
+                type = ContextType.PLAYLIST,
+                name = "Offline Backup",
+                trackIds = listOf(99),
+                tracks = listOf(offlineSong)
+            ),
+            contextOrder = listOf(offlineSong),
+            contextIndex = 0,
+            currentSong = offlineSong,
+            shuffle = false
+        )
+
+        val restored = AudioController.restoreStateFromPreOfflineSnapshot(
+            currentState = offlineState,
+            snapshot = snapshot
+        )
+
+        assertFalse(restored.shuffle)
+        assertEquals("alaktra:playlist:77", restored.context?.uri)
+        assertEquals(3, restored.contextIndex)
+        assertEquals(99, restored.contextOrder[3].id)
+        assertEquals(listOf(1, 2, 3, 99, 4, 5), restored.contextOrder.map { it.id })
+    }
 }

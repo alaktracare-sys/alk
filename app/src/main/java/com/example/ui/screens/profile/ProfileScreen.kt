@@ -91,16 +91,36 @@ fun ProfileScreen(
         mutableLongStateOf(AudioCache.getImageCacheSizeBytes(context) + AudioCache.getHttpCacheSizeBytes(context))
     }
 
-    LaunchedEffect(Unit) {
-        val cachedUser = repository.getCachedUser()
-        if (cachedUser != null) {
-            user = cachedUser
+    val unifiedOnline = com.example.ui.components.LocalIsOnline.current
+
+    LaunchedEffect(unifiedOnline) {
+        if (!unifiedOnline && !isCheckingConnection) {
+            isConnected = false
+        } else if (unifiedOnline && isConnected == false && !isCheckingConnection) {
+            isConnected = true
         }
-        isCheckingConnection = true
-        isConnected = repository.testConnection()
-        isCheckingConnection = false
-        val songs = repository.getSongs()
-        downloadedCount = songs.count { it.isDownloaded || it.localPath != null }
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            val cachedUser = repository.getCachedUser()
+            if (cachedUser != null) {
+                user = cachedUser
+            }
+            downloadedCount = repository.getDownloadedSongs().size
+            if (com.example.util.NetworkMonitor.hasNetworkTransport(context)) {
+                isCheckingConnection = true
+                val reachable = repository.testConnection()
+                isConnected = reachable
+            } else {
+                isConnected = false
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            isConnected = false
+        } finally {
+            isCheckingConnection = false
+        }
     }
 
     val selectedAvatarPreset = remember(user?.avatarUrl) {

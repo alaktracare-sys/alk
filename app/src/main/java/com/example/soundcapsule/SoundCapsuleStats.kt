@@ -278,14 +278,14 @@ class MonthCapsuleAccumulator(
                     sharePercent = percent(agg.totalMs),
                 )
             }
-            .sortedByDescending { it.first }
+            .sortedWith(compareByDescending<Pair<Long, ArtistStat>> { it.second.plays }.thenByDescending { it.first })
             .take(5)
             .map { it.second }
 
         val topSongs = songs.entries
             .filter { it.value.totalMs > 0L }
             .map { (id, agg) ->
-                SongStat(
+                agg.totalMs to SongStat(
                     trackId = id,
                     title = agg.title,
                     artistName = agg.artistName,
@@ -294,8 +294,9 @@ class MonthCapsuleAccumulator(
                     minutes = minutes(agg.totalMs),
                 )
             }
-            .sortedWith(compareByDescending<SongStat> { it.plays }.thenByDescending { it.minutes })
+            .sortedWith(compareByDescending<Pair<Long, SongStat>> { it.second.plays }.thenByDescending { it.first })
             .take(5)
+            .map { it.second }
 
         return SoundCapsuleStats(
             month = month,

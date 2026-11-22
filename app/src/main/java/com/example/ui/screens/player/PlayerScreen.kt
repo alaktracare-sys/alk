@@ -39,10 +39,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.audio.AudioController
 import com.example.audio.PlaybackState
 import com.example.audio.RepeatMode
 import com.example.model.Song
+import com.example.ui.components.BottomNavGradientScrim
 import com.example.ui.components.SongCover
 import com.example.ui.theme.*
 import java.util.Locale
@@ -125,11 +127,6 @@ fun PlayerScreen(
             1.0f to Color.Black.copy(alpha = 0.86f)
         )
     }
-    val bottomScrimBrush = remember {
-        Brush.verticalGradient(
-            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
-        )
-    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -199,13 +196,16 @@ fun PlayerScreen(
         val likeIconContainerSize = (28.dp * heightScale).coerceIn(24.dp, 32.dp)
         val likeIconSize = (16.dp * heightScale).coerceIn(14.dp, 19.dp)
 
+        val shapeMinCount = 18
+        val shapeMaxCount = 34
+
         // 1. Random shapes layer at the back (above base black)
         RandomShapesBackground(
             seedKey = "${song.id}_${song.title}",
             palette = shapePalette,
             isLandscape = isLandscape,
-            minCount = 24,
-            maxCount = 44,
+            minCount = shapeMinCount,
+            maxCount = shapeMaxCount,
             minSizeFraction = 0.09f,
             maxSizeFraction = 0.25f,
             minAlpha = 0.52f,
@@ -221,14 +221,14 @@ fun PlayerScreen(
                 .testTag("player_gradient_overlay")
         )
 
-        if (!isLandscape) {
-            val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            Box(
+        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        if (!isLandscape || navBarBottom > 0.dp) {
+            BottomNavGradientScrim(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
-                    .background(bottomScrimBrush)
+                    .zIndex(0.5f),
+                extraHeight = 56.dp,
+                minHeight = if (isLandscape) 0.dp else 72.dp
             )
         }
 
@@ -275,8 +275,8 @@ fun PlayerScreen(
                                         size = artworkSize,
                                         cornerRadius = 24.dp,
                                         modifier = Modifier.fillMaxSize(),
-                                        onArtworkLoaded = { drawable ->
-                                            audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
+                                        onArtworkLoaded = {
+                                            audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl)
                                         }
                                     )
                                 }
@@ -712,8 +712,8 @@ fun PlayerScreen(
                             size = artworkSize,
                             cornerRadius = 10.dp,
                             modifier = Modifier.fillMaxSize(),
-                            onArtworkLoaded = { drawable ->
-                                audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
+                            onArtworkLoaded = {
+                                audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl)
                             }
                         )
                     }
@@ -1572,41 +1572,40 @@ private fun CustomDurationBar(
                 },
             contentAlignment = Alignment.CenterStart
         ) {
-            val totalWidthPx = barWidthPx
-            val activeWidthPx = totalWidthPx * currentFraction
-
-            // Inactive track line (centered vertically)
-            Box(
+            androidx.compose.foundation.Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(3.5.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color.White.copy(alpha = 0.25f))
-            )
+                    .height(14.dp)
+            ) {
+                val trackHeightPx = 3.5.dp.toPx()
+                val cornerPx = 2.dp.toPx()
+                val centerY = size.height * 0.5f
+                val trackTop = centerY - trackHeightPx * 0.5f
+                val totalW = size.width
+                val activeW = (totalW * currentFraction).coerceIn(0f, totalW)
 
-            // Active track line (centered vertically)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(currentFraction)
-                    .height(3.5.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color.White)
-            )
-
-            // Small white thumb circle dot
-            val thumbRadiusDp = 5.dp
-            val thumbRadiusPx = with(density) { thumbRadiusDp.toPx() }
-            val thumbOffsetDp = with(density) {
-                ((activeWidthPx - thumbRadiusPx).coerceIn(0f, (totalWidthPx - thumbRadiusPx * 2f).coerceAtLeast(0f))).toDp()
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.25f),
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, trackTop),
+                    size = androidx.compose.ui.geometry.Size(totalW, trackHeightPx),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
+                )
+                if (activeW > 0f) {
+                    drawRoundRect(
+                        color = Color.White,
+                        topLeft = androidx.compose.ui.geometry.Offset(0f, trackTop),
+                        size = androidx.compose.ui.geometry.Size(activeW, trackHeightPx),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
+                    )
+                }
+                val thumbRadiusPx = 5.5.dp.toPx()
+                val thumbCenterX = activeW.coerceIn(thumbRadiusPx, (totalW - thumbRadiusPx).coerceAtLeast(thumbRadiusPx))
+                drawCircle(
+                    color = Color.White,
+                    radius = thumbRadiusPx,
+                    center = androidx.compose.ui.geometry.Offset(thumbCenterX, centerY)
+                )
             }
-
-            Box(
-                modifier = Modifier
-                    .offset(x = thumbOffsetDp)
-                    .size(11.dp)
-                    .clip(CircleShape)
-                    .background(Color.White)
-            )
         }
 
         Spacer(modifier = Modifier.height(2.dp))

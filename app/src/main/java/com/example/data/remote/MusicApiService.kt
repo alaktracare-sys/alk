@@ -155,6 +155,18 @@ data class ServerPlaylistDto(
     val downloadable: Boolean? = null
 )
 
+data class DailyPlaylistDto(
+    val id: Int = 0,
+    @SerializedName("slot_index") val slotIndex: Int = 1,
+    val date: String = "",
+    val name: String? = null,
+    val subtitle: String? = null,
+    @SerializedName("accent_color") val accentColor: String? = null,
+    @SerializedName("song_count") val songCount: Int = 0,
+    @SerializedName("preview_covers") val previewCovers: List<String>? = null,
+    val songs: List<SongDto>? = null
+)
+
 // ----------------- FUSE BLEND MODELS -----------------
 
 data class FuseCreateResponse(
@@ -395,6 +407,17 @@ interface MusicApiService {
     ): Response<ArtistMutationResponse>
 
     // === PLAYLISTS ===
+    @GET("playlists/daily/{user_id}")
+    suspend fun getDailyPlaylists(
+        @Path("user_id") userId: Int,
+        @Query("date") date: String
+    ): Response<List<DailyPlaylistDto>>
+
+    @GET("playlists/daily/item/{daily_playlist_id}/songs")
+    suspend fun getDailyPlaylistSongs(
+        @Path("daily_playlist_id") dailyPlaylistId: Int
+    ): Response<List<SongDto>>
+
     @GET("playlists/{user_id}")
     suspend fun getPlaylists(@Path("user_id") userId: Int): Response<List<ServerPlaylistDto>>
 

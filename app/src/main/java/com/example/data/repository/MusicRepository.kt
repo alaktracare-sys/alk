@@ -12,6 +12,7 @@ import com.example.data.remote.*
 import com.example.model.ArtistClaimInfo
 import com.example.model.ArtistDetailBundle
 import com.example.model.ArtistProfile
+import com.example.model.DailyPlaylist
 import com.example.model.LocationPin
 import com.example.model.Playlist
 import com.example.model.Song
@@ -67,6 +68,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+data class SongsPage(
+    val songs: List<Song>,
+    val hasMore: Boolean
+)
+
 class MusicRepository(private val context: Context) {
     val authPreferences = AuthPreferences(context)
     val downloadManager = DownloadManager(context)
@@ -77,6 +83,7 @@ class MusicRepository(private val context: Context) {
     private val userDao = appDatabase.userDao()
     private val repoScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val historySyncMutex = Mutex()
+    private val dailyPlaylistsMutex = Mutex()
     private val fuseContributorsCache = ConcurrentHashMap<Int, Map<Int, String>>()
 
     val soundCapsuleRepository: SoundCapsuleRepository by lazy {
@@ -98,13 +105,123 @@ class MusicRepository(private val context: Context) {
     @Volatile
     private var cachedMyClubsList: List<com.example.model.ClubPlaylistSummary>? = null
 
+    @Volatile
+    private var homeSongsSnapshotMemory: List<Song> = emptyList()
+
+    @Volatile
+    private var homeDiscoverSnapshotMemory: List<Song> = emptyList()
+
+    @Volatile
+    private var playlistsSnapshotMemory: Pair<Int, List<Playlist>>? = null
+
+    @Volatile
+    private var dailyPlaylistsSnapshotMemory: Triple<Int, String, List<DailyPlaylist>>? = null
+
+    @Volatile
+    private var artistsSnapshotMemory: List<ArtistProfile> = emptyList()
+
+    @Volatile
+    private var lastHomeRefreshAtMs: Long = 0L
+
+    @Volatile
+    private var lastSearchRefreshAtMs: Long = 0L
+
+    @Volatile
+    private var lastArtistsRefreshAtMs: Long = 0L
+
+    /**
+     * Non-blocking O(1) synchronous Frame-0 snapshot readers for Home & Search.
+     * Never perform disk I/O, SQLite queries, or SharedPreferences deserialization.
+     */
+    fun peekCachedSongs(): List<Song> {
+        val inMem = apiCacheManager.getFeed("home_feed")
+        if (!inMem.isNullOrEmpty()) return inMem
+        return homeSongsSnapshotMemory
+    }
+
+    fun peekCachedSongsPage(limit: Int): List<Song> {
+        val target = limit.coerceAtLeast(1)
+        val inMem = apiCacheManager.getFeed("home_feed")
+        if (!inMem.isNullOrEmpty()) return inMem.take(target)
+        return homeSongsSnapshotMemory.take(target)
+    }
+
+    fun peekDiscoverSongs(limit: Int = 6): List<Song> {
+        val target = limit.coerceAtLeast(1)
+        if (homeDiscoverSnapshotMemory.isNotEmpty()) {
+            return homeDiscoverSnapshotMemory.take(target)
+        }
+        val feed = peekCachedSongs()
+        return if (feed.size > 2) feed.asReversed().take(target) else emptyList()
+    }
+
+    fun peekCachedPlaylists(): List<Playlist> {
+        val userId = getEffectiveUserId()
+        val inMem = apiCacheManager.getUserPlaylists(userId)
+        if (!inMem.isNullOrEmpty()) {
+            return inMem.filter { !FuseCodeCodec.isPendingMarker(it.name) }
+        }
+        val snap = playlistsSnapshotMemory
+        return if (snap != null && snap.first == userId) snap.second else emptyList()
+    }
+
+    fun peekCachedDailyPlaylists(): List<DailyPlaylist> {
+        val userId = getEffectiveUserId()
+        val today = todayDateString()
+        val snap = dailyPlaylistsSnapshotMemory
+        return if (snap != null && snap.first == userId && snap.second == today) {
+            snap.third
+        } else {
+            emptyList()
+        }
+    }
+
+    fun peekCachedArtists(): List<ArtistProfile> {
+        return artistsSnapshotMemory
+    }
+
+    fun shouldRefreshHomeInBackground(minIntervalMs: Long = 35_000L): Boolean {
+        val now = System.currentTimeMillis()
+        return lastHomeRefreshAtMs == 0L || (now - lastHomeRefreshAtMs) >= minIntervalMs
+    }
+
+    fun markHomeRefreshed() {
+        lastHomeRefreshAtMs = System.currentTimeMillis()
+    }
+
+    fun shouldRefreshSearchInBackground(minIntervalMs: Long = 35_000L): Boolean {
+        val now = System.currentTimeMillis()
+        return lastSearchRefreshAtMs == 0L || (now - lastSearchRefreshAtMs) >= minIntervalMs
+    }
+
+    fun markSearchRefreshed() {
+        lastSearchRefreshAtMs = System.currentTimeMillis()
+    }
+
     fun getCachedMyClubs(): List<com.example.model.ClubPlaylistSummary> {
-        return cachedMyClubsList.orEmpty()
+        val inMem = cachedMyClubsList
+        if (!inMem.isNullOrEmpty()) return inMem
+        val persisted = authPreferences.getCachedMyClubs(getEffectiveUserId())
+        if (persisted.isNotEmpty()) {
+            cachedMyClubsList = persisted
+        }
+        return persisted
     }
 
     init {
+        com.example.util.NetworkMonitor.updateActiveServerUrl(authPreferences.getServerBaseUrl())
+        com.example.util.NetworkMonitor.setServerRecoveryProbe { targetUrl ->
+            probeServerHealth(targetUrl.ifBlank { authPreferences.getServerBaseUrl() })
+        }
         if (backgroundSyncStarted.compareAndSet(false, true)) {
+            com.example.audio.AudioCache.warmUpCacheIndexAsync(context)
             soundCapsuleRepository.warmUpAsync()
+            if (authPreferences.isLoggedIn()) {
+                repoScope.launch {
+                    runCatching { getCachedSongsPage(limit = 20, offset = 0) }
+                    runCatching { getCachedDiscoverSongs(limit = 6) }
+                }
+            }
             repoScope.launch {
                 com.example.util.NetworkMonitor.observeNetwork(context.applicationContext)
                     .distinctUntilChanged()
@@ -186,27 +303,37 @@ class MusicRepository(private val context: Context) {
     var lastPinSyncOffline: Boolean = false
         private set
 
-    @Volatile
-    private var lastUnreachableAtMs: Long = 0L
-
-    @Volatile
-    private var lastUnreachableUrl: String = ""
-
     private fun shouldSkipUnreachableServer(forceNetwork: Boolean): Boolean {
-        if (forceNetwork) return false
-        val url = authPreferences.getServerBaseUrl()
-        val elapsed = System.currentTimeMillis() - lastUnreachableAtMs
-        return lastUnreachableAtMs > 0L && url == lastUnreachableUrl && elapsed in 0 until UNREACHABLE_COOLDOWN_MS
+        return com.example.util.NetworkMonitor.shouldSkipNetworkRequests(context, forceNetwork)
     }
 
     private fun markServerUnreachable() {
-        lastUnreachableUrl = authPreferences.getServerBaseUrl()
-        lastUnreachableAtMs = System.currentTimeMillis()
+        com.example.util.NetworkMonitor.markServerUnreachable(authPreferences.getServerBaseUrl())
     }
 
     private fun markServerReachable() {
-        lastUnreachableAtMs = 0L
-        lastUnreachableUrl = ""
+        com.example.util.NetworkMonitor.markServerReachable()
+    }
+
+    private fun handleRetrofitReachability(response: retrofit2.Response<*>) {
+        // Never mark server reachable from an OkHttp disk cache hit or offline FORCE_CACHE 504.
+        val rawNetworkResponse = response.raw().networkResponse ?: return
+        val code = response.code()
+        if (com.example.util.NetworkMonitor.isUnreachableHttpStatus(code) ||
+            com.example.util.NetworkMonitor.isUnreachableHttpStatus(rawNetworkResponse.code)
+        ) {
+            markServerUnreachable()
+        } else if (code in 200..499 && code != 408 && code != 429) {
+            markServerReachable()
+        }
+    }
+
+    private fun reportRetrofitIoFailure(error: java.io.IOException) {
+        com.example.util.NetworkMonitor.reportSuspectedServerFailure(
+            context = context,
+            serverUrl = authPreferences.getServerBaseUrl(),
+            error = error
+        )
     }
 
     private val api: MusicApiService
@@ -229,7 +356,7 @@ class MusicRepository(private val context: Context) {
             }
         }
 
-    private fun buildApiService(baseUrl: String): MusicApiService {
+    private fun buildApiService(baseUrl: String, trackReachability: Boolean = true): MusicApiService {
         val logging = HttpLoggingInterceptor().apply {
             level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
         }
@@ -237,13 +364,47 @@ class MusicRepository(private val context: Context) {
         val httpCacheDir = File(context.cacheDir, ApiCacheConfig.HTTP_CACHE_DIR)
         val httpCache = Cache(httpCacheDir, ApiCacheConfig.HTTP_CACHE_MAX_BYTES)
 
-        val client = OkHttpClient.Builder()
+        val clientBuilder = OkHttpClient.Builder()
             .cache(httpCache)
+            .addInterceptor(OfflineCacheInterceptor(context))
             .addInterceptor(logging)
             .addInterceptor(com.example.data.remote.AppSecurityInterceptor())
+
+        if (trackReachability) {
+            clientBuilder.addInterceptor { chain ->
+                val request = chain.request()
+                if (request.cacheControl.onlyIfCached) {
+                    return@addInterceptor chain.proceed(request)
+                }
+                try {
+                    val response = chain.proceed(request)
+                    if (response.networkResponse != null) {
+                        if (com.example.util.NetworkMonitor.isUnreachableHttpStatus(response.code)) {
+                            com.example.util.NetworkMonitor.markServerUnreachable(baseUrl)
+                        } else if (response.code in 200..499 && response.code != 408 && response.code != 429) {
+                            com.example.util.NetworkMonitor.markServerReachable()
+                        }
+                    }
+                    response
+                } catch (e: java.io.IOException) {
+                    if (!chain.call().isCanceled()) {
+                        com.example.util.NetworkMonitor.reportSuspectedServerFailure(
+                            context = context,
+                            serverUrl = baseUrl,
+                            error = e
+                        )
+                    }
+                    throw e
+                }
+            }
+        }
+
+        val client = clientBuilder
+            .addNetworkInterceptor(NetworkCacheInterceptor())
             .connectTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
             .build()
 
@@ -287,6 +448,7 @@ class MusicRepository(private val context: Context) {
 
     fun updateServerUrl(newUrl: String) {
         authPreferences.setServerBaseUrl(newUrl)
+        com.example.util.NetworkMonitor.updateActiveServerUrl(authPreferences.getServerBaseUrl())
         markServerReachable()
         lastPinSyncOffline = false
         synchronized(this) {
@@ -295,15 +457,57 @@ class MusicRepository(private val context: Context) {
         }
     }
 
+    private val healthProbeClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor(com.example.data.remote.AppSecurityInterceptor())
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+    }
+
+    private fun probeServerHealth(baseUrl: String): Boolean {
+        val trimmed = baseUrl.trim().trimEnd('/')
+        if (trimmed.isEmpty() || !com.example.util.NetworkMonitor.hasNetworkTransport(context)) {
+            return false
+        }
+        return try {
+            val healthReq = okhttp3.Request.Builder()
+                .url("$trimmed/health")
+                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                .get()
+                .build()
+            healthProbeClient.newCall(healthReq).execute().use { resp ->
+                if (resp.code in 200..399) {
+                    return true
+                }
+                if (resp.code == 404) {
+                    // Fallback for older servers without /health
+                    val songsReq = okhttp3.Request.Builder()
+                        .url("$trimmed/songs")
+                        .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                        .get()
+                        .build()
+                    healthProbeClient.newCall(songsReq).execute().use { songsResp ->
+                        return songsResp.code in 200..399
+                    }
+                }
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun testUrl(testBaseUrl: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val testApi = buildApiService(testBaseUrl)
-            val healthResp = try { testApi.healthCheck() } catch (_: Exception) { null }
-            if (healthResp != null && (healthResp.isSuccessful || healthResp.code() in 200..399)) {
+            if (probeServerHealth(testBaseUrl)) {
                 return@withContext true
             }
-            val songsResp = try { testApi.getSongs() } catch (_: Exception) { null }
-            if (songsResp != null && (songsResp.isSuccessful || songsResp.code() in 200..399)) {
+            val testApi = buildApiService(testBaseUrl, trackReachability = false)
+            val healthResp = try { testApi.healthCheck() } catch (_: Exception) { null }
+            if (healthResp != null && (healthResp.isSuccessful || healthResp.code() in 200..399)) {
                 return@withContext true
             }
             false
@@ -313,27 +517,20 @@ class MusicRepository(private val context: Context) {
     }
 
     suspend fun testConnection(): Boolean = withContext(Dispatchers.IO) {
+        if (!com.example.util.NetworkMonitor.hasNetworkTransport(context)) {
+            return@withContext false
+        }
         try {
-            // 1. First probe the dedicated /health endpoint
-            val healthResp = try { api.healthCheck() } catch (_: Exception) { null }
-            if (healthResp != null && (healthResp.isSuccessful || healthResp.code() in 200..399)) {
-                return@withContext true
+            val reachable = probeServerHealth(authPreferences.getServerBaseUrl())
+            if (reachable) {
+                markServerReachable()
+                true
+            } else {
+                markServerUnreachable()
+                false
             }
-
-            // 2. Next probe the songs catalog endpoint
-            val songsResp = try { api.getSongs() } catch (_: Exception) { null }
-            if (songsResp != null && (songsResp.isSuccessful || songsResp.code() in 200..399)) {
-                return@withContext true
-            }
-
-            // 3. Fall back to playlist endpoint
-            val plResp = try { api.getPlaylists(getEffectiveUserId()) } catch (_: Exception) { null }
-            if (plResp != null && (plResp.isSuccessful || plResp.code() in 200..399)) {
-                return@withContext true
-            }
-
-            false
         } catch (_: Exception) {
+            markServerUnreachable()
             false
         }
     }
@@ -481,7 +678,9 @@ class MusicRepository(private val context: Context) {
             val cachedFeed = apiCacheManager.getFeed("home_feed")
             if (cachedFeed != null) {
                 val withLikes = cachedFeed.map { it.copy(isLiked = likedIds.contains(it.id)) }
-                return@withContext attachLocalPaths(withLikes)
+                val attached = attachLocalPaths(withLikes)
+                homeSongsSnapshotMemory = attached
+                return@withContext attached
             }
         }
 
@@ -492,44 +691,145 @@ class MusicRepository(private val context: Context) {
         if (!shouldSkipUnreachableServer(forceRefresh) && com.example.util.NetworkMonitor.isOnline(context)) {
             try {
                 val response = api.getSongs()
-                markServerReachable()
+                handleRetrofitReachability(response)
                 if (response.code() == 304) {
                     authPreferences.setLastSyncTime("songs")
                     if (localSongs.isNotEmpty()) {
-                        return@withContext attachLocalPaths(localSongs)
+                        val attached = attachLocalPaths(localSongs)
+                        homeSongsSnapshotMemory = attached
+                        apiCacheManager.putFeed("home_feed", attached)
+                        return@withContext attached
                     }
                 } else if (response.isSuccessful && response.body() != null) {
                     val remoteSongs = response.body()!!.map { dto ->
-                        Song(
-                            id = dto.id,
-                            title = dto.title ?: "Untitled Track",
-                            artist = dto.artist ?: "Unknown Artist",
-                            audioUrl = sanitizeUrl(dto.audioUrl),
-                            coverUrl = sanitizeUrl(dto.coverUrl),
-                            duration = dto.duration,
-                            isLiked = likedIds.contains(dto.id),
-                            dominantColorHex = dto.dominantColor
-                        )
+                        mapDtoToSong(dto, likedIds)
                     }
-                    apiCacheManager.putFeed("home_feed", remoteSongs)
+                    val attached = attachLocalPaths(remoteSongs)
+                    apiCacheManager.putFeed("home_feed", attached)
+                    homeSongsSnapshotMemory = attached
                     songDao.insertCachedSongs(remoteSongs.map { SongEntity.fromSong(it) })
                     authPreferences.setLastSyncTime("songs")
-                    return@withContext attachLocalPaths(remoteSongs)
+                    return@withContext attached
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
-                if (e is java.io.IOException) markServerUnreachable()
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
                 // Network is unavailable or server error: continue using local cached songs
             }
         }
 
         // 3. Return local cached songs if available
         if (localSongs.isNotEmpty()) {
-            return@withContext attachLocalPaths(localSongs)
+            val attached = attachLocalPaths(localSongs)
+            homeSongsSnapshotMemory = attached
+            return@withContext attached
         }
 
         // No bogus sample data fallback: return empty list
         emptyList()
+    }
+
+    suspend fun getCachedSongsPage(limit: Int, offset: Int = 0): List<Song> = withContext(Dispatchers.IO) {
+        val safeLimit = limit.coerceAtLeast(1)
+        val safeOffset = offset.coerceAtLeast(0)
+        val likedIds = authPreferences.getLikedSongIds()
+        if (safeOffset == 0) {
+            val inMemoryFeed = apiCacheManager.getFeed("home_feed")
+            if (!inMemoryFeed.isNullOrEmpty()) {
+                val attached = attachLocalPaths(inMemoryFeed.take(safeLimit).map { it.copy(isLiked = likedIds.contains(it.id)) })
+                if (homeSongsSnapshotMemory.size < attached.size) {
+                    homeSongsSnapshotMemory = attached
+                }
+                return@withContext attached
+            }
+        }
+        val cachedEntities = songDao.getCachedSongsPage(safeLimit, safeOffset)
+        val mapped = cachedEntities.map { it.toSong().copy(isLiked = likedIds.contains(it.id)) }
+        val attached = attachLocalPaths(mapped)
+        if (safeOffset == 0 && attached.isNotEmpty() && homeSongsSnapshotMemory.size < attached.size) {
+            homeSongsSnapshotMemory = attached
+        }
+        attached
+    }
+
+    suspend fun getCachedDiscoverSongs(limit: Int = 6): List<Song> = withContext(Dispatchers.IO) {
+        val safeLimit = limit.coerceAtLeast(1)
+        val likedIds = authPreferences.getLikedSongIds()
+        val oldest = songDao.getOldestCachedSongs(safeLimit)
+        val mapped = oldest.map { it.toSong().copy(isLiked = likedIds.contains(it.id)) }
+        val attached = attachLocalPaths(mapped)
+        if (attached.isNotEmpty()) {
+            homeDiscoverSnapshotMemory = attached
+        }
+        attached
+    }
+
+    suspend fun getSongsPage(
+        limit: Int,
+        offset: Int = 0,
+        forceRefresh: Boolean = false
+    ): SongsPage = withContext(Dispatchers.IO) {
+        val requestedLimit = limit.coerceAtLeast(1)
+        val safeOffset = offset.coerceAtLeast(0)
+        val likedIds = authPreferences.getLikedSongIds()
+
+        if (!shouldSkipUnreachableServer(forceRefresh) && com.example.util.NetworkMonitor.isOnline(context)) {
+            try {
+                val targetFetch = requestedLimit + 1
+                val collected = ArrayList<Song>(targetFetch)
+                var networkOk = false
+
+                while (collected.size < targetFetch) {
+                    val batchLimit = (targetFetch - collected.size).coerceIn(1, 100)
+                    val response = api.searchSongs(
+                        query = "",
+                        limit = batchLimit,
+                        offset = safeOffset + collected.size
+                    )
+                    handleRetrofitReachability(response)
+                    if (response.code() == 304) {
+                        break
+                    }
+                    if (!response.isSuccessful || response.body() == null) {
+                        break
+                    }
+                    networkOk = true
+                    val batch = response.body()!!.map { dto -> mapDtoToSong(dto, likedIds) }
+                    collected.addAll(batch)
+                    if (batch.size < batchLimit) {
+                        break
+                    }
+                }
+
+                if (networkOk) {
+                    val hasMore = collected.size > requestedLimit
+                    val pageRaw = collected.take(requestedLimit)
+                    if (pageRaw.isNotEmpty()) {
+                        songDao.insertCachedSongs(pageRaw.map { SongEntity.fromSong(it) })
+                    }
+                    val attached = attachLocalPaths(pageRaw)
+                    if (safeOffset == 0 && attached.isNotEmpty()) {
+                        homeSongsSnapshotMemory = attached
+                        authPreferences.setLastSyncTime("songs")
+                    }
+                    return@withContext SongsPage(songs = attached, hasMore = hasMore)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
+            }
+        }
+
+        val cachedEntities = songDao.getCachedSongsPage(requestedLimit + 1, safeOffset)
+        val hasMore = cachedEntities.size > requestedLimit
+        val pageSongs = cachedEntities.take(requestedLimit).map {
+            it.toSong().copy(isLiked = likedIds.contains(it.id))
+        }
+        val attached = attachLocalPaths(pageSongs)
+        if (safeOffset == 0 && attached.isNotEmpty() && homeSongsSnapshotMemory.size < attached.size) {
+            homeSongsSnapshotMemory = attached
+        }
+        SongsPage(songs = attached, hasMore = hasMore)
     }
 
     suspend fun searchSongs(
@@ -563,28 +863,25 @@ class MusicRepository(private val context: Context) {
         }
 
         // 2. Network query
-        try {
-            val response = api.searchSongs(query = q, limit = limit, offset = actualOffset)
-            if (response.isSuccessful && response.body() != null) {
-                val songs = response.body()!!.map { dto ->
-                    Song(
-                        id = dto.id,
-                        title = dto.title ?: "Untitled Track",
-                        artist = dto.artist ?: "Unknown Artist",
-                        audioUrl = sanitizeUrl(dto.audioUrl),
-                        coverUrl = sanitizeUrl(dto.coverUrl),
-                        duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id),
-                        dominantColorHex = dto.dominantColor
-                    )
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val response = api.searchSongs(query = q, limit = limit, offset = actualOffset)
+                handleRetrofitReachability(response)
+                if (response.isSuccessful && response.body() != null) {
+                    val songs = response.body()!!.map { dto ->
+                        mapDtoToSong(dto, likedIds)
+                    }
+                    apiCacheManager.putSearch(searchKey, songs)
+                    if (songs.isNotEmpty()) {
+                        songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
+                    }
+                    return@withContext attachLocalPaths(songs)
                 }
-                apiCacheManager.putSearch(searchKey, songs)
-                if (songs.isNotEmpty()) {
-                    songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
-                }
-                return@withContext attachLocalPaths(songs)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
         // 3. Offline search from local SQLite database
         val cachedMatches = songDao.searchCachedSongs(q)
@@ -610,28 +907,26 @@ class MusicRepository(private val context: Context) {
         }
 
         // Fetch matching artist tracks via search API
-        try {
-            val response = api.searchSongs(query = artist, limit = 50, offset = 0)
-            if (response.isSuccessful && response.body() != null) {
-                val songs = response.body()!!.map { dto ->
-                    Song(
-                        id = dto.id,
-                        title = dto.title ?: "Untitled Track",
-                        artist = dto.artist ?: "Unknown Artist",
-                        audioUrl = sanitizeUrl(dto.audioUrl),
-                        coverUrl = sanitizeUrl(dto.coverUrl),
-                        duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id)
-                    )
-                }.filter { it.artist.contains(artist, ignoreCase = true) }
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val response = api.searchSongs(query = artist, limit = 50, offset = 0)
+                handleRetrofitReachability(response)
+                if (response.isSuccessful && response.body() != null) {
+                    val songs = response.body()!!.map { dto ->
+                        mapDtoToSong(dto, likedIds)
+                    }.filter { it.artist.contains(artist, ignoreCase = true) }
 
-                if (songs.isNotEmpty()) {
-                    apiCacheManager.putArtist(key, songs)
-                    songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
-                    return@withContext attachLocalPaths(songs)
+                    if (songs.isNotEmpty()) {
+                        apiCacheManager.putArtist(key, songs)
+                        songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
+                        return@withContext attachLocalPaths(songs)
+                    }
                 }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
         // Fallback: local cached songs matching artist
         val localMatches = songDao.searchCachedSongs(artist)
@@ -657,27 +952,25 @@ class MusicRepository(private val context: Context) {
             }
         }
 
-        try {
-            val response = api.searchSongs(query = album, limit = 50, offset = 0)
-            if (response.isSuccessful && response.body() != null) {
-                val songs = response.body()!!.map { dto ->
-                    Song(
-                        id = dto.id,
-                        title = dto.title ?: "Untitled Track",
-                        artist = dto.artist ?: "Unknown Artist",
-                        audioUrl = sanitizeUrl(dto.audioUrl),
-                        coverUrl = sanitizeUrl(dto.coverUrl),
-                        duration = dto.duration,
-                        isLiked = likedIds.contains(dto.id)
-                    )
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val response = api.searchSongs(query = album, limit = 50, offset = 0)
+                handleRetrofitReachability(response)
+                if (response.isSuccessful && response.body() != null) {
+                    val songs = response.body()!!.map { dto ->
+                        mapDtoToSong(dto, likedIds)
+                    }
+                    if (songs.isNotEmpty()) {
+                        apiCacheManager.putAlbum(key, songs)
+                        songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
+                        return@withContext attachLocalPaths(songs)
+                    }
                 }
-                if (songs.isNotEmpty()) {
-                    apiCacheManager.putAlbum(key, songs)
-                    songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it) })
-                    return@withContext attachLocalPaths(songs)
-                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
         val localMatches = songDao.searchCachedSongs(album)
             .map { it.toSong().copy(isLiked = likedIds.contains(it.id)) }
@@ -753,12 +1046,16 @@ class MusicRepository(private val context: Context) {
         val likedIds = authPreferences.getLikedSongIds()
         val inMemoryFeed = apiCacheManager.getFeed("home_feed")
         if (inMemoryFeed != null && inMemoryFeed.isNotEmpty()) {
-            return@withContext attachLocalPaths(inMemoryFeed.map { it.copy(isLiked = likedIds.contains(it.id)) })
+            val attached = attachLocalPaths(inMemoryFeed.map { it.copy(isLiked = likedIds.contains(it.id)) })
+            homeSongsSnapshotMemory = attached
+            return@withContext attached
         }
         val cachedEntities = songDao.getAllCachedSongs()
         val songs = cachedEntities.map { it.toSong().copy(isLiked = likedIds.contains(it.id)) }
         if (songs.isNotEmpty()) {
-            attachLocalPaths(songs)
+            val attached = attachLocalPaths(songs)
+            homeSongsSnapshotMemory = attached
+            attached
         } else {
             emptyList()
         }
@@ -803,7 +1100,9 @@ class MusicRepository(private val context: Context) {
         if (!forceRefresh) {
             val inMemory = apiCacheManager.getUserPlaylists(userId)
             if (inMemory != null) {
-                return@withContext inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
+                val filtered = inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
+                playlistsSnapshotMemory = userId to filtered
+                return@withContext filtered
             }
         }
 
@@ -819,80 +1118,89 @@ class MusicRepository(private val context: Context) {
             .toSet()
         val pendingLocalPlaylists = localPlaylists.filter { it.id < 0 && !pendingDeletedIds.contains(it.id) }
 
-        try {
-            val response = api.getPlaylists(userId)
-            if (response.code() == 304) {
-                authPreferences.setLastSyncTime("playlists")
-                val activeLocal = localPlaylists.filter { !pendingDeletedIds.contains(it.id) }
-                if (activeLocal.isNotEmpty()) {
-                    return@withContext activeLocal
-                }
-            } else if (response.isSuccessful && response.body() != null) {
-                val nowMs = System.currentTimeMillis()
-                val rawBody = response.body()!!
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val response = api.getPlaylists(userId)
+                handleRetrofitReachability(response)
+                if (response.code() == 304) {
+                    authPreferences.setLastSyncTime("playlists")
+                    val activeLocal = localPlaylists.filter { !pendingDeletedIds.contains(it.id) }
+                    if (activeLocal.isNotEmpty()) {
+                        playlistsSnapshotMemory = userId to activeLocal
+                        return@withContext activeLocal
+                    }
+                } else if (response.isSuccessful && response.body() != null) {
+                    val nowMs = System.currentTimeMillis()
+                    val rawBody = response.body()!!
 
-                // Opportunistically clean up any expired pending Fuse markers on legacy servers
-                val expiredMarkerIds = rawBody.mapNotNull { dto ->
-                    val marker = FuseCodeCodec.parsePendingMarker(dto.name)
-                    if (marker != null && marker.isExpired(nowMs)) dto.id else null
-                }
-                if (expiredMarkerIds.isNotEmpty()) {
-                    repoScope.launch {
-                        expiredMarkerIds.forEach { expiredId ->
-                            try { api.deletePlaylist(expiredId) } catch (_: Exception) {}
-                            try { playlistDao.deletePlaylist(expiredId) } catch (_: Exception) {}
+                    // Opportunistically clean up any expired pending Fuse markers on legacy servers
+                    val expiredMarkerIds = rawBody.mapNotNull { dto ->
+                        val marker = FuseCodeCodec.parsePendingMarker(dto.name)
+                        if (marker != null && marker.isExpired(nowMs)) dto.id else null
+                    }
+                    if (expiredMarkerIds.isNotEmpty()) {
+                        repoScope.launch {
+                            expiredMarkerIds.forEach { expiredId ->
+                                try { api.deletePlaylist(expiredId) } catch (_: Exception) {}
+                                try { playlistDao.deletePlaylist(expiredId) } catch (_: Exception) {}
+                            }
                         }
                     }
-                }
 
-                val userPlaylists = rawBody.filter {
-                    it.isSystem == 0 &&
-                        (it.isFuse != 0 || !pendingDeletedIds.contains(it.id)) &&
-                        !FuseCodeCodec.isPendingMarker(it.name)
-                }
-                val entities = userPlaylists.map { p ->
-                    val cleanName = p.name ?: "Playlist"
-                    val prevLocal = localPlaylistById[p.id]
-                    val isFuse = (p.isFuse != 0) || (p.editable == false) || (prevLocal?.isFuse == true) || FuseCodeCodec.isFusePlaylistName(cleanName)
-                    val fallbackNames = if (isFuse) FuseCodeCodec.parseFuseNamesFromTitle(cleanName) else ("" to "")
-                    val resolvedCount = when {
-                        p.songCount > 0 -> p.songCount
-                        prevLocal != null -> prevLocal.songCount
-                        else -> 0
+                    val userPlaylists = rawBody.filter {
+                        it.isSystem == 0 &&
+                            (it.isFuse != 0 || !pendingDeletedIds.contains(it.id)) &&
+                            !FuseCodeCodec.isPendingMarker(it.name)
                     }
-                    val mappedPlaylist = Playlist(
-                        id = p.id,
-                        name = cleanName,
-                        description = if (isFuse) "Fuse Blend" else "Playlist",
-                        songCount = resolvedCount,
-                        isFuse = isFuse,
-                        fuseId = p.fuseId ?: prevLocal?.fuseId,
-                        fuseMatchScore = if (p.matchScore > 0) p.matchScore else (prevLocal?.fuseMatchScore ?: 0),
-                        fuseUser1Name = p.user1Name?.takeIf { it.isNotBlank() }
-                            ?: prevLocal?.fuseUser1Name?.takeIf { it.isNotBlank() }
-                            ?: fallbackNames.first,
-                        fuseUser2Name = p.user2Name?.takeIf { it.isNotBlank() }
-                            ?: prevLocal?.fuseUser2Name?.takeIf { it.isNotBlank() }
-                            ?: fallbackNames.second
-                    )
-                    PlaylistEntity.fromPlaylist(
-                        playlist = mappedPlaylist,
-                        userId = userId,
-                        isSystem = false,
-                        lastSyncedAt = nowMs
-                    )
+                    val entities = userPlaylists.map { p ->
+                        val cleanName = p.name ?: "Playlist"
+                        val prevLocal = localPlaylistById[p.id]
+                        val isFuse = (p.isFuse != 0) || (p.editable == false) || (prevLocal?.isFuse == true) || FuseCodeCodec.isFusePlaylistName(cleanName)
+                        val fallbackNames = if (isFuse) FuseCodeCodec.parseFuseNamesFromTitle(cleanName) else ("" to "")
+                        val resolvedCount = when {
+                            p.songCount > 0 -> p.songCount
+                            prevLocal != null -> prevLocal.songCount
+                            else -> 0
+                        }
+                        val mappedPlaylist = Playlist(
+                            id = p.id,
+                            name = cleanName,
+                            description = if (isFuse) "Fuse Blend" else "Playlist",
+                            songCount = resolvedCount,
+                            isFuse = isFuse,
+                            fuseId = p.fuseId ?: prevLocal?.fuseId,
+                            fuseMatchScore = if (p.matchScore > 0) p.matchScore else (prevLocal?.fuseMatchScore ?: 0),
+                            fuseUser1Name = p.user1Name?.takeIf { it.isNotBlank() }
+                                ?: prevLocal?.fuseUser1Name?.takeIf { it.isNotBlank() }
+                                ?: fallbackNames.first,
+                            fuseUser2Name = p.user2Name?.takeIf { it.isNotBlank() }
+                                ?: prevLocal?.fuseUser2Name?.takeIf { it.isNotBlank() }
+                                ?: fallbackNames.second
+                        )
+                        PlaylistEntity.fromPlaylist(
+                            playlist = mappedPlaylist,
+                            userId = userId,
+                            isSystem = false,
+                            lastSyncedAt = nowMs
+                        )
+                    }
+                    playlistDao.insertPlaylists(entities)
+                    val mapped = entities.map { it.toPlaylist() } + pendingLocalPlaylists
+                    apiCacheManager.putUserPlaylists(userId, mapped)
+                    playlistsSnapshotMemory = userId to mapped
+                    authPreferences.setLastSyncTime("playlists")
+                    return@withContext mapped
                 }
-                playlistDao.insertPlaylists(entities)
-                val mapped = entities.map { it.toPlaylist() } + pendingLocalPlaylists
-                apiCacheManager.putUserPlaylists(userId, mapped)
-                authPreferences.setLastSyncTime("playlists")
-                return@withContext mapped
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
         val active = localPlaylists.filter { !pendingDeletedIds.contains(it.id) }
         if (active.isNotEmpty()) {
             apiCacheManager.putUserPlaylists(userId, active)
+            playlistsSnapshotMemory = userId to active
         }
         active
     }
@@ -901,7 +1209,9 @@ class MusicRepository(private val context: Context) {
         val userId = getEffectiveUserId()
         val inMemory = apiCacheManager.getUserPlaylists(userId)
         if (inMemory != null && inMemory.isNotEmpty()) {
-            return@withContext inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
+            val filtered = inMemory.filter { !FuseCodeCodec.isPendingMarker(it.name) }
+            playlistsSnapshotMemory = userId to filtered
+            return@withContext filtered
         }
         val localEntities = playlistDao.getUserPlaylists(userId)
         val mapped = localEntities
@@ -909,8 +1219,210 @@ class MusicRepository(private val context: Context) {
             .map { it.toPlaylist() }
         if (mapped.isNotEmpty()) {
             apiCacheManager.putUserPlaylists(userId, mapped)
+            playlistsSnapshotMemory = userId to mapped
         }
         mapped
+    }
+
+    // ==========================================
+    // DAILY MIXES (5 x 30 SONGS, PER USER, SAVED FOR THE DAY)
+    // ==========================================
+
+    private fun todayDateString(): String = java.time.LocalDate.now().toString()
+
+    private suspend fun hydrateDailyPlaylistsBatch(
+        list: List<DailyPlaylist>,
+        likedIds: Set<Int>
+    ): List<DailyPlaylist> {
+        val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+        val downloadedById = try {
+            songDao.getDownloadedSongsList().associateBy { it.songId }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        return list.map { dp ->
+            val hydrated = attachLocalPathsBatch(
+                songs = dp.songs.map { it.copy(isLiked = likedIds.contains(it.id)) },
+                fullyCachedIds = fullyCachedIds,
+                downloadedById = downloadedById
+            )
+            dp.copy(
+                songs = hydrated,
+                songCount = hydrated.size,
+                previewCovers = hydrated.mapNotNull { it.coverUrl.takeIf(String::isNotBlank) }.distinct().take(4)
+            )
+        }
+    }
+
+    suspend fun getCachedDailyPlaylists(): List<DailyPlaylist> = withContext(Dispatchers.IO) {
+        val userId = getEffectiveUserId()
+        val today = todayDateString()
+        val mem = dailyPlaylistsSnapshotMemory
+        if (mem != null && mem.first == userId && mem.second == today && mem.third.isNotEmpty()) {
+            return@withContext mem.third
+        }
+        val likedIds = authPreferences.getLikedSongIds()
+        val snapshot = authPreferences.getDailyPlaylistsSnapshot(userId, expectedDate = today)
+            ?: return@withContext emptyList()
+        val hydrated = hydrateDailyPlaylistsBatch(snapshot.playlists, likedIds)
+        if (hydrated.isNotEmpty()) {
+            dailyPlaylistsSnapshotMemory = Triple(userId, today, hydrated)
+        }
+        hydrated
+    }
+
+    suspend fun getDailyPlaylists(forceRefresh: Boolean = false): List<DailyPlaylist> = withContext(Dispatchers.IO) {
+        dailyPlaylistsMutex.withLock {
+            val userId = getEffectiveUserId()
+            val today = todayDateString()
+            val likedIds = authPreferences.getLikedSongIds()
+
+            // Always load today's snapshot (automatically deletes any older day's playlists)
+            val existingToday = authPreferences.getDailyPlaylistsSnapshot(userId, expectedDate = today)
+            if (!forceRefresh && existingToday != null && existingToday.playlists.size == 5 && existingToday.playlists.all { it.songs.isNotEmpty() }) {
+                val hydrated = hydrateDailyPlaylistsBatch(existingToday.playlists, likedIds)
+                dailyPlaylistsSnapshotMemory = Triple(userId, today, hydrated)
+                return@withLock hydrated
+            }
+
+            // Try authoritative backend endpoint (saves today's 5x30 playlists per user & deletes previous days)
+            if (!shouldSkipUnreachableServer(forceRefresh) && com.example.util.NetworkMonitor.isOnline(context)) {
+                try {
+                    val resp = api.getDailyPlaylists(userId = userId, date = today)
+                    handleRetrofitReachability(resp)
+                    if (resp.code() == 304 && existingToday != null && existingToday.playlists.isNotEmpty()) {
+                        val hydrated = hydrateDailyPlaylistsBatch(existingToday.playlists, likedIds)
+                        dailyPlaylistsSnapshotMemory = Triple(userId, today, hydrated)
+                        return@withLock hydrated
+                    } else if (resp.isSuccessful && !resp.body().isNullOrEmpty()) {
+                        val dtos = resp.body()!!
+                        val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+                        val downloadedById = try {
+                            songDao.getDownloadedSongsList().associateBy { it.songId }
+                        } catch (_: Exception) {
+                            emptyMap()
+                        }
+                        val mapped = dtos.mapIndexed { index, dto ->
+                            val slot = dto.slotIndex.coerceIn(1, 5).let { if (it in 1..5) it else (index + 1) }
+                            val mappedSongs = dto.songs.orEmpty().map { sDto -> mapDtoToSong(sDto, likedIds) }
+                            val hydratedSongs = attachLocalPathsBatch(mappedSongs, fullyCachedIds, downloadedById)
+                            val covers = dto.previewCovers
+                                ?.map { sanitizeUrl(it) }
+                                ?.filter { it.isNotBlank() }
+                                ?.takeIf { it.isNotEmpty() }
+                                ?: hydratedSongs.mapNotNull { it.coverUrl.takeIf(String::isNotBlank) }.distinct().take(4)
+
+                            DailyPlaylist(
+                                id = Playlist.dailyPlaylistIdForSlot(slot),
+                                serverId = dto.id,
+                                slotIndex = slot,
+                                date = dto.date.ifBlank { today },
+                                name = dto.name?.takeIf { it.isNotBlank() } ?: "Daily Mix $slot",
+                                subtitle = dto.subtitle?.takeIf { it.isNotBlank() } ?: "30 tracks • Refreshes daily",
+                                accentColorHex = dto.accentColor?.takeIf { it.isNotBlank() } ?: "#00E599",
+                                previewCovers = covers,
+                                songCount = if (dto.songCount > 0) dto.songCount else hydratedSongs.size,
+                                songs = hydratedSongs
+                            )
+                        }
+                        if (mapped.any { it.songs.isNotEmpty() }) {
+                            val allSongs = mapped.flatMap { it.songs }.distinctBy { it.id }
+                            if (allSongs.isNotEmpty()) {
+                                songDao.insertCachedSongs(allSongs.map { SongEntity.fromSong(it, likedIds.contains(it.id)) })
+                            }
+                            authPreferences.saveDailyPlaylistsSnapshot(userId, today, "server", mapped)
+                            dailyPlaylistsSnapshotMemory = Triple(userId, today, mapped)
+                            return@withLock mapped
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                    if (e is java.io.IOException) reportRetrofitIoFailure(e)
+                }
+            }
+
+            // If we already saved today's 5 playlists locally, keep them fixed for the entire day (never re-randomize mid-day)
+            if (existingToday != null && existingToday.playlists.size == 5 && existingToday.playlists.all { it.songs.isNotEmpty() }) {
+                val hydrated = hydrateDailyPlaylistsBatch(existingToday.playlists, likedIds)
+                dailyPlaylistsSnapshotMemory = Triple(userId, today, hydrated)
+                return@withLock hydrated
+            }
+
+            // Local fallback generation if offline or backend endpoint is unavailable
+            val catalog = getCachedSongs().ifEmpty { getSongs(forceRefresh = false) }
+            if (catalog.isEmpty()) return@withLock emptyList()
+
+            val themes = listOf(
+                "Neon Drift" to "#00E599",
+                "Midnight Echo" to "#00D2FF",
+                "Velvet Horizon" to "#8B5CF6",
+                "Solar Pulse" to "#F59E0B",
+                "Emerald Tide" to "#10B981",
+                "Aurora Haze" to "#EC4899",
+                "Prism Wave" to "#06B6D4",
+                "Crimson Static" to "#FF5277"
+            )
+            val rng = java.security.SecureRandom()
+            val pickedThemes = themes.shuffled(java.util.Random(rng.nextLong())).take(5)
+            val targetSize = minOf(30, catalog.size)
+            val usageCount = mutableMapOf<Int, Int>().apply { catalog.forEach { put(it.id, 0) } }
+
+            val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+            val downloadedById = try {
+                songDao.getDownloadedSongsList().associateBy { it.songId }
+            } catch (_: Exception) {
+                emptyMap()
+            }
+
+            val generated = pickedThemes.mapIndexed { idx, (name, accent) ->
+                val slot = idx + 1
+                val chosen = selectDailyMixSongs(
+                    catalog = catalog,
+                    usageCount = usageCount,
+                    targetSize = targetSize,
+                    random = rng
+                )
+                chosen.forEach { usageCount[it.id] = (usageCount[it.id] ?: 0) + 1 }
+
+                val artists = chosen.map { it.primaryArtistName }
+                    .filter { it.isNotBlank() && !it.equals("Unknown Artist", ignoreCase = true) }
+                    .distinct()
+                    .take(2)
+                val subtitle = when (artists.size) {
+                    2 -> "Feat. ${artists[0]}, ${artists[1]} & more"
+                    1 -> "Feat. ${artists[0]} & more"
+                    else -> "Fresh ${chosen.size}-track daily mix"
+                }
+                val hydrated = attachLocalPathsBatch(
+                    songs = chosen.map { it.copy(isLiked = likedIds.contains(it.id)) },
+                    fullyCachedIds = fullyCachedIds,
+                    downloadedById = downloadedById
+                )
+                DailyPlaylist(
+                    id = Playlist.dailyPlaylistIdForSlot(slot),
+                    serverId = 0,
+                    slotIndex = slot,
+                    date = today,
+                    name = name,
+                    subtitle = subtitle,
+                    accentColorHex = accent,
+                    previewCovers = hydrated.mapNotNull { it.coverUrl.takeIf(String::isNotBlank) }.distinct().take(4),
+                    songCount = hydrated.size,
+                    songs = hydrated
+                )
+            }
+
+            authPreferences.saveDailyPlaylistsSnapshot(userId, today, "local", generated)
+            dailyPlaylistsSnapshotMemory = Triple(userId, today, generated)
+            generated
+        }
+    }
+
+    suspend fun getDailyPlaylistMeta(playlistId: Int): DailyPlaylist? = withContext(Dispatchers.IO) {
+        if (!Playlist.isDailyPlaylistId(playlistId)) return@withContext null
+        val cached = getCachedDailyPlaylists().find { it.id == playlistId }
+        if (cached != null) return@withContext cached
+        getDailyPlaylists(forceRefresh = false).find { it.id == playlistId }
     }
 
     suspend fun createPlaylist(name: String): Playlist = withContext(Dispatchers.IO) {
@@ -918,6 +1430,7 @@ class MusicRepository(private val context: Context) {
         val tempId = -((System.currentTimeMillis() % 900000 + 100000).toInt())
         val trimmedName = name.trim().ifBlank { "New Playlist" }
         apiCacheManager.invalidateUserPlaylists(userId)
+        playlistsSnapshotMemory = null
 
         val localPl = Playlist(
             id = tempId,
@@ -979,6 +1492,7 @@ class MusicRepository(private val context: Context) {
         }
         val userId = getEffectiveUserId()
         apiCacheManager.invalidateUserPlaylists(userId)
+        playlistsSnapshotMemory = null
         playlistDao.updatePlaylistName(playlistId, newName.trim())
         val isOnline = com.example.util.NetworkMonitor.isOnline(context)
         if (isOnline) {
@@ -1017,6 +1531,7 @@ class MusicRepository(private val context: Context) {
         }
         val userId = getEffectiveUserId()
         apiCacheManager.invalidateUserPlaylists(userId)
+        playlistsSnapshotMemory = null
         apiCacheManager.invalidatePlaylistSongs(playlistId)
         playlistDao.deletePlaylist(playlistId)
 
@@ -1051,6 +1566,15 @@ class MusicRepository(private val context: Context) {
         val likedIds = authPreferences.getLikedSongIds()
         val userId = getEffectiveUserId()
 
+        if (Playlist.isDailyPlaylistId(playlistId)) {
+            val dailyList = getDailyPlaylists(forceRefresh = forceRefresh)
+            val match = dailyList.find { it.id == playlistId }
+            if (match != null && match.songs.isNotEmpty()) {
+                return@withContext attachLocalPaths(match.songs.map { it.copy(isLiked = likedIds.contains(it.id)) })
+            }
+            return@withContext emptyList()
+        }
+
         if (playlistId == Playlist.ID_DOWNLOADED || playlistId == -2) {
             return@withContext getDownloadedSongs()
         }
@@ -1061,25 +1585,31 @@ class MusicRepository(private val context: Context) {
 
         if (playlistId == Playlist.ID_LIKED || playlistId == -1) {
             val localLiked = songDao.getLikedSongs().map { it.toSong() }
-            val actualLikedId = getOrFetchLikedPlaylistId(userId)
-            if (actualLikedId != null) {
-                try {
-                    val response = api.getPlaylistSongs(actualLikedId)
-                    if (response.isSuccessful && response.body() != null) {
-                        val songs = response.body()!!.map { dto ->
-                            mapDtoToSong(dto, setOf(dto.id)).copy(isLiked = true)
+            if (!shouldSkipUnreachableServer(forceRefresh)) {
+                val actualLikedId = getOrFetchLikedPlaylistId(userId)
+                if (actualLikedId != null) {
+                    try {
+                        val response = api.getPlaylistSongs(actualLikedId)
+                        handleRetrofitReachability(response)
+                        if (response.isSuccessful && response.body() != null) {
+                            val songs = response.body()!!.map { dto ->
+                                mapDtoToSong(dto, setOf(dto.id)).copy(isLiked = true)
+                            }
+                            songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it, isLiked = true) })
+                            return@withContext attachLocalPaths(songs)
                         }
-                        songDao.insertCachedSongs(songs.map { SongEntity.fromSong(it, isLiked = true) })
-                        return@withContext attachLocalPaths(songs)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                        if (e is java.io.IOException) reportRetrofitIoFailure(e)
                     }
-                } catch (_: Exception) {}
+                }
             }
             return@withContext attachLocalPaths(localLiked)
         }
 
         val knownFuse = isFusePlaylist(playlistId)
         if (knownFuse) {
-            if (!forceRefresh) {
+            if (!forceRefresh || shouldSkipUnreachableServer(forceRefresh)) {
                 val inMemory = apiCacheManager.getPlaylistSongs(playlistId)
                 if (inMemory != null && inMemory.isNotEmpty()) {
                     val contribMap = fuseContributorsCache[playlistId].orEmpty()
@@ -1093,7 +1623,7 @@ class MusicRepository(private val context: Context) {
                     }
                 }
             }
-            val bundle = getFusePlaylistBundle(playlistId, forceRefresh = true)
+            val bundle = getFusePlaylistBundle(playlistId, forceRefresh = !shouldSkipUnreachableServer(forceRefresh))
             if (bundle != null && bundle.songs.isNotEmpty()) {
                 return@withContext bundle.songs
             }
@@ -1116,31 +1646,37 @@ class MusicRepository(private val context: Context) {
             it.toSong().copy(isLiked = likedIds.contains(it.id))
         }
 
-        try {
-            val response = api.getPlaylistSongs(playlistId)
-            if (response.isSuccessful && response.body() != null) {
-                val dtos = response.body()!!
-                val detectedFuse = knownFuse || dtos.any { !it.fuseContributor.isNullOrBlank() }
-                val remoteSongs = dtos.map { dto ->
-                    mapDtoToSong(dto, likedIds)
-                }
-                if (detectedFuse) {
-                    val contribMap = remoteSongs.mapNotNull { s ->
-                        s.fuseContributor?.let { s.id to it }
-                    }.toMap()
-                    if (contribMap.isNotEmpty()) {
-                        fuseContributorsCache[playlistId] = contribMap
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val response = api.getPlaylistSongs(playlistId)
+                handleRetrofitReachability(response)
+                if (response.isSuccessful && response.body() != null) {
+                    val dtos = response.body()!!
+                    val detectedFuse = knownFuse || dtos.any { !it.fuseContributor.isNullOrBlank() }
+                    val remoteSongs = dtos.map { dto ->
+                        mapDtoToSong(dto, likedIds)
                     }
-                    val streamOnlySongs = remoteSongs.map { it.copy(localPath = null, isDownloaded = false) }
-                    apiCacheManager.putPlaylistSongs(playlistId, streamOnlySongs)
-                    playlistDao.setPlaylistSongs(playlistId, streamOnlySongs.map { SongEntity.fromSong(it) })
-                    return@withContext streamOnlySongs
+                    if (detectedFuse) {
+                        val contribMap = remoteSongs.mapNotNull { s ->
+                            s.fuseContributor?.let { s.id to it }
+                        }.toMap()
+                        if (contribMap.isNotEmpty()) {
+                            fuseContributorsCache[playlistId] = contribMap
+                        }
+                        val streamOnlySongs = remoteSongs.map { it.copy(localPath = null, isDownloaded = false) }
+                        apiCacheManager.putPlaylistSongs(playlistId, streamOnlySongs)
+                        playlistDao.setPlaylistSongs(playlistId, streamOnlySongs.map { SongEntity.fromSong(it) })
+                        return@withContext streamOnlySongs
+                    }
+                    apiCacheManager.putPlaylistSongs(playlistId, remoteSongs)
+                    playlistDao.setPlaylistSongs(playlistId, remoteSongs.map { SongEntity.fromSong(it) })
+                    return@withContext attachLocalPaths(remoteSongs)
                 }
-                apiCacheManager.putPlaylistSongs(playlistId, remoteSongs)
-                playlistDao.setPlaylistSongs(playlistId, remoteSongs.map { SongEntity.fromSong(it) })
-                return@withContext attachLocalPaths(remoteSongs)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
         if (knownFuse) {
             val contribMap = fuseContributorsCache[playlistId].orEmpty()
@@ -1165,6 +1701,13 @@ class MusicRepository(private val context: Context) {
 
     suspend fun getCachedPlaylistSongs(playlistId: Int): List<Song> = withContext(Dispatchers.IO) {
         val likedIds = authPreferences.getLikedSongIds()
+        if (Playlist.isDailyPlaylistId(playlistId)) {
+            val dailyMatch = getCachedDailyPlaylists().find { it.id == playlistId }
+            if (dailyMatch != null) {
+                return@withContext attachLocalPaths(dailyMatch.songs.map { it.copy(isLiked = likedIds.contains(it.id)) })
+            }
+            return@withContext emptyList()
+        }
         if (playlistId == Playlist.ID_DOWNLOADED || playlistId == -2) {
             return@withContext getDownloadedSongs()
         }
@@ -1242,10 +1785,11 @@ class MusicRepository(private val context: Context) {
         }
 
         // Filter ONLY songs that are completely downloaded or 100% fully cached in memory
+        val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
         val offlineReady = knownSongs.values.filter { song ->
             val hasLocalFile = (song.localPath != null && File(song.localPath).exists() && File(song.localPath).length() > 0)
             val isDownloaded = downloadedIds.contains(song.id)
-            val isFullyCached = com.example.audio.AudioCache.isSongFullyCached(context, song)
+            val isFullyCached = cachedMemoryIds.contains(song.id) || fullyCachedIds.contains(song.id)
             hasLocalFile || isDownloaded || isFullyCached
         }.distinctBy { it.id }.toMutableList()
 
@@ -1260,7 +1804,8 @@ class MusicRepository(private val context: Context) {
                 isCached = true
             )
         }
-        attachLocalPaths(enriched)
+        val downloadedById = downloadedList.associateBy { it.songId }
+        attachLocalPathsBatch(enriched, fullyCachedIds, downloadedById)
     }
 
     private suspend fun ensureSongCachedInDb(songId: Int) {
@@ -1386,6 +1931,18 @@ class MusicRepository(private val context: Context) {
             songDao.updateSongLiked(song.id, newStatus)
         }
         apiCacheManager.updateSongLike(song.id, newStatus)
+        homeSongsSnapshotMemory = homeSongsSnapshotMemory.map {
+            if (it.id == song.id) it.copy(isLiked = newStatus) else it
+        }
+        dailyPlaylistsSnapshotMemory = dailyPlaylistsSnapshotMemory?.let { (uid, date, list) ->
+            Triple(
+                uid,
+                date,
+                list.map { dp ->
+                    dp.copy(songs = dp.songs.map { if (it.id == song.id) it.copy(isLiked = newStatus) else it })
+                }
+            )
+        }
         apiCacheManager.invalidatePlaylistSongs(Playlist.ID_LIKED)
 
         val isOnline = com.example.util.NetworkMonitor.isOnline(context)
@@ -1452,6 +2009,12 @@ class MusicRepository(private val context: Context) {
     suspend fun clearUserData() = withContext(Dispatchers.IO) {
         runCatching { syncHistoryIfDue(force = true) }
         apiCacheManager.clearAll()
+        homeSongsSnapshotMemory = emptyList()
+        playlistsSnapshotMemory = null
+        dailyPlaylistsSnapshotMemory = null
+        artistsSnapshotMemory = emptyList()
+        lastHomeRefreshAtMs = 0L
+        lastSearchRefreshAtMs = 0L
         userDao.clearUser()
         authPreferences.clear()
     }
@@ -1607,18 +2170,18 @@ class MusicRepository(private val context: Context) {
         successCount
     }
 
-    private suspend fun attachLocalPaths(songs: List<Song>): List<Song> {
-        val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
-        val downloadedById = try {
-            songDao.getDownloadedSongsList().associateBy { it.songId }
-        } catch (_: Exception) {
-            emptyMap()
-        }
+    private fun attachLocalPathsBatch(
+        songs: List<Song>,
+        fullyCachedIds: Set<Int>,
+        downloadedById: Map<Int, com.example.data.local.DownloadedSongEntity>
+    ): List<Song> {
+        if (songs.isEmpty()) return songs
+        com.example.audio.AudioCache.markDownloadedAll(downloadedById.keys)
         return songs.map { song ->
             val dlEntity = downloadedById[song.id]
-            val local = dlEntity?.localPath ?: downloadManager.getLocalPath(song.id)
-            val isDownloaded = local != null && File(local).exists() && File(local).length() > 0
-            val isCached = isDownloaded || fullyCachedIds.contains(song.id) || com.example.audio.AudioCache.isSongFullyCached(context, song)
+            val local = dlEntity?.localPath
+            val isDownloaded = local != null && File(local).exists() && File(local).length() > 0L
+            val isCached = isDownloaded || fullyCachedIds.contains(song.id)
             val mergedColorHex = song.dominantColorHex?.takeIf { it.isNotBlank() }
                 ?: dlEntity?.dominantColorHex?.takeIf { it.isNotBlank() }
             if (isDownloaded) {
@@ -1636,6 +2199,17 @@ class MusicRepository(private val context: Context) {
                 )
             }
         }
+    }
+
+    private suspend fun attachLocalPaths(songs: List<Song>): List<Song> {
+        if (songs.isEmpty()) return songs
+        val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+        val downloadedById = try {
+            songDao.getDownloadedSongsList().associateBy { it.songId }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        return attachLocalPathsBatch(songs, fullyCachedIds, downloadedById)
     }
 
     private fun parseErrorMessage(errorBody: String?): String? {
@@ -1722,7 +2296,7 @@ class MusicRepository(private val context: Context) {
 
         try {
             val resp = api.getNearbyPins(lat, lng)
-            markServerReachable()
+            handleRetrofitReachability(resp)
             if (resp.isSuccessful && resp.body() != null) {
                 lastPinSyncOffline = false
                 val likedIds = authPreferences.getLikedSongIds()
@@ -1784,7 +2358,7 @@ class MusicRepository(private val context: Context) {
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
-            if (e is java.io.IOException) markServerUnreachable()
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
             lastPinSyncOffline = true
             android.util.Log.w("MusicRepository", "Nearby pins unavailable (${authPreferences.getServerBaseUrl()}): ${e.message}")
         }
@@ -1813,7 +2387,7 @@ class MusicRepository(private val context: Context) {
                 val body = MultipartBody.Part.createFormData("image", imageFile.name, reqFile)
 
                 val resp = api.createPin(userIdBody, songIdBody, latBody, lngBody, body)
-                markServerReachable()
+                handleRetrofitReachability(resp)
                 if (resp.isSuccessful && resp.body() != null) {
                     lastPinSyncOffline = false
                     val dto = resp.body()!!
@@ -1834,7 +2408,7 @@ class MusicRepository(private val context: Context) {
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
-                if (e is java.io.IOException) markServerUnreachable()
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
                 lastPinSyncOffline = true
                 android.util.Log.w("MusicRepository", "Server unreachable while creating pin; saving locally: ${e.message}")
             }
@@ -1933,12 +2507,12 @@ class MusicRepository(private val context: Context) {
             }
         }
 
-        if (playlistId > 0 && com.example.util.NetworkMonitor.isOnline(context)) {
+        if (playlistId > 0 && !shouldSkipUnreachableServer(forceRefresh)) {
             try {
                 val resp = api.getFusePlaylist(playlistId)
+                handleRetrofitReachability(resp)
                 if (resp.isSuccessful && resp.body() != null) {
                     val body = resp.body()!!
-                    markServerReachable()
                     val cleanName = body.name?.takeIf { it.isNotBlank() } ?: "Fuse Blend"
                     val fallbackNames = FuseCodeCodec.parseFuseNamesFromTitle(cleanName)
                     val songs = body.songs.orEmpty().map { dto ->
@@ -1973,7 +2547,10 @@ class MusicRepository(private val context: Context) {
 
                     return@withContext FusePlaylistBundle(playlist = playlist, songs = songs)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
+            }
         }
 
         val localPl = playlistDao.getPlaylistById(playlistId)?.toPlaylist() ?: return@withContext null
@@ -2010,8 +2587,8 @@ class MusicRepository(private val context: Context) {
         if (com.example.util.NetworkMonitor.isOnline(context)) {
             try {
                 val serverResp = api.createFuseInvite(userId = hostUserId, username = hostName)
+                handleRetrofitReachability(serverResp)
                 if (serverResp.isSuccessful && serverResp.body() != null && serverResp.body()!!.code.isNotBlank()) {
-                    markServerReachable()
                     val body = serverResp.body()!!
                     val serverDurationMs = (body.expiresAtMs - body.createdAtMs)
                         .takeIf { it in 1_000L..(10L * 60L * 1000L) }
@@ -2295,8 +2872,8 @@ class MusicRepository(private val context: Context) {
                     userId = joinerUserId,
                     username = joinerName
                 )
+                handleRetrofitReachability(joinResp)
                 if (joinResp.isSuccessful && joinResp.body() != null) {
-                    markServerReachable()
                     val body = joinResp.body()!!
                     val plId = body.playlistId
                     val cleanName = body.name?.takeIf { it.isNotBlank() }
@@ -2664,21 +3241,35 @@ class MusicRepository(private val context: Context) {
         return Triple(bytes, displayName, mime)
     }
 
-    suspend fun getArtists(
+    suspend fun getCachedArtists(
         query: String = "",
         unclaimedOnly: Boolean = false
     ): List<ArtistProfile> = withContext(Dispatchers.IO) {
-        try {
-            val resp = api.getArtists(query = query.trim(), unclaimedOnly = unclaimedOnly, limit = 200)
-            if (resp.isSuccessful && resp.body() != null) {
-                markServerReachable()
-                return@withContext resp.body()!!.map { mapDtoToArtist(it) }
+        val cleanQ = query.trim().lowercase()
+        val memArtists = artistsSnapshotMemory
+        if (memArtists.isNotEmpty()) {
+            return@withContext if (cleanQ.isEmpty() && !unclaimedOnly) {
+                memArtists
+            } else {
+                memArtists.filter { artist ->
+                    (cleanQ.isEmpty() || artist.name.lowercase().contains(cleanQ)) &&
+                        (!unclaimedOnly || artist.claimedByUserId == null)
+                }
             }
-        } catch (_: Exception) {
-            markServerUnreachable()
+        }
+        val persisted = authPreferences.getCachedArtists()
+        if (persisted.isNotEmpty()) {
+            artistsSnapshotMemory = persisted
+            return@withContext if (cleanQ.isEmpty() && !unclaimedOnly) {
+                persisted
+            } else {
+                persisted.filter { artist ->
+                    (cleanQ.isEmpty() || artist.name.lowercase().contains(cleanQ)) &&
+                        (!unclaimedOnly || artist.claimedByUserId == null)
+                }
+            }
         }
 
-        // Offline fallback synthesized from cached songs' structured credits
         val cachedSongs = getCachedSongs()
         val byId = LinkedHashMap<Int, MutableList<Song>>()
         val creditMeta = LinkedHashMap<Int, SongArtistCredit>()
@@ -2688,20 +3279,56 @@ class MusicRepository(private val context: Context) {
                 byId.getOrPut(c.id) { mutableListOf() }.add(song)
             }
         }
-        val cleanQ = query.trim().lowercase()
-        creditMeta.values
-            .filter { cleanQ.isEmpty() || it.name.lowercase().contains(cleanQ) }
-            .map { c ->
-                val songsForArtist = byId[c.id].orEmpty()
-                ArtistProfile(
-                    id = c.id,
-                    name = c.name,
-                    avatarUrl = c.avatarUrl.ifBlank { songsForArtist.firstOrNull()?.coverUrl.orEmpty() },
-                    bannerUrl = songsForArtist.firstOrNull()?.coverUrl.orEmpty(),
-                    isVerified = c.isVerified,
-                    songCount = songsForArtist.size
-                )
+        val synthesizedAll = creditMeta.values.map { c ->
+            val songsForArtist = byId[c.id].orEmpty()
+            ArtistProfile(
+                id = c.id,
+                name = c.name,
+                avatarUrl = c.avatarUrl.ifBlank { songsForArtist.firstOrNull()?.coverUrl.orEmpty() },
+                bannerUrl = songsForArtist.firstOrNull()?.coverUrl.orEmpty(),
+                isVerified = c.isVerified,
+                songCount = songsForArtist.size
+            )
+        }
+        if (synthesizedAll.isNotEmpty()) {
+            artistsSnapshotMemory = synthesizedAll
+        }
+        if (cleanQ.isEmpty()) synthesizedAll
+        else synthesizedAll.filter { it.name.lowercase().contains(cleanQ) }
+    }
+
+    suspend fun getArtists(
+        query: String = "",
+        unclaimedOnly: Boolean = false,
+        forceRefresh: Boolean = false
+    ): List<ArtistProfile> = withContext(Dispatchers.IO) {
+        val cleanQuery = query.trim()
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && cleanQuery.isEmpty() && !unclaimedOnly &&
+            artistsSnapshotMemory.isNotEmpty() && (now - lastArtistsRefreshAtMs) < 5 * 60_000L
+        ) {
+            return@withContext artistsSnapshotMemory
+        }
+        if (!shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val resp = api.getArtists(query = cleanQuery, unclaimedOnly = unclaimedOnly, limit = 200)
+                handleRetrofitReachability(resp)
+                if (resp.isSuccessful && resp.body() != null) {
+                    val mapped = resp.body()!!.map { mapDtoToArtist(it) }
+                    if (cleanQuery.isEmpty() && !unclaimedOnly) {
+                        artistsSnapshotMemory = mapped
+                        lastArtistsRefreshAtMs = System.currentTimeMillis()
+                        authPreferences.saveCachedArtists(mapped)
+                    }
+                    return@withContext mapped
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
+        }
+
+        getCachedArtists(query = cleanQuery, unclaimedOnly = unclaimedOnly)
     }
 
     suspend fun resolveArtistId(
@@ -2715,7 +3342,13 @@ class MusicRepository(private val context: Context) {
         // Check numeric ID string if caller passed e.g. Sound Capsule artistId
         cleanName.toIntOrNull()?.takeIf { it > 0 }?.let { return@withContext it }
 
-        // Check local cached songs first for instant match
+        // Check persisted artists directory & cached songs first for instant match
+        val directoryMatch = authPreferences.getCachedArtists()
+            .firstOrNull { it.name.equals(cleanName, ignoreCase = true) }
+        if (directoryMatch != null && directoryMatch.id > 0) {
+            return@withContext directoryMatch.id
+        }
+
         val cachedMatch = getCachedSongs()
             .asSequence()
             .flatMap { it.artists.asSequence() }
@@ -2724,50 +3357,46 @@ class MusicRepository(private val context: Context) {
             return@withContext cachedMatch.id
         }
 
-        try {
-            val resp = api.getArtistByName(cleanName)
-            if (resp.isSuccessful && resp.body() != null && resp.body()!!.id > 0) {
-                markServerReachable()
-                return@withContext resp.body()!!.id
+        if (!shouldSkipUnreachableServer(forceNetwork = false)) {
+            try {
+                val resp = api.getArtistByName(cleanName)
+                handleRetrofitReachability(resp)
+                if (resp.isSuccessful && resp.body() != null && resp.body()!!.id > 0) {
+                    return@withContext resp.body()!!.id
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
             }
-        } catch (_: Exception) {}
+        }
 
-        // Try prefix match via search
+        // Try prefix match via search (offline-safe)
         val searched = getArtists(query = cleanName.substringBefore(",").trim())
         searched.firstOrNull { it.name.equals(cleanName.substringBefore(",").trim(), ignoreCase = true) }?.id
             ?: searched.firstOrNull()?.id
     }
 
-    suspend fun getArtistDetail(
+    suspend fun getCachedArtistDetail(
         artistId: Int,
         fallbackName: String = ""
-    ): Result<ArtistDetailBundle> = withContext(Dispatchers.IO) {
+    ): ArtistDetailBundle? = withContext(Dispatchers.IO) {
         val likedIds = authPreferences.getLikedSongIds()
-        try {
-            val resp = api.getArtistDetail(artistId)
-            if (resp.isSuccessful && resp.body()?.artist != null) {
-                markServerReachable()
-                val body = resp.body()!!
-                val artist = mapDtoToArtist(body.artist!!)
-                val popular = attachLocalPaths(body.popularSongs.orEmpty().map { mapDtoToSong(it, likedIds) })
-                val primary = attachLocalPaths(body.primarySongs.orEmpty().map { mapDtoToSong(it, likedIds) })
-                val featured = attachLocalPaths(body.featuredSongs.orEmpty().map { mapDtoToSong(it, likedIds) })
-                val all = attachLocalPaths(body.allSongs.orEmpty().map { mapDtoToSong(it, likedIds) })
-                return@withContext Result.success(
-                    ArtistDetailBundle(
-                        artist = artist,
-                        popularSongs = popular,
-                        primarySongs = primary,
-                        featuredSongs = featured,
-                        allSongs = all
-                    )
-                )
+        val persisted = if (artistId > 0) authPreferences.getCachedArtistDetail(artistId) else null
+        if (persisted != null) {
+            val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+            val downloadedById = try {
+                songDao.getDownloadedSongsList().associateBy { it.songId }
+            } catch (_: Exception) {
+                emptyMap()
             }
-        } catch (_: Exception) {
-            markServerUnreachable()
+            return@withContext persisted.copy(
+                popularSongs = attachLocalPathsBatch(persisted.popularSongs.map { it.copy(isLiked = likedIds.contains(it.id)) }, fullyCachedIds, downloadedById),
+                primarySongs = attachLocalPathsBatch(persisted.primarySongs.map { it.copy(isLiked = likedIds.contains(it.id)) }, fullyCachedIds, downloadedById),
+                featuredSongs = attachLocalPathsBatch(persisted.featuredSongs.map { it.copy(isLiked = likedIds.contains(it.id)) }, fullyCachedIds, downloadedById),
+                allSongs = attachLocalPathsBatch(persisted.allSongs.map { it.copy(isLiked = likedIds.contains(it.id)) }, fullyCachedIds, downloadedById)
+            )
         }
 
-        // Offline fallback from cached songs
         val cached = getCachedSongs()
         val primary = cached.filter { s ->
             s.primaryArtistId == artistId ||
@@ -2778,9 +3407,13 @@ class MusicRepository(private val context: Context) {
             s.artists.any { it.id == artistId && !it.role.equals("primary", ignoreCase = true) }
         }
         val all = (primary + featured).distinctBy { it.id }
-        if (all.isNotEmpty() || fallbackName.isNotBlank()) {
+        val directoryMeta = authPreferences.getCachedArtists().firstOrNull {
+            (artistId > 0 && it.id == artistId) ||
+                (fallbackName.isNotBlank() && it.name.equals(fallbackName, ignoreCase = true))
+        }
+        if (all.isNotEmpty() || directoryMeta != null || fallbackName.isNotBlank()) {
             val credit = all.asSequence().flatMap { it.artists.asSequence() }.firstOrNull { it.id == artistId }
-            val profile = ArtistProfile(
+            val profile = directoryMeta ?: ArtistProfile(
                 id = artistId,
                 name = credit?.name ?: fallbackName.ifBlank { "Artist" },
                 avatarUrl = credit?.avatarUrl?.ifBlank { all.firstOrNull()?.coverUrl.orEmpty() }
@@ -2789,15 +3422,60 @@ class MusicRepository(private val context: Context) {
                 isVerified = credit?.isVerified ?: false,
                 songCount = all.size
             )
-            return@withContext Result.success(
-                ArtistDetailBundle(
-                    artist = profile,
-                    popularSongs = all.take(5),
-                    primarySongs = primary,
-                    featuredSongs = featured,
-                    allSongs = all
-                )
+            return@withContext ArtistDetailBundle(
+                artist = profile,
+                popularSongs = all.take(5),
+                primarySongs = primary,
+                featuredSongs = featured,
+                allSongs = all
             )
+        }
+        null
+    }
+
+    suspend fun getArtistDetail(
+        artistId: Int,
+        fallbackName: String = "",
+        forceRefresh: Boolean = false
+    ): Result<ArtistDetailBundle> = withContext(Dispatchers.IO) {
+        val likedIds = authPreferences.getLikedSongIds()
+        if (artistId > 0 && !shouldSkipUnreachableServer(forceRefresh)) {
+            try {
+                val resp = api.getArtistDetail(artistId)
+                handleRetrofitReachability(resp)
+                if (resp.isSuccessful && resp.body()?.artist != null) {
+                    val body = resp.body()!!
+                    val artist = mapDtoToArtist(body.artist!!)
+                    val fullyCachedIds = com.example.audio.AudioCache.getFullyCachedSongIds(context)
+                    val downloadedById = try {
+                        songDao.getDownloadedSongsList().associateBy { it.songId }
+                    } catch (_: Exception) {
+                        emptyMap()
+                    }
+                    val popular = attachLocalPathsBatch(body.popularSongs.orEmpty().map { mapDtoToSong(it, likedIds) }, fullyCachedIds, downloadedById)
+                    val primary = attachLocalPathsBatch(body.primarySongs.orEmpty().map { mapDtoToSong(it, likedIds) }, fullyCachedIds, downloadedById)
+                    val featured = attachLocalPathsBatch(body.featuredSongs.orEmpty().map { mapDtoToSong(it, likedIds) }, fullyCachedIds, downloadedById)
+                    val all = attachLocalPathsBatch(body.allSongs.orEmpty().map { mapDtoToSong(it, likedIds) }, fullyCachedIds, downloadedById)
+                    val bundle = ArtistDetailBundle(
+                        artist = artist,
+                        popularSongs = popular,
+                        primarySongs = primary,
+                        featuredSongs = featured,
+                        allSongs = all
+                    )
+                    authPreferences.saveCachedArtistDetail(bundle)
+                    return@withContext Result.success(bundle)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) reportRetrofitIoFailure(e)
+            }
+        }
+
+        // Offline / cached fallback
+        val cachedBundle = getCachedArtistDetail(artistId, fallbackName)
+        if (cachedBundle != null) {
+            return@withContext Result.success(cachedBundle)
         }
 
         Result.failure(Exception("Unable to load artist profile right now."))
@@ -2806,10 +3484,13 @@ class MusicRepository(private val context: Context) {
     suspend fun getUserArtistStatus(
         userId: Int = getEffectiveUserId()
     ): Result<UserArtistStatus> = withContext(Dispatchers.IO) {
+        if (shouldSkipUnreachableServer(forceNetwork = false)) {
+            return@withContext Result.failure(Exception("Offline"))
+        }
         try {
             val resp = api.getUserArtistStatus(userId)
+            handleRetrofitReachability(resp)
             if (resp.isSuccessful && resp.body() != null) {
-                markServerReachable()
                 val b = resp.body()!!
                 val claimed = b.claimedArtist?.let { mapDtoToArtist(it) }
                 val pending = b.pendingClaim?.let { c ->
@@ -2835,6 +3516,8 @@ class MusicRepository(private val context: Context) {
                 Result.failure(Exception(parseApiErrorDetail(resp.errorBody()?.string(), "Failed to fetch artist status")))
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
             Result.failure(Exception(e.message ?: "Unable to connect to server"))
         }
     }
@@ -2916,6 +3599,8 @@ class MusicRepository(private val context: Context) {
             )
             if (resp.isSuccessful && resp.body()?.artist != null) {
                 apiCacheManager.clearAll()
+                artistsSnapshotMemory = emptyList()
+                lastSearchRefreshAtMs = 0L
                 Result.success(mapDtoToArtist(resp.body()!!.artist!!))
             } else {
                 val msg = resp.body()?.detail
@@ -2985,6 +3670,9 @@ class MusicRepository(private val context: Context) {
             )
             if (resp.isSuccessful && resp.body()?.success == true) {
                 apiCacheManager.clearAll()
+                homeSongsSnapshotMemory = emptyList()
+                lastHomeRefreshAtMs = 0L
+                lastSearchRefreshAtMs = 0L
                 val dto = resp.body()?.song
                 val likedIds = authPreferences.getLikedSongIds()
                 val createdSong = if (dto != null) {
@@ -3035,6 +3723,9 @@ class MusicRepository(private val context: Context) {
             )
             if (resp.isSuccessful && resp.body()?.song != null) {
                 apiCacheManager.clearAll()
+                homeSongsSnapshotMemory = emptyList()
+                lastHomeRefreshAtMs = 0L
+                lastSearchRefreshAtMs = 0L
                 val updated = mapDtoToSong(resp.body()!!.song!!, authPreferences.getLikedSongIds())
                 songDao.insertCachedSong(SongEntity.fromSong(updated))
                 Result.success(updated)
@@ -3128,10 +3819,15 @@ class MusicRepository(private val context: Context) {
         }
     }
 
-    suspend fun getMyClubs(): Result<List<com.example.model.ClubPlaylistSummary>> = withContext(Dispatchers.IO) {
+    suspend fun getMyClubs(forceRefresh: Boolean = false): Result<List<com.example.model.ClubPlaylistSummary>> = withContext(Dispatchers.IO) {
+        val user = authPreferences.getUser() ?: User(id = 1, username = "Collaborator", email = "")
+        val cached = getCachedMyClubs()
+        if (shouldSkipUnreachableServer(forceRefresh)) {
+            return@withContext Result.success(cached)
+        }
         try {
-            val user = authPreferences.getUser() ?: User(id = 1, username = "Collaborator", email = "")
             val resp = api.getMyClubs(userId = user.id)
+            handleRetrofitReachability(resp)
             if (resp.isSuccessful && resp.body() != null) {
                 val list = resp.body()!!.clubs.map { dto ->
                     com.example.model.ClubPlaylistSummary(
@@ -3148,24 +3844,52 @@ class MusicRepository(private val context: Context) {
                     )
                 }
                 cachedMyClubsList = list
+                authPreferences.saveCachedMyClubs(user.id, list)
                 Result.success(list)
+            } else if (cached.isNotEmpty()) {
+                Result.success(cached)
             } else {
                 Result.failure(Exception("Could not load collaborative playlists"))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
+            if (cached.isNotEmpty()) Result.success(cached) else Result.failure(e)
         }
     }
 
-    suspend fun getClubDetails(clubId: Int): Result<com.example.model.ClubPlaylistDetails> = withContext(Dispatchers.IO) {
+    suspend fun getCachedClubDetails(clubId: Int): com.example.model.ClubPlaylistDetails? = withContext(Dispatchers.IO) {
+        val userId = getEffectiveUserId()
+        val cached = authPreferences.getCachedClubDetails(userId, clubId) ?: return@withContext null
+        val likedIds = authPreferences.getLikedSongIds()
+        val enrichedSongs = attachLocalPaths(
+            cached.songs.map { it.song.copy(isLiked = likedIds.contains(it.song.id)) }
+        )
+        cached.copy(
+            songs = cached.songs.mapIndexed { idx, cs ->
+                cs.copy(song = enrichedSongs.getOrElse(idx) { cs.song })
+            }
+        )
+    }
+
+    suspend fun getClubDetails(
+        clubId: Int,
+        forceRefresh: Boolean = false
+    ): Result<com.example.model.ClubPlaylistDetails> = withContext(Dispatchers.IO) {
+        val user = authPreferences.getUser() ?: User(id = 1, username = "Collaborator", email = "")
+        val cached = getCachedClubDetails(clubId)
+        if (shouldSkipUnreachableServer(forceRefresh)) {
+            return@withContext cached?.let { Result.success(it) }
+                ?: Result.failure(Exception("Offline — no cached club playlist available"))
+        }
         try {
-            val user = authPreferences.getUser() ?: User(id = 1, username = "Collaborator", email = "")
             val resp = api.getClubDetails(clubId = clubId, userId = user.id)
+            handleRetrofitReachability(resp)
             if (resp.isSuccessful && resp.body() != null) {
                 val b = resp.body()!!
                 val likedIds = authPreferences.getLikedSongIds()
-                val mappedSongs = b.songs.map { sDto ->
-                    val song = Song(
+                val rawSongs = b.songs.map { sDto ->
+                    Song(
                         id = sDto.id,
                         title = sDto.title ?: "Untitled Track",
                         artist = sDto.artist ?: "Unknown Artist",
@@ -3175,8 +3899,11 @@ class MusicRepository(private val context: Context) {
                         duration = sDto.duration,
                         isLiked = likedIds.contains(sDto.id)
                     )
+                }
+                val enrichedSongs = attachLocalPaths(rawSongs)
+                val mappedSongs = b.songs.mapIndexed { idx, sDto ->
                     com.example.model.ClubCollaborativeSong(
-                        song = song,
+                        song = enrichedSongs.getOrElse(idx) { rawSongs[idx] },
                         addedByUserId = sDto.addedByUserId,
                         addedByUsername = sDto.addedByUsername ?: "Member"
                     )
@@ -3198,12 +3925,17 @@ class MusicRepository(private val context: Context) {
                     members = mappedMembers,
                     songs = mappedSongs
                 )
+                authPreferences.saveCachedClubDetails(user.id, details)
                 Result.success(details)
+            } else if (cached != null) {
+                Result.success(cached)
             } else {
                 Result.failure(Exception("Failed to fetch collaborative playlist details"))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
+            if (cached != null) Result.success(cached) else Result.failure(e)
         }
     }
 
@@ -3265,6 +3997,7 @@ class MusicRepository(private val context: Context) {
     }
 
     suspend fun registerDeviceToken(userId: Int?, token: String, deviceInfo: String?) = withContext(Dispatchers.IO) {
+        if (shouldSkipUnreachableServer(forceNetwork = false)) return@withContext
         try {
             val req = com.example.data.remote.RegisterTokenRequestDto(
                 userId = userId ?: authPreferences.getUser()?.id,
@@ -3272,23 +4005,36 @@ class MusicRepository(private val context: Context) {
                 deviceInfo = deviceInfo
             )
             api.registerDeviceToken(req)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
         }
     }
 
     suspend fun getNotificationHistory(userId: Int? = null): List<com.example.data.remote.NotificationDto> = withContext(Dispatchers.IO) {
+        if (shouldSkipUnreachableServer(forceNetwork = false)) return@withContext emptyList()
         try {
             val targetUserId = userId ?: authPreferences.getUser()?.id
             api.getNotificationHistory(targetUserId)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+            if (e is java.io.IOException) reportRetrofitIoFailure(e)
             emptyList()
         }
     }
 
     companion object {
         const val KEY_HISTORY_SYNC = "history_sync"
-        private const val UNREACHABLE_COOLDOWN_MS = 10_000L
         private val backgroundSyncStarted = AtomicBoolean(false)
+
+        fun computeTargetHomeLoadedCount(
+            lastVisibleSongIndex: Int,
+            oneScreenTrackCount: Int
+        ): Int {
+            val buffer = oneScreenTrackCount.coerceAtLeast(1)
+            val shownCount = if (lastVisibleSongIndex < 0) 0 else lastVisibleSongIndex + 1
+            return shownCount + buffer
+        }
 
         @Volatile
         private var INSTANCE: MusicRepository? = null
@@ -3297,6 +4043,27 @@ class MusicRepository(private val context: Context) {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: MusicRepository(context.applicationContext).also { INSTANCE = it }
             }
+        }
+
+        internal fun selectDailyMixSongs(
+            catalog: List<Song>,
+            usageCount: Map<Int, Int>,
+            targetSize: Int,
+            random: java.util.Random
+        ): List<Song> {
+            if (catalog.isEmpty() || targetSize <= 0) return emptyList()
+            if (catalog.size <= targetSize) {
+                return catalog.shuffled(java.util.Random(random.nextLong()))
+            }
+            val scored = catalog.map { song ->
+                val weight = (usageCount[song.id] ?: 0) * 0.65 + random.nextDouble()
+                song to weight
+            }
+            return scored
+                .sortedBy { it.second }
+                .take(targetSize)
+                .map { it.first }
+                .shuffled(java.util.Random(random.nextLong()))
         }
     }
 }

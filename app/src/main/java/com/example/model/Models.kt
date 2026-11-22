@@ -129,8 +129,27 @@ data class Playlist(
         const val ID_LIKED = -1
         const val ID_DOWNLOADED = -2
         const val ID_OFFLINE_BACKUP = -3
+        const val DAILY_ID_OFFSET = -100
+        const val DAILY_ID_MAX = -101
+        const val DAILY_ID_MIN = -105
+
+        fun dailyPlaylistIdForSlot(slotIndex: Int): Int = DAILY_ID_OFFSET - slotIndex.coerceIn(1, 5)
+        fun isDailyPlaylistId(id: Int): Boolean = id in DAILY_ID_MIN..DAILY_ID_MAX
     }
 }
+
+data class DailyPlaylist(
+    val id: Int,
+    val serverId: Int = 0,
+    val slotIndex: Int,
+    val date: String,
+    val name: String,
+    val subtitle: String = "",
+    val accentColorHex: String = "#00E599",
+    val previewCovers: List<String> = emptyList(),
+    val songCount: Int = 0,
+    val songs: List<Song> = emptyList()
+)
 
 data class User(
     val id: Int,

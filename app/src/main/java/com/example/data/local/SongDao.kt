@@ -15,6 +15,9 @@ interface SongDao {
     // Cached songs (catalog metadata & liked songs)
     fun getAllCachedSongsFlow(): Flow<List<SongEntity>>
     suspend fun getAllCachedSongs(): List<SongEntity>
+    suspend fun getCachedSongsPage(limit: Int, offset: Int): List<SongEntity>
+    suspend fun getOldestCachedSongs(limit: Int): List<SongEntity>
+    suspend fun getCachedSongsCount(): Int
     suspend fun getCachedSong(songId: Int): SongEntity?
     suspend fun insertCachedSongs(songs: List<SongEntity>)
     suspend fun insertCachedSong(song: SongEntity)

@@ -1,9 +1,16 @@
 package com.example.audio
 
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheSpan
+import androidx.media3.datasource.cache.ContentMetadata
+import androidx.media3.datasource.cache.ContentMetadataMutations
 import com.example.model.Song
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
+import java.util.NavigableSet
+import java.util.TreeSet
 
 class AudioCacheTest {
 
@@ -140,5 +147,84 @@ class AudioCacheTest {
 
         // When advancing from index 2, goes to index 3 (downloaded)
         assertEquals(3, findNextPlayable(3))
+    }
+
+    @UnstableApi
+    @Test
+    fun `DynamicLruCacheEvictor span touch does not trigger eviction callback whereas genuine removal does`() {
+        val evictor = DynamicLruCacheEvictor(initialMaxBytes = 10_000_000L)
+        val evictedKeys = mutableListOf<String>()
+        evictor.onKeyEvicted = { evictedKeys.add(it) }
+
+        val stubCache = object : Cache {
+            override fun getUid(): Long = 1L
+            override fun release() {}
+            override fun addListener(key: String, listener: Cache.Listener): NavigableSet<CacheSpan> = TreeSet()
+            override fun removeListener(key: String, listener: Cache.Listener) {}
+            override fun getCachedSpans(key: String): NavigableSet<CacheSpan> = TreeSet()
+            override fun getKeys(): MutableSet<String> = mutableSetOf()
+            override fun getCacheSpace(): Long = 0L
+            override fun startReadWrite(key: String, position: Long, length: Long): CacheSpan =
+                throw UnsupportedOperationException()
+            override fun startReadWriteNonBlocking(key: String, position: Long, length: Long): CacheSpan? = null
+            override fun startFile(key: String, position: Long, length: Long): File = File("/tmp/stub")
+            override fun commitFile(file: File, length: Long) {}
+            override fun releaseHoleSpan(holeSpan: CacheSpan) {}
+            override fun removeResource(key: String) {}
+            override fun removeSpan(span: CacheSpan) {}
+            override fun isCached(key: String, position: Long, length: Long): Boolean = true
+            override fun getCachedLength(key: String, position: Long, length: Long): Long = 0L
+            override fun getCachedBytes(key: String, position: Long, length: Long): Long = 0L
+            override fun applyContentMetadataMutations(key: String, mutations: ContentMetadataMutations) {}
+            override fun getContentMetadata(key: String): ContentMetadata =
+                throw UnsupportedOperationException()
+        }
+
+        val oldSpan = CacheSpan("song:77", 0L, 1024L, 100L, File("/tmp/77"))
+        val newSpan = CacheSpan("song:77", 0L, 1024L, 200L, File("/tmp/77"))
+
+        evictor.onSpanAdded(stubCache, oldSpan)
+        evictor.onSpanTouched(stubCache, oldSpan, newSpan)
+        assertTrue(
+            "Span touch during cache read must never trigger onKeyEvicted flicker",
+            evictedKeys.isEmpty()
+        )
+
+        evictor.onSpanRemoved(stubCache, newSpan)
+        assertEquals(listOf("song:77"), evictedKeys)
+    }
+
+    @Test
+    fun `estimateBytesForSeconds computes proportional prefix for known length and safe fallback for unknown length`() {
+        // 200s song of 6,400,000 bytes (32 KB/s) -> 20s = 640,000 + 65,536 header margin = 705,536 bytes
+        val next20sKnown = AudioCache.estimateBytesForSeconds(
+            durationSec = 200.0,
+            contentLength = 6_400_000L,
+            seconds = 20
+        )
+        assertEquals(705_536L, next20sKnown)
+
+        // 5s of same song -> 160,000 + 65,536 = 225,536 bytes
+        val next5sKnown = AudioCache.estimateBytesForSeconds(
+            durationSec = 200.0,
+            contentLength = 6_400_000L,
+            seconds = 5
+        )
+        assertEquals(225_536L, next5sKnown)
+
+        // Unknown content length fallback (40 KB/s * seconds + 64 KB margin)
+        val fallback20s = AudioCache.estimateBytesForSeconds(
+            durationSec = 0.0,
+            contentLength = -1L,
+            seconds = 20
+        )
+        assertEquals(865_536L, fallback20s)
+
+        val fallback5s = AudioCache.estimateBytesForSeconds(
+            durationSec = 0.0,
+            contentLength = -1L,
+            seconds = 5
+        )
+        assertEquals(265_536L, fallback5s)
     }
 }

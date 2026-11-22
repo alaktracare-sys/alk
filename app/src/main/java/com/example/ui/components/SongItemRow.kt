@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,6 +10,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,6 +32,12 @@ import com.example.ui.theme.AlaktraMint
 import com.example.ui.theme.AlaktraTextMuted
 import com.example.ui.theme.AlaktraTextPrimary
 import com.example.ui.theme.AlaktraTextSecondary
+
+private val PlayingRowBgColor = Color(0xFF1E202C)
+private val PlayingOverlayColor = Color.Black.copy(alpha = 0.45f)
+private val SongRowShape = RoundedCornerShape(12.dp)
+private val PlayingOverlayShape = RoundedCornerShape(10.dp)
+private val EqBarShape = RoundedCornerShape(2.dp)
 
 @Composable
 fun SongItemRow(
@@ -43,22 +51,39 @@ fun SongItemRow(
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val backgroundColor by animateColorAsState(
-        targetValue = if (isPlaying) Color(0xFF1E202C) else Color.Transparent,
-        label = "row_bg"
+    val context = LocalContext.current
+    val isOnline = LocalIsOnline.current
+    val offlinePlayableIds = LocalOfflinePlayableIds.current
+    val cacheIndexWarmed = LocalCacheIndexWarmed.current
+    val isPlayableNow = isPlaying || isSongPlayableInUi(
+        song = song,
+        isOnline = isOnline,
+        offlinePlayableIds = offlinePlayableIds,
+        cacheIndexWarmed = cacheIndexWarmed
     )
+    val contentAlpha = if (isPlayableNow) 1f else 0.40f
+    val backgroundColor = if (isPlaying) PlayingRowBgColor else Color.Transparent
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 3.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(SongRowShape)
             .background(backgroundColor)
-            .clickable(onClick = onSongClick)
+            .clickable {
+                if (isPlayableNow) {
+                    onSongClick()
+                } else {
+                    showOfflineUnplayableToast(context)
+                }
+            }
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.graphicsLayer { alpha = contentAlpha }
+        ) {
             SongCover(
                 imageUrl = song.coverUrl,
                 size = 50.dp,
@@ -68,8 +93,8 @@ fun SongItemRow(
                 Box(
                     modifier = Modifier
                         .size(50.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.Black.copy(alpha = 0.45f)),
+                        .clip(PlayingOverlayShape)
+                        .background(PlayingOverlayColor),
                     contentAlignment = Alignment.Center
                 ) {
                     MiniEqualizer()
@@ -79,7 +104,11 @@ fun SongItemRow(
 
         Spacer(modifier = Modifier.width(14.dp))
 
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .graphicsLayer { alpha = contentAlpha }
+        ) {
             Text(
                 text = song.title,
                 maxLines = 1,
@@ -93,6 +122,17 @@ fun SongItemRow(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 contributorBadge?.invoke()
+
+                if (!isPlayableNow) {
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = "Unavailable offline",
+                        tint = AlaktraTextMuted,
+                        modifier = Modifier
+                            .padding(end = 5.dp)
+                            .size(12.dp)
+                    )
+                }
 
                 if (showDownloadStatus) {
                     if (downloadProgress != null) {
@@ -128,7 +168,9 @@ fun SongItemRow(
 
         IconButton(
             onClick = onLikeToggle,
-            modifier = Modifier.size(40.dp)
+            modifier = Modifier
+                .size(40.dp)
+                .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.65f }
         ) {
             Icon(
                 imageVector = if (song.isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -140,7 +182,9 @@ fun SongItemRow(
 
         IconButton(
             onClick = onMoreClick,
-            modifier = Modifier.size(40.dp)
+            modifier = Modifier
+                .size(40.dp)
+                .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.65f }
         ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,
@@ -188,9 +232,9 @@ private fun MiniEqualizer() {
         verticalAlignment = Alignment.Bottom,
         modifier = Modifier.height(20.dp)
     ) {
-        Box(modifier = Modifier.width(3.dp).height(h1.dp).clip(RoundedCornerShape(2.dp)).background(AlaktraMint))
-        Box(modifier = Modifier.width(3.dp).height(h2.dp).clip(RoundedCornerShape(2.dp)).background(AlaktraMint))
-        Box(modifier = Modifier.width(3.dp).height(h3.dp).clip(RoundedCornerShape(2.dp)).background(AlaktraMint))
+        Box(modifier = Modifier.width(3.dp).height(h1.dp).clip(EqBarShape).background(AlaktraMint))
+        Box(modifier = Modifier.width(3.dp).height(h2.dp).clip(EqBarShape).background(AlaktraMint))
+        Box(modifier = Modifier.width(3.dp).height(h3.dp).clip(EqBarShape).background(AlaktraMint))
     }
 }
 

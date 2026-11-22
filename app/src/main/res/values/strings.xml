@@ -60,5 +60,8 @@
     <string name="listening_history_empty_today_title">No songs played today yet</string>
     <string name="listening_history_empty_today_body">Play any track from your library — songs you listen to today will appear here automatically.</string>
     <string name="listening_history_play_today">Play Today</string>
+    <string name="daily_mixes_title">Daily Mixes</string>
+    <string name="daily_mixes_subtitle">Fresh new playlists every day</string>
+    <string name="daily_mix_refreshes_tomorrow">Refreshes daily</string>
+    <string name="daily_mix_play_cd">Play %1$s</string>
 </resources>
-

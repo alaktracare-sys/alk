@@ -49,7 +49,7 @@ fun EqualizerScreen(
     val bandGains by eq.bandGainsDb.collectAsState()
     val bassBoost by eq.bassBoostStrength.collectAsState()
     val virtualizer by eq.virtualizerStrength.collectAsState()
-    val playbackState by audioController.playbackState.collectAsState()
+    val playbackState by audioController.stablePlaybackState.collectAsState()
 
     // Smooth animation for frequency curve nodes
     val animGain0 by animateFloatAsState(targetValue = bandGains.getOrElse(0) { 0 }.toFloat(), animationSpec = tween(180), label = "g0")

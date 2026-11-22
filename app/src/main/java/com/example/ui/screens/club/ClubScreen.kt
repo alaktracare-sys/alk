@@ -38,10 +38,14 @@ import com.example.audio.PlaybackContext
 import com.example.data.repository.MusicRepository
 import com.example.model.ClubPlaylistDetails
 import com.example.model.Song
+import com.example.ui.components.AlaktraModalBottomSheet
 import com.example.ui.components.SongCover
 import com.example.ui.components.SongItemRow
+import com.example.ui.components.SongListSkeleton
 import com.example.ui.components.SongMenuBottomSheet
 import com.example.ui.theme.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -70,29 +74,87 @@ fun ClubScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isLoadingCatalog by remember { mutableStateOf(false) }
 
-    val playbackState by audioController.playbackState.collectAsState()
+    val playbackState by audioController.stablePlaybackState.collectAsState()
 
     fun loadClubDetails(clubId: Int) {
         scope.launch {
-            isLoadingDetails = true
-            val res = repository.getClubDetails(clubId)
-            isLoadingDetails = false
-            if (res.isSuccess) {
-                playlistDetails = res.getOrNull()
-            } else {
-                Toast.makeText(context, "Could not load playlist", Toast.LENGTH_SHORT).show()
-                onBack()
+            if (playlistDetails == null) {
+                isLoadingDetails = true
+            }
+            try {
+                val cached = repository.getCachedClubDetails(clubId)
+                if (cached != null) {
+                    if (cached != playlistDetails) {
+                        playlistDetails = cached
+                    }
+                    isLoadingDetails = false
+                }
+                if (com.example.util.NetworkMonitor.isOnline(context)) {
+                    val res = repository.getClubDetails(clubId, forceRefresh = true)
+                    if (res.isSuccess) {
+                        val fresh = res.getOrNull()
+                        if (fresh != null && fresh != playlistDetails) {
+                            playlistDetails = fresh
+                        }
+                    } else if (playlistDetails == null) {
+                        Toast.makeText(context, "Could not load playlist", Toast.LENGTH_SHORT).show()
+                        onBack()
+                    }
+                } else if (playlistDetails == null) {
+                    Toast.makeText(context, "Offline — playlist not cached yet", Toast.LENGTH_SHORT).show()
+                    onBack()
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (playlistDetails == null) {
+                    Toast.makeText(context, "Could not load playlist", Toast.LENGTH_SHORT).show()
+                    onBack()
+                }
+            } finally {
+                isLoadingDetails = false
             }
         }
     }
 
     fun loadCatalog() {
         scope.launch {
-            isLoadingCatalog = true
+            isLoadingCatalog = catalogSongs.isEmpty()
             try {
-                catalogSongs = repository.getSongs()
-            } catch (_: Exception) {}
-            isLoadingCatalog = false
+                val cached = repository.getCachedSongs()
+                if (cached.isNotEmpty() && cached != catalogSongs) {
+                    catalogSongs = cached
+                    isLoadingCatalog = false
+                }
+                if (com.example.util.NetworkMonitor.isOnline(context)) {
+                    val page = repository.getSongsPage(limit = 40, offset = 0)
+                    if (page.songs.isNotEmpty()) {
+                        val merged = (page.songs + catalogSongs).distinctBy { it.id }
+                        if (merged != catalogSongs) {
+                            catalogSongs = merged
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            } finally {
+                isLoadingCatalog = false
+            }
+        }
+    }
+
+    LaunchedEffect(showAddSongSheet, searchQuery) {
+        if (!showAddSongSheet) return@LaunchedEffect
+        val q = searchQuery.trim()
+        if (q.length >= 2 && com.example.util.NetworkMonitor.isOnline(context)) {
+            delay(250L)
+            try {
+                val searched = repository.searchSongs(query = q, limit = 30)
+                if (searched.isNotEmpty()) {
+                    catalogSongs = (catalogSongs + searched).distinctBy { it.id }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
         }
     }
 
@@ -405,15 +467,12 @@ fun ClubScreen(
             }
 
             if (isLoadingDetails && displaySongs.isEmpty()) {
-                item {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(150.dp)
-                    ) {
-                        CircularProgressIndicator(color = AlaktraMint)
-                    }
+                item(key = "club_details_skeleton") {
+                    SongListSkeleton(
+                        count = 6,
+                        horizontalPadding = 20.dp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
             } else if (displaySongs.isEmpty()) {
                 item {
@@ -537,13 +596,14 @@ fun ClubScreen(
     // COLLABORATORS & CODE DRAWER (BOTTOM SHEET)
     if (showCollaboratorsSheet && playlistDetails != null) {
         val details = playlistDetails!!
-        ModalBottomSheet(
+        AlaktraModalBottomSheet(
             onDismissRequest = { showCollaboratorsSheet = false },
             containerColor = AlaktraCard
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 32.dp)
             ) {
@@ -731,13 +791,14 @@ fun ClubScreen(
             }
         }
 
-        ModalBottomSheet(
+        AlaktraModalBottomSheet(
             onDismissRequest = { showAddSongSheet = false },
             containerColor = AlaktraSurface
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp)
                     .padding(bottom = 24.dp)
             ) {
@@ -774,9 +835,11 @@ fun ClubScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 if (isLoadingCatalog) {
-                    Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = AlaktraMint)
-                    }
+                    SongListSkeleton(
+                        count = 5,
+                        horizontalPadding = 0.dp,
+                        modifier = Modifier.heightIn(min = 200.dp)
+                    )
                 } else if (filteredCatalog.isEmpty()) {
                     Box(modifier = Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
                         Text("No songs found", color = AlaktraTextSecondary)

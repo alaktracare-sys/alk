@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import Response, JSONResponse
 from database import get_db, attach_artists_to_song_dicts
 from routes.fuse import refresh_fuse_if_needed, format_fuse_songs_payload, cleanup_expired_fuse_invites
+from datetime import datetime
 import os
 import hashlib
+import random
+import re
 
 router = APIRouter(prefix="/playlists", tags=["playlists"])
 
@@ -121,6 +124,290 @@ def remove_song_from_playlist(
         )
         db.commit()
         return {"success": True}
+    finally:
+        db.close()
+
+
+# =========================
+# DAILY PERSONALIZED MIXES (5 x 30 SONGS / DAY)
+# =========================
+DAILY_MIX_COUNT = 5
+DAILY_MIX_SONG_LIMIT = 30
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+_DAILY_MIX_THEMES = [
+    ("Neon Drift", "#00E599"),
+    ("Midnight Echo", "#00D2FF"),
+    ("Velvet Horizon", "#8B5CF6"),
+    ("Solar Pulse", "#F59E0B"),
+    ("Emerald Tide", "#10B981"),
+    ("Aurora Haze", "#EC4899"),
+    ("Prism Wave", "#06B6D4"),
+    ("Crimson Static", "#FF5277"),
+    ("Starlight Run", "#6366F1"),
+    ("Obsidian Flow", "#14B8A6"),
+]
+
+
+def _resolve_target_date(date_param: str | None) -> str:
+    if date_param and _DATE_RE.match(date_param.strip()):
+        return date_param.strip()
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _serialize_song_row(s, base_url: str) -> dict:
+    return {
+        "id": s["id"],
+        "title": s["title"],
+        "artist": s["artist"],
+        "audio_url": f"{base_url}/songs/{s['id']}/stream",
+        "cover_url": f"{base_url}/{s['cover_path'].replace(os.sep, '/')}",
+        "dominant_color": s["dominant_color"] or "#00E599",
+        "duration": float(s["duration"]) if s["duration"] else 0.0,
+    }
+
+
+def _build_mix_subtitle(selected_songs) -> str:
+    seen = []
+    seen_lower = set()
+    for s in selected_songs:
+        raw_artist = (s["artist"] or "").split(",")[0].strip()
+        if raw_artist and raw_artist.lower() not in ("unknown artist", "") and raw_artist.lower() not in seen_lower:
+            seen_lower.add(raw_artist.lower())
+            seen.append(raw_artist)
+            if len(seen) >= 2:
+                break
+    if len(seen) >= 2:
+        return f"Feat. {seen[0]}, {seen[1]} & more"
+    if len(seen) == 1:
+        return f"Feat. {seen[0]} & more"
+    return "Fresh 30-track daily mix"
+
+
+def _delete_stale_daily_playlists(db, user_id: int, keep_date: str | None = None):
+    if keep_date:
+        old_rows = db.execute(
+            "SELECT id FROM daily_playlists WHERE user_id = ? AND playlist_date != ?",
+            (user_id, keep_date),
+        ).fetchall()
+    else:
+        old_rows = db.execute(
+            "SELECT id FROM daily_playlists WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+
+    old_ids = [int(r["id"]) for r in old_rows]
+    if old_ids:
+        placeholders = ",".join("?" for _ in old_ids)
+        db.execute(f"DELETE FROM daily_playlist_songs WHERE daily_playlist_id IN ({placeholders})", old_ids)
+        db.execute(f"DELETE FROM daily_playlists WHERE id IN ({placeholders})", old_ids)
+
+
+def _generate_and_save_daily_playlists(db, user_id: int, target_date: str):
+    # Remove any previous day's (or partial today's) daily playlists before saving the new 5
+    _delete_stale_daily_playlists(db, user_id, keep_date=None)
+
+    all_songs = db.execute("SELECT * FROM songs ORDER BY id ASC").fetchall()
+    rng = random.SystemRandom()
+    themes = rng.sample(_DAILY_MIX_THEMES, DAILY_MIX_COUNT)
+    target_per_playlist = min(DAILY_MIX_SONG_LIMIT, len(all_songs))
+
+    used_counts = {int(s["id"]): 0 for s in all_songs}
+    previous_sets = []
+
+    for slot_idx in range(1, DAILY_MIX_COUNT + 1):
+        mix_name, accent_hex = themes[slot_idx - 1]
+        chosen = []
+        if target_per_playlist > 0:
+            if len(all_songs) <= DAILY_MIX_SONG_LIMIT:
+                chosen = list(all_songs)
+                rng.shuffle(chosen)
+            else:
+                # Prefer less-used songs with randomized jitter so all 5 mixes stay diverse and unique per user
+                best_chosen = None
+                best_overlap = None
+                for _attempt in range(4):
+                    jittered = sorted(
+                        all_songs,
+                        key=lambda s: (used_counts[int(s["id"])] * 0.65) + rng.random(),
+                    )
+                    candidate = jittered[:target_per_playlist]
+                    rng.shuffle(candidate)
+                    cand_ids = {int(s["id"]) for s in candidate}
+                    max_ov = max((len(cand_ids.intersection(prev)) for prev in previous_sets), default=0)
+                    if best_chosen is None or max_ov < best_overlap:
+                        best_chosen = candidate
+                        best_overlap = max_ov
+                    if max_ov <= target_per_playlist // 2:
+                        break
+                chosen = best_chosen or rng.sample(all_songs, target_per_playlist)
+                previous_sets.append({int(s["id"]) for s in chosen})
+                for s in chosen:
+                    used_counts[int(s["id"])] += 1
+
+        subtitle = _build_mix_subtitle(chosen)
+        cur = db.execute(
+            """
+            INSERT INTO daily_playlists (user_id, playlist_date, slot_index, name, subtitle, accent_hex)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, target_date, slot_idx, mix_name, subtitle, accent_hex),
+        )
+        dp_id = int(cur.lastrowid)
+        for pos, song_row in enumerate(chosen):
+            db.execute(
+                """
+                INSERT INTO daily_playlist_songs (daily_playlist_id, song_id, position)
+                VALUES (?, ?, ?)
+                """,
+                (dp_id, int(song_row["id"]), pos),
+            )
+
+    db.commit()
+
+
+def _ensure_daily_playlists_for_user(db, user_id: int, target_date: str):
+    # Always delete any expired previous-day playlists saved for this user
+    _delete_stale_daily_playlists(db, user_id, keep_date=target_date)
+
+    existing = db.execute(
+        """
+        SELECT *
+        FROM daily_playlists
+        WHERE user_id = ? AND playlist_date = ?
+        ORDER BY slot_index ASC
+        """,
+        (user_id, target_date),
+    ).fetchall()
+
+    need_regen = len(existing) != DAILY_MIX_COUNT
+    if not need_regen:
+        catalog_total = db.execute("SELECT COUNT(*) AS cnt FROM songs").fetchone()["cnt"]
+        if catalog_total > 0:
+            for dp in existing:
+                cnt_row = db.execute(
+                    "SELECT COUNT(*) AS cnt FROM daily_playlist_songs WHERE daily_playlist_id = ?",
+                    (int(dp["id"]),),
+                ).fetchone()
+                if (cnt_row["cnt"] or 0) == 0:
+                    need_regen = True
+                    break
+
+    if need_regen:
+        _generate_and_save_daily_playlists(db, user_id, target_date)
+        existing = db.execute(
+            """
+            SELECT *
+            FROM daily_playlists
+            WHERE user_id = ? AND playlist_date = ?
+            ORDER BY slot_index ASC
+            """,
+            (user_id, target_date),
+        ).fetchall()
+    else:
+        db.commit()
+
+    return existing
+
+
+@router.get("/daily/item/{daily_playlist_id}/songs")
+def get_daily_playlist_songs(daily_playlist_id: int, request: Request):
+    db = get_db()
+    try:
+        dp = db.execute("SELECT * FROM daily_playlists WHERE id = ?", (daily_playlist_id,)).fetchone()
+        if not dp:
+            return JSONResponse(status_code=404, content={"detail": "Daily playlist not found"})
+
+        base_url = get_base_url(request)
+        songs = db.execute(
+            """
+            SELECT songs.*
+            FROM songs
+            JOIN daily_playlist_songs dps ON dps.song_id = songs.id
+            WHERE dps.daily_playlist_id = ?
+            ORDER BY dps.position ASC
+            """,
+            (daily_playlist_id,),
+        ).fetchall()
+
+        data = [_serialize_song_row(s, base_url) for s in songs]
+        attach_artists_to_song_dicts(db, data, base_url)
+        return JSONResponse(content=data, headers={"Cache-Control": "private, max-age=60"})
+    finally:
+        db.close()
+
+
+@router.get("/daily/{user_id}")
+def get_daily_playlists(
+    user_id: int,
+    request: Request,
+    date: str | None = Query(default=None),
+):
+    db = get_db()
+    try:
+        user_exists = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user_exists:
+            return JSONResponse(status_code=404, content={"detail": "User not found"})
+
+        target_date = _resolve_target_date(date)
+        daily_rows = _ensure_daily_playlists_for_user(db, user_id, target_date)
+        base_url = get_base_url(request)
+
+        # Fetch all songs for these 5 daily playlists in one batch
+        dp_ids = [int(r["id"]) for r in daily_rows]
+        songs_by_dp = {dp_id: [] for dp_id in dp_ids}
+        all_song_dicts = []
+        if dp_ids:
+            placeholders = ",".join("?" for _ in dp_ids)
+            joined = db.execute(
+                f"""
+                SELECT dps.daily_playlist_id, dps.position, s.*
+                FROM daily_playlist_songs dps
+                JOIN songs s ON s.id = dps.song_id
+                WHERE dps.daily_playlist_id IN ({placeholders})
+                ORDER BY dps.daily_playlist_id ASC, dps.position ASC
+                """,
+                dp_ids,
+            ).fetchall()
+            for r in joined:
+                dp_id = int(r["daily_playlist_id"])
+                s_dict = _serialize_song_row(r, base_url)
+                songs_by_dp[dp_id].append(s_dict)
+                all_song_dicts.append(s_dict)
+
+            if all_song_dicts:
+                attach_artists_to_song_dicts(db, all_song_dicts, base_url)
+
+        sig = f"daily_{user_id}_{target_date}_{'_'.join(str(r['id']) + ':' + str(len(songs_by_dp.get(int(r['id']), []))) for r in daily_rows)}"
+        etag = f'"{hashlib.md5(sig.encode()).hexdigest()}"'
+        client_etag = request.headers.get("if-none-match")
+        if client_etag and client_etag.strip('"') == etag.strip('"'):
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=60"})
+
+        payload = []
+        for r in daily_rows:
+            dp_id = int(r["id"])
+            pl_songs = songs_by_dp.get(dp_id, [])
+            covers = []
+            for s in pl_songs:
+                cu = s.get("cover_url") or ""
+                if cu and cu not in covers:
+                    covers.append(cu)
+                if len(covers) >= 4:
+                    break
+            payload.append({
+                "id": dp_id,
+                "slot_index": int(r["slot_index"]),
+                "date": r["playlist_date"],
+                "name": r["name"],
+                "subtitle": r["subtitle"] or "",
+                "accent_color": r["accent_hex"] or "#00E599",
+                "song_count": len(pl_songs),
+                "preview_covers": covers,
+                "songs": pl_songs,
+            })
+
+        return JSONResponse(content=payload, headers={"ETag": etag, "Cache-Control": "private, max-age=60"})
     finally:
         db.close()
 

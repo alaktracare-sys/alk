@@ -57,6 +57,7 @@ import com.example.data.fuse.FusePollStatus
 import com.example.data.fuse.FuseSession
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
+import com.example.ui.components.AlaktraShimmerBox
 import com.example.ui.components.FuseDualAvatarCover
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
@@ -399,11 +400,12 @@ fun FuseScreen(
                             }
 
                             is HostFuseUiState.Creating -> {
-                                Spacer(modifier = Modifier.height(20.dp))
-                                CircularProgressIndicator(
-                                    color = AlaktraMint,
-                                    strokeWidth = 3.dp,
-                                    modifier = Modifier.size(36.dp)
+                                Spacer(modifier = Modifier.height(14.dp))
+                                AlaktraShimmerBox(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.7f)
+                                        .height(54.dp),
+                                    cornerRadius = 14.dp
                                 )
                                 Spacer(modifier = Modifier.height(14.dp))
                                 Text(
@@ -411,7 +413,7 @@ fun FuseScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = AlaktraTextSecondary
                                 )
-                                Spacer(modifier = Modifier.height(20.dp))
+                                Spacer(modifier = Modifier.height(14.dp))
                             }
 
                             is HostFuseUiState.Active -> {

@@ -23,7 +23,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.data.repository.MusicRepository
+import com.example.ui.components.BottomNavGradientScrim
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -424,17 +426,10 @@ fun SignupScreen(
     }
 
     // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
-    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    Box(
+    BottomNavGradientScrim(
         modifier = Modifier
             .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color.Transparent, Color.Black)
-                )
-            )
+            .zIndex(1f)
     )
   }
 }

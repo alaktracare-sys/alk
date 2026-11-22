@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import com.example.R
@@ -28,9 +29,13 @@ import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
 import com.example.model.Song
 import com.example.ui.components.FuseDualAvatarCover
+import com.example.ui.components.LibraryListSkeleton
+import com.example.ui.components.LocalIsOnline
 import com.example.ui.theme.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,8 +48,10 @@ fun LibraryScreen(
     onNavigateToClub: (Int?) -> Unit = {},
     onNavigateToSoundCapsule: () -> Unit = {}
 ) {
-    var playlists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
+    val context = LocalContext.current
+    var playlists by remember { mutableStateOf(repository.peekCachedPlaylists()) }
     var myClubs by remember { mutableStateOf<List<com.example.model.ClubPlaylistSummary>>(emptyList()) }
+    var isLoadingLibrary by remember { mutableStateOf(playlists.isEmpty()) }
     val downloadedSongs by repository.downloadedSongsFlow.collectAsState(initial = emptyList())
     var likedSongsCount by remember { mutableIntStateOf(0) }
     var plusMenuExpanded by remember { mutableStateOf(false) }
@@ -62,25 +69,81 @@ fun LibraryScreen(
     var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
     val scope = rememberCoroutineScope()
 
+    val libraryOnline = LocalIsOnline.current
+
+    suspend fun refreshLibraryFromServer() {
+        try {
+            supervisorScope {
+                val freshPlaylistsDeferred = async { repository.getPlaylists(forceRefresh = true) }
+                val freshClubsDeferred = async { repository.getMyClubs(forceRefresh = true) }
+
+                val freshPlaylists = try {
+                    freshPlaylistsDeferred.await()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    null
+                }
+                if (freshPlaylists != null && freshPlaylists != playlists) {
+                    playlists = freshPlaylists
+                }
+
+                val clubRes = try {
+                    freshClubsDeferred.await()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Result.failure(e)
+                }
+                if (clubRes.isSuccess) {
+                    val freshClubs = clubRes.getOrNull().orEmpty()
+                    if (freshClubs != myClubs) {
+                        myClubs = freshClubs
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+        }
+    }
+
+    var wasLibraryOnline by remember { mutableStateOf(libraryOnline) }
+    LaunchedEffect(libraryOnline) {
+        if (!wasLibraryOnline && libraryOnline) {
+            refreshLibraryFromServer()
+        }
+        wasLibraryOnline = libraryOnline
+    }
+
     LaunchedEffect(Unit) {
-        val cached = repository.getCachedPlaylists()
-        if (cached.isNotEmpty()) {
-            playlists = cached
-        }
-        val cachedClubs = repository.getCachedMyClubs()
-        if (cachedClubs.isNotEmpty()) {
-            myClubs = cachedClubs
-        }
-        likedSongsCount = repository.authPreferences.getLikedSongIds().size
+        try {
+            try {
+                supervisorScope {
+                    val cachedDeferred = async { repository.getCachedPlaylists() }
+                    val cachedClubsDeferred = async { repository.getCachedMyClubs() }
+                    val cached = cachedDeferred.await()
+                    val cachedClubs = cachedClubsDeferred.await()
+                    if (cached.isNotEmpty() && cached != playlists) {
+                        playlists = cached
+                    }
+                    if (cachedClubs.isNotEmpty() && cachedClubs != myClubs) {
+                        myClubs = cachedClubs
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
+            likedSongsCount = repository.authPreferences.getLikedSongIds().size
 
-        // Fetch fresh playlists and club playlists in parallel
-        val freshPlaylistsDeferred = async { repository.getPlaylists(forceRefresh = true) }
-        val freshClubsDeferred = async { repository.getMyClubs() }
+            if (playlists.isNotEmpty() || myClubs.isNotEmpty() || !com.example.util.NetworkMonitor.isOnline(context)) {
+                isLoadingLibrary = false
+            }
 
-        playlists = freshPlaylistsDeferred.await()
-        val clubRes = freshClubsDeferred.await()
-        if (clubRes.isSuccess) {
-            myClubs = clubRes.getOrNull() ?: emptyList()
+            if (!com.example.util.NetworkMonitor.isOnline(context)) {
+                return@LaunchedEffect
+            }
+
+            refreshLibraryFromServer()
+        } finally {
+            isLoadingLibrary = false
         }
     }
 
@@ -426,7 +489,15 @@ fun LibraryScreen(
                 }
 
                 // Playlists List
-                if (playlists.isEmpty()) {
+                if (playlists.isEmpty() && isLoadingLibrary) {
+                    item(key = "library_loading_skeleton") {
+                        LibraryListSkeleton(
+                            count = 3,
+                            horizontalPadding = 20.dp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                } else if (playlists.isEmpty()) {
                     item {
                         Box(
                             contentAlignment = Alignment.Center,

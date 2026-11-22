@@ -382,6 +382,35 @@ def _init_db_schema(conn):
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_song_requests_status ON song_requests(status, id DESC)")
 
+    # Daily Personalized Random Playlists (5 playlists x 30 songs per user per day)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_playlists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            playlist_date TEXT NOT NULL,
+            slot_index INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            accent_hex TEXT NOT NULL DEFAULT '#00E599',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, playlist_date, slot_index),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_playlists_user_date ON daily_playlists(user_id, playlist_date, slot_index ASC)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_playlist_songs (
+            daily_playlist_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (daily_playlist_id, song_id),
+            FOREIGN KEY (daily_playlist_id) REFERENCES daily_playlists(id) ON DELETE CASCADE,
+            FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_playlist_songs_pos ON daily_playlist_songs(daily_playlist_id, position ASC)")
+
     migrate_existing_song_artists(conn)
 
 

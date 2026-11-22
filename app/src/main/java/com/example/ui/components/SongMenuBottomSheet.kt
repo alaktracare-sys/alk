@@ -36,7 +36,7 @@ fun SongMenuBottomSheet(
     onViewArtist: (() -> Unit)? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
-    ModalBottomSheet(
+    AlaktraModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = AlaktraCard,
         contentColor = AlaktraTextPrimary,
@@ -163,6 +163,7 @@ fun SongMenuBottomSheet(
                 )
             }
 
+            Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
             Spacer(modifier = Modifier.height(28.dp))
         }
     }

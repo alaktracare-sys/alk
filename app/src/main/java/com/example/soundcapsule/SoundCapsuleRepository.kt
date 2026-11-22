@@ -140,6 +140,8 @@ class SoundCapsuleRepository(
      */
     private fun primeColdBootSnapshot(userId: Int) {
         val decodedList = SoundCapsuleSnapshotCodec.decodeList(authPreferences.getCachedCapsuleSnapshot(userId))
+        val nowMonth = YearMonth.now(zone)
+        val rolling12 = buildRolling12Months()
         synchronized(cacheLock) {
             if (accumulatorUserId != userId) {
                 activeMonthStatsMap.clear()
@@ -151,6 +153,10 @@ class SoundCapsuleRepository(
                 }
             }
             _monthlyFeedFlow.value = buildOrderedFeedLocked(userId)
+            _availableMonthsFlow.value = (rolling12 + activeMonthStatsMap.keys + _serverAvailableMonths.value)
+                .filter { !it.isAfter(nowMonth) }
+                .distinct()
+                .sortedDescending()
         }
     }
 
@@ -285,7 +291,9 @@ class SoundCapsuleRepository(
         }
         val built: SoundCapsuleStats
         val updatedFeed: List<SoundCapsuleStats>
+        val feedChanged: Boolean
         synchronized(cacheLock) {
+            val prevFeed = _monthlyFeedFlow.value
             accumulatorUserId = userId
             currentMonthAccumulator = freshAcc
             isCurrentMonthHydratedFromDb = true
@@ -297,10 +305,15 @@ class SoundCapsuleRepository(
                 activeMonthStatsMap.remove(nowMonth)
             }
             updatedFeed = buildOrderedFeedLocked(userId)
-            _monthlyFeedFlow.value = updatedFeed
+            feedChanged = updatedFeed != prevFeed
+            if (feedChanged) {
+                _monthlyFeedFlow.value = updatedFeed
+            }
         }
-        schedulePersistFeedSnapshot(userId, updatedFeed)
-        bumpHotStatsVersion()
+        if (feedChanged) {
+            schedulePersistFeedSnapshot(userId, updatedFeed)
+            bumpHotStatsVersion()
+        }
         built
     }
 
@@ -351,7 +364,11 @@ class SoundCapsuleRepository(
         val rolling12 = buildRolling12Months()
         val updatedFeed: List<SoundCapsuleStats>
         val mergedAvailable: List<YearMonth>
+        val feedChanged: Boolean
+        val availableChanged: Boolean
         synchronized(cacheLock) {
+            val prevFeed = _monthlyFeedFlow.value
+            val prevAvailable = _availableMonthsFlow.value
             activeMonthStatsMap.clear()
             activeMonthStatsMap.putAll(builtMap)
             mergedAvailable = (rolling12 + builtMap.keys + _serverAvailableMonths.value)
@@ -359,15 +376,23 @@ class SoundCapsuleRepository(
                 .distinct()
                 .sortedDescending()
             updatedFeed = buildOrderedFeedLocked(userId)
-            _monthlyFeedFlow.value = updatedFeed
+            feedChanged = updatedFeed != prevFeed
+            availableChanged = mergedAvailable != prevAvailable
+            if (feedChanged) {
+                _monthlyFeedFlow.value = updatedFeed
+            }
         }
-        _availableMonthsFlow.value = mergedAvailable
-        schedulePersistFeedSnapshot(userId, updatedFeed)
-        bumpHotStatsVersion()
+        if (availableChanged) {
+            _availableMonthsFlow.value = mergedAvailable
+        }
+        if (feedChanged) {
+            schedulePersistFeedSnapshot(userId, updatedFeed)
+            bumpHotStatsVersion()
+        }
     }
 
     /**
-     * Prewarms the multi-month Sound Capsule feed on app launch / user switch.
+     * Hydrates the Sound Capsule local snapshot on app launch without firing eager network/artwork storms.
      */
     fun warmUpAsync(userId: Int = getEffectiveUserId()) {
         primeColdBootSnapshot(userId)
@@ -375,9 +400,6 @@ class SoundCapsuleRepository(
             try {
                 importLocalListeningHistory(userId)
                 hydrateMonthlyFeedFromDb(userId)
-                if (NetworkMonitor.isOnline(context)) {
-                    syncWithServer(userId, force = false)
-                }
             } catch (e: Exception) {
                 Log.w("SoundCapsuleRepo", "Warm-up skipped: ${e.message}")
             }
@@ -666,7 +688,7 @@ class SoundCapsuleRepository(
             if (!isCurrentMonthHydratedFromDb || accumulatorUserId != userId) {
                 hydrateMonthlyFeedFromDb(userId)
             }
-            if (!NetworkMonitor.isOnline(context)) return@withLock
+            if (NetworkMonitor.shouldSkipNetworkRequests(context, force)) return@withLock
 
             val now = System.currentTimeMillis()
             val pullSyncKey = "$KEY_CAPSULE_PULL_PREFIX$userId"
@@ -693,6 +715,14 @@ class SoundCapsuleRepository(
 
             try {
                 val resp = api.getSoundCapsule(userId)
+                val rawNet = resp.raw().networkResponse
+                if (rawNet != null) {
+                    if (NetworkMonitor.isUnreachableHttpStatus(resp.code())) {
+                        NetworkMonitor.markServerUnreachable(authPreferences.getServerBaseUrl())
+                    } else if (resp.code() in 200..499 && resp.code() != 408 && resp.code() != 429) {
+                        NetworkMonitor.markServerReachable()
+                    }
+                }
                 if (resp.isSuccessful && resp.body() != null) {
                     val body = resp.body()!!
                     val today = LocalDate.now(zone)
@@ -766,6 +796,10 @@ class SoundCapsuleRepository(
                     authPreferences.setLastSyncTime(pullSyncKey, syncedAt)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
+                if (e is java.io.IOException) {
+                    NetworkMonitor.reportSuspectedServerFailure(context, authPreferences.getServerBaseUrl(), e)
+                }
                 Log.w("SoundCapsuleRepo", "Failed syncing /history/sound-capsule: ${e.message}")
             }
 
@@ -782,8 +816,8 @@ class SoundCapsuleRepository(
         private const val KEY_HISTORY_SYNC = "history_sync"
         private const val KEY_CAPSULE_PULL_PREFIX = "sound_capsule_pull_"
         private const val KEY_LEGACY_IMPORT_PREFIX = "capsule_legacy_import_"
-        private const val MAX_FEED_MONTHS = 24
-        private const val MAX_EXTRA_CACHED_MONTHS = 2
+        private const val MAX_FEED_MONTHS = 36
+        private const val MAX_EXTRA_CACHED_MONTHS = 6
 
         fun canonicalArtistId(artistName: String): String {
             return artistName

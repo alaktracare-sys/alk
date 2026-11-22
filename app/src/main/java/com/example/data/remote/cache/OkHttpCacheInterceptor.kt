@@ -1,20 +1,17 @@
 package com.example.data.remote.cache
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import okhttp3.CacheControl
 import okhttp3.Interceptor
 import okhttp3.Response
-import java.util.concurrent.TimeUnit
 
 /**
  * Interceptors for OkHttp HTTP Disk Cache:
  *
  * 1. [OfflineCacheInterceptor] (Application Interceptor via addInterceptor):
- *    - Detects network availability before hitting the network.
- *    - When offline, forces OkHttp to serve from the HTTP disk cache with max-stale.
- *    - Never intercepts non-GET requests or streaming audio.
+ *    - Detects unified offline state (no network transport or unreachable server) before hitting the network.
+ *    - When offline, forces OkHttp to serve from the HTTP disk cache for normal GETs.
+ *    - Never intercepts non-GET requests, streaming audio, /health probes, or explicit no-cache refreshes.
  *
  * 2. [NetworkCacheInterceptor] (Network Interceptor via addNetworkInterceptor):
  *    - Rewrites wire response headers so read-only GET endpoints are cached in OkHttp's disk cache
@@ -26,11 +23,20 @@ class OfflineCacheInterceptor(private val context: Context) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         var request = chain.request()
+        val isOnline = com.example.util.NetworkMonitor.isOnline(context)
+        val path = request.url.encodedPath
+        val bypassOfflineCache = path.endsWith("/health") || (
+            isOnline && (
+                request.cacheControl.noCache ||
+                    request.cacheControl.noStore
+                )
+            )
 
-        // If network is offline and it is a read-only GET request, prefer disk cache
-        if (!com.example.util.NetworkMonitor.isOnline(context) &&
+        // If unified state is offline (network off or server unreachable), force disk cache for normal GETs
+        if (!bypassOfflineCache &&
+            !isOnline &&
             request.method.equals("GET", ignoreCase = true) &&
-            !request.url.encodedPath.contains("/stream")
+            !path.contains("/stream")
         ) {
             request = request.newBuilder()
                 .cacheControl(CacheControl.FORCE_CACHE)
@@ -52,8 +58,9 @@ class NetworkCacheInterceptor : Interceptor {
             return response
         }
 
-        // Streaming audio is never stored in OkHttp cache
-        if (request.url.encodedPath.contains("/stream")) {
+        // Streaming audio and /health reachability probes are never stored in OkHttp cache
+        val requestPath = request.url.encodedPath
+        if (requestPath.contains("/stream") || requestPath.endsWith("/health")) {
             return response
         }
 
