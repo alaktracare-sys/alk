@@ -13,8 +13,8 @@ android {
         applicationId = "com.aistudio.musicplayer.bbsmxs"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.5.9"
+        versionCode = 18
+        versionName = "1.6.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "API_SECRET", "\"alaktra_secure_app_secret_998877\"")

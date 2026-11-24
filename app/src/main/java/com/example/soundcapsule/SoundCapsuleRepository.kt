@@ -2,6 +2,10 @@ package com.example.soundcapsule
 
 import android.content.Context
 import android.util.Log
+import coil.imageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.size.Size
 import com.example.data.local.AppDatabase
 import com.example.data.local.ListeningHistoryEntity
 import com.example.data.preferences.AuthPreferences
@@ -31,7 +35,9 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Collections
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToLong
 
@@ -50,7 +56,12 @@ class SoundCapsuleRepository(
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val pushMutex = Mutex()
     private val syncMutex = Mutex()
+    private val onlinePrewarmMutex = Mutex()
     private val cacheLock = Any()
+    private val prewarmedArtUrls = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+    @Volatile
+    private var lastOnlinePrewarmAtMs: Long = 0L
 
     @Volatile
     private var debouncedPushJob: Job? = null
@@ -392,17 +403,105 @@ class SoundCapsuleRepository(
     }
 
     /**
-     * Hydrates the Sound Capsule local snapshot on app launch without firing eager network/artwork storms.
+     * Hydrates the Sound Capsule local snapshot, Today's Listening History flow, and bounded
+     * key artwork on app launch so opening Sound Capsule or Today's History feels instant.
      */
     fun warmUpAsync(userId: Int = getEffectiveUserId()) {
         primeColdBootSnapshot(userId)
         backgroundScope.launch {
             try {
+                legacyDatabase.ensureListeningHistoryLoaded()
                 importLocalListeningHistory(userId)
                 hydrateMonthlyFeedFromDb(userId)
+                legacyDatabase.ensureListeningHistoryLoaded()
+                prewarmTodayAndCapsuleArtwork(userId)
             } catch (e: Exception) {
                 Log.w("SoundCapsuleRepo", "Warm-up skipped: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Silently warms Sound Capsule stats, Today's Listening History, and key artwork from the server
+     * once connectivity is live (coalesced to avoid duplicate requests across rapid network flips).
+     */
+    fun prewarmOnlineCapsuleData(userId: Int = getEffectiveUserId()) {
+        backgroundScope.launch {
+            if (!NetworkMonitor.isOnline(context)) return@launch
+            onlinePrewarmMutex.withLock {
+                val now = System.currentTimeMillis()
+                val alreadyWarmedRecently = (now - lastOnlinePrewarmAtMs) < ONLINE_PREWARM_COOLDOWN_MS &&
+                    isCurrentMonthHydratedFromDb &&
+                    accumulatorUserId == userId
+                if (alreadyWarmedRecently) {
+                    prewarmTodayAndCapsuleArtwork(userId)
+                    return@withLock
+                }
+                lastOnlinePrewarmAtMs = now
+                try {
+                    legacyDatabase.ensureListeningHistoryLoaded()
+                    importLocalListeningHistory(userId)
+                    if (!isCurrentMonthHydratedFromDb || accumulatorUserId != userId) {
+                        hydrateMonthlyFeedFromDb(userId)
+                    }
+                    syncWithServer(userId, force = false)
+                    legacyDatabase.ensureListeningHistoryLoaded()
+                    prewarmTodayAndCapsuleArtwork(userId)
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.w("SoundCapsuleRepo", "Online Sound Capsule prewarm skipped: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun prewarmTodayAndCapsuleArtwork(userId: Int) {
+        try {
+            val urls = LinkedHashSet<String>(14)
+            val today = LocalDate.now(zone)
+            val historySnapshot = legacyDatabase.getAllHistory().value
+            for (item in historySnapshot) {
+                if (urls.size >= MAX_PREWARM_TODAY_ART_URLS) break
+                if (item.playedAt <= 0L) continue
+                val date = Instant.ofEpochMilli(item.playedAt).atZone(zone).toLocalDate()
+                if (date == today) {
+                    val clean = urlSanitizer(item.coverUrl).takeIf { it.isNotBlank() } ?: continue
+                    urls.add(clean)
+                }
+            }
+            val primaryStats = synchronized(cacheLock) {
+                buildOrderedFeedLocked(userId).firstOrNull()
+            }
+            if (primaryStats != null) {
+                primaryStats.topArtists.take(3).forEach { artist ->
+                    val clean = urlSanitizer(artist.artworkUrl).takeIf { it.isNotBlank() }
+                    if (clean != null) urls.add(clean)
+                }
+                primaryStats.topSongs.take(3).forEach { track ->
+                    val clean = urlSanitizer(track.artworkUrl).takeIf { it.isNotBlank() }
+                    if (clean != null) urls.add(clean)
+                }
+            }
+            if (urls.isEmpty()) return
+
+            if (prewarmedArtUrls.size > 48) {
+                prewarmedArtUrls.clear()
+            }
+            val online = NetworkMonitor.isOnline(context)
+            val loader = context.imageLoader
+            for (url in urls) {
+                if (!prewarmedArtUrls.add(url)) continue
+                val req = ImageRequest.Builder(context)
+                    .data(url)
+                    .size(Size.ORIGINAL)
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .networkCachePolicy(if (online) CachePolicy.ENABLED else CachePolicy.READ_ONLY)
+                    .build()
+                loader.enqueue(req)
+            }
+        } catch (e: Exception) {
+            Log.w("SoundCapsuleRepo", "Artwork prewarm skipped: ${e.message}")
         }
     }
 
@@ -413,6 +512,7 @@ class SoundCapsuleRepository(
         synchronized(cacheLock) {
             extraCachedStatsLru.clear()
         }
+        prewarmedArtUrls.clear()
     }
 
     /**
@@ -818,6 +918,8 @@ class SoundCapsuleRepository(
         private const val KEY_LEGACY_IMPORT_PREFIX = "capsule_legacy_import_"
         private const val MAX_FEED_MONTHS = 36
         private const val MAX_EXTRA_CACHED_MONTHS = 6
+        private const val ONLINE_PREWARM_COOLDOWN_MS = 20_000L
+        private const val MAX_PREWARM_TODAY_ART_URLS = 8
 
         fun canonicalArtistId(artistName: String): String {
             return artistName

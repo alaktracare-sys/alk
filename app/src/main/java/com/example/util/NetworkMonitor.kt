@@ -30,6 +30,8 @@ object NetworkMonitor {
 
     private const val DEFAULT_UNREACHABLE_COOLDOWN_MS = 15_000L
     private const val VERIFY_COALESCE_INTERVAL_MS = 3_000L
+    private const val IMMEDIATE_PROBE_COALESCE_MS = 600L
+    private val PROGRESSIVE_RECOVERY_DELAYS_MS = longArrayOf(750L, 1_500L, 3_000L, 6_000L, 12_000L)
 
     private val UNREACHABLE_HTTP_CODES = setOf(
         502, 503, 504,
@@ -79,6 +81,15 @@ object NetworkMonitor {
 
     @Volatile
     private var lastVerifiedHealthyAtMs: Long = 0L
+
+    @Volatile
+    private var lastProbeStartedAtMs: Long = 0L
+
+    @Volatile
+    private var recoveryAttemptCount: Int = 0
+
+    @Volatile
+    private var cachedNetworkValidated: Boolean = false
 
     private val _networkState = MutableStateFlow(true)
 
@@ -181,13 +192,19 @@ object NetworkMonitor {
             isProbingRecovery = false
             verifyJob?.cancel()
             verifyJob = null
+            recoveryAttemptCount = 0
             serverUnreachableUntilMs = System.currentTimeMillis() + effectiveCooldown
             recomputeUnifiedStateLocked()
             if (cachedHasTransport) {
                 val existingJob = recoveryJob
                 val reschedule = existingJob == null || !existingJob.isActive
                 if (reschedule) {
-                    scheduleRecoveryCheckLocked(effectiveCooldown)
+                    val initialDelay = if (cooldownMs == DEFAULT_UNREACHABLE_COOLDOWN_MS) {
+                        PROGRESSIVE_RECOVERY_DELAYS_MS[0]
+                    } else {
+                        effectiveCooldown
+                    }
+                    scheduleRecoveryCheckLocked(initialDelay)
                 }
             }
         }
@@ -209,15 +226,16 @@ object NetworkMonitor {
         if (resolvedUrl.isNotEmpty() && !matchesActiveServer(resolvedUrl)) return
         if (isCancellationOrAborted(error)) return
 
-        if (httpCode != null) {
-            if (isUnreachableHttpStatus(httpCode)) {
-                markServerUnreachable(resolvedUrl)
-            }
-            return
-        }
-
         val probe = synchronized(stateLock) { serverRecoveryProbe }
-        if (!verifyFirst && isDefinitiveConnectionFailure(error)) {
+        if (httpCode != null) {
+            if (!isUnreachableHttpStatus(httpCode)) {
+                return
+            }
+            if (!verifyFirst || probe == null) {
+                markServerUnreachable(resolvedUrl)
+                return
+            }
+        } else if (!verifyFirst && isDefinitiveConnectionFailure(error)) {
             markServerUnreachable(resolvedUrl)
             return
         }
@@ -231,7 +249,7 @@ object NetworkMonitor {
             if (serverUnreachableFlag || isProbingRecovery) return
             if (verifyJob?.isActive == true) return
             val now = System.currentTimeMillis()
-            if (verifyFirst && now - lastVerifiedHealthyAtMs < VERIFY_COALESCE_INTERVAL_MS) {
+            if (verifyFirst && httpCode == null && now - lastVerifiedHealthyAtMs < VERIFY_COALESCE_INTERVAL_MS) {
                 return
             }
             val targetSnapshot = resolvedUrl.ifEmpty { activeServerUrl }
@@ -248,13 +266,14 @@ object NetworkMonitor {
                     if (reachable) {
                         lastVerifiedHealthyAtMs = System.currentTimeMillis()
                     } else if (cachedHasTransport) {
+                        recoveryAttemptCount = 0
                         serverUnreachableUrl = targetSnapshot.ifEmpty { activeServerUrl }
                         serverUnreachableFlag = true
                         isProbingRecovery = false
                         serverUnreachableUntilMs = System.currentTimeMillis() + DEFAULT_UNREACHABLE_COOLDOWN_MS
                         recomputeUnifiedStateLocked()
                         if (recoveryJob?.isActive != true) {
-                            scheduleRecoveryCheckLocked(DEFAULT_UNREACHABLE_COOLDOWN_MS)
+                            scheduleRecoveryCheckLocked(PROGRESSIVE_RECOVERY_DELAYS_MS[0])
                         }
                     }
                 }
@@ -274,11 +293,30 @@ object NetworkMonitor {
         verifyJob?.cancel()
         verifyJob = null
         isProbingRecovery = false
+        recoveryAttemptCount = 0
         serverUnreachableFlag = false
         serverUnreachableUntilMs = 0L
         serverUnreachableUrl = ""
         lastVerifiedHealthyAtMs = System.currentTimeMillis()
         recomputeUnifiedStateLocked()
+    }
+
+    /**
+     * Triggers a coalesced immediate /health recovery probe if the device has transport
+     * and the server was previously marked unreachable (e.g. app foregrounded or user refreshed).
+     */
+    fun verifyReachabilitySoon(context: Context, minIntervalMs: Long = 900L) {
+        if (!hasNetworkTransport(context)) return
+        synchronized(stateLock) {
+            if (!cachedHasTransport || !serverUnreachableFlag) return
+            if (isProbingRecovery) return
+            val now = System.currentTimeMillis()
+            if (now - lastProbeStartedAtMs < minIntervalMs) return
+            if (serverRecoveryProbe != null) {
+                recoveryAttemptCount = 0
+                scheduleRecoveryCheckLocked(0L, forceReschedule = true)
+            }
+        }
     }
 
     fun isServerTemporarilyUnreachable(serverUrl: String = activeServerUrl): Boolean {
@@ -329,6 +367,11 @@ object NetworkMonitor {
         }
     }
 
+    private fun nextProgressiveRecoveryDelayMs(): Long {
+        val idx = recoveryAttemptCount.coerceIn(0, PROGRESSIVE_RECOVERY_DELAYS_MS.lastIndex)
+        return PROGRESSIVE_RECOVERY_DELAYS_MS[idx]
+    }
+
     private fun scheduleRecoveryCheckLocked(cooldownMs: Long, forceReschedule: Boolean = true) {
         if (!forceReschedule && recoveryJob?.isActive == true) return
         recoveryJob?.cancel()
@@ -349,6 +392,7 @@ object NetworkMonitor {
             if (probe != null) {
                 synchronized(stateLock) {
                     isProbingRecovery = true
+                    lastProbeStartedAtMs = System.currentTimeMillis()
                 }
                 val reachable = try {
                     probe(urlSnapshot)
@@ -364,10 +408,12 @@ object NetworkMonitor {
                     if (reachable) {
                         markServerReachableLocked()
                     } else if (cachedHasTransport && serverUnreachableFlag) {
+                        recoveryAttemptCount = (recoveryAttemptCount + 1).coerceAtMost(PROGRESSIVE_RECOVERY_DELAYS_MS.lastIndex)
+                        val nextDelayMs = nextProgressiveRecoveryDelayMs()
                         serverUnreachableUrl = urlSnapshot
-                        serverUnreachableUntilMs = System.currentTimeMillis() + DEFAULT_UNREACHABLE_COOLDOWN_MS
+                        serverUnreachableUntilMs = System.currentTimeMillis() + nextDelayMs
                         recomputeUnifiedStateLocked()
-                        scheduleRecoveryCheckLocked(DEFAULT_UNREACHABLE_COOLDOWN_MS, forceReschedule = true)
+                        scheduleRecoveryCheckLocked(nextDelayMs, forceReschedule = true)
                     } else {
                         recomputeUnifiedStateLocked()
                     }
@@ -451,11 +497,30 @@ object NetworkMonitor {
                             transportLostJob = null
                             val wasTransportOff = !cachedHasTransport
                             cachedHasTransport = true
+                            val validatedNow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                try {
+                                    cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                                } catch (_: Throwable) {
+                                    false
+                                }
+                            } else {
+                                true
+                            }
+                            cachedNetworkValidated = validatedNow
                             if (serverUnreachableFlag) {
                                 // Never flash UI back to online before probing /health!
                                 recomputeUnifiedStateLocked()
                                 if (serverRecoveryProbe != null) {
-                                    scheduleRecoveryCheckLocked(0L, forceReschedule = wasTransportOff)
+                                    val now = System.currentTimeMillis()
+                                    val shouldProbeNow = !isProbingRecovery && (
+                                        wasTransportOff || (now - lastProbeStartedAtMs) >= IMMEDIATE_PROBE_COALESCE_MS
+                                        )
+                                    if (shouldProbeNow) {
+                                        recoveryAttemptCount = 0
+                                        scheduleRecoveryCheckLocked(0L, forceReschedule = true)
+                                    } else if (recoveryJob?.isActive != true) {
+                                        scheduleRecoveryCheckLocked(PROGRESSIVE_RECOVERY_DELAYS_MS[0], forceReschedule = false)
+                                    }
                                 } else if (wasTransportOff) {
                                     markServerReachableLocked()
                                 }
@@ -499,17 +564,35 @@ object NetworkMonitor {
                             }
                         }
                         val hasTransport = hasConnectivity(networkCapabilities)
+                        val isValidated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                        } else {
+                            hasTransport
+                        }
                         synchronized(stateLock) {
                             if (hasTransport) {
                                 transportLostJob?.cancel()
                                 transportLostJob = null
                             }
                             val wasTransportOff = !cachedHasTransport
+                            val becameValidated = isValidated && !cachedNetworkValidated
                             cachedHasTransport = hasTransport
+                            cachedNetworkValidated = hasTransport && isValidated
                             if (hasTransport && serverUnreachableFlag) {
                                 recomputeUnifiedStateLocked()
                                 if (serverRecoveryProbe != null) {
-                                    scheduleRecoveryCheckLocked(0L, forceReschedule = wasTransportOff)
+                                    val now = System.currentTimeMillis()
+                                    val shouldProbeNow = !isProbingRecovery && (
+                                        wasTransportOff ||
+                                            becameValidated ||
+                                            (recoveryAttemptCount == 0 && (now - lastProbeStartedAtMs) >= IMMEDIATE_PROBE_COALESCE_MS)
+                                        )
+                                    if (shouldProbeNow) {
+                                        recoveryAttemptCount = 0
+                                        scheduleRecoveryCheckLocked(0L, forceReschedule = true)
+                                    } else if (recoveryJob?.isActive != true) {
+                                        scheduleRecoveryCheckLocked(PROGRESSIVE_RECOVERY_DELAYS_MS[0], forceReschedule = false)
+                                    }
                                 } else if (wasTransportOff) {
                                     markServerReachableLocked()
                                 }

@@ -16,7 +16,9 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import android.media.MediaMetadataRetriever
 import android.os.Handler
+import android.os.SystemClock
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
@@ -29,7 +31,8 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
-import coil.ImageLoader
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.size.Size
@@ -144,7 +147,6 @@ class AudioController private constructor(private val context: Context) {
 
     private var progressJob: Job? = null
     private var paletteJob: Job? = null
-    private var preloadJob: Job? = null
     private var homeQueueHydrationJob: Job? = null
     private val authPrefs by lazy { com.example.data.preferences.AuthPreferences(context) }
     @Volatile
@@ -192,6 +194,14 @@ class AudioController private constructor(private val context: Context) {
     private var offlineBufferingSinceMs: Long = 0L
     @Volatile
     private var lastRefreshedFullyCachedSongId: Int? = null
+    @Volatile
+    private var pendingSeekTargetMs: Long = -1L
+    @Volatile
+    private var pendingSeekDeadlineMs: Long = 0L
+    @Volatile
+    private var durationLookupJob: Job? = null
+    @Volatile
+    private var lastDurationPersistedSongId: Int? = null
     private val failedOfflineSongIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
     init {
@@ -320,6 +330,7 @@ class AudioController private constructor(private val context: Context) {
                                     .setCustomCacheKey("song:${currentSong.id}")
                                     .setMediaMetadata(mediaMetadata)
                                     .build()
+                                AudioCache.cancelAllActivePreloads()
                                 player.setMediaItem(mediaItem)
                                 player.prepare()
                                 if (resumePos > 0L) {
@@ -344,11 +355,6 @@ class AudioController private constructor(private val context: Context) {
                             } else if (!backupWasInFlight) {
                                 clearPreOfflineSnapshotAndHint()
                             }
-                            if (currentSong != null) {
-                                preloadUpcomingTrack()
-                            }
-                        } else if (currentSong != null) {
-                            preloadUpcomingTrack()
                         }
                         ensureCurrentSongPalette()
                     }
@@ -424,7 +430,6 @@ class AudioController private constructor(private val context: Context) {
                     if (playerDead && restoredState.currentSong != null && currentState.isPlaying) {
                         playSongAtIndex(restoredState.contextIndex)
                     }
-                    preloadUpcomingTrack()
                     ensureCurrentSongPalette()
                 } else if (isOfflineBackupContext(currentContext) || isRestoredContext(currentContext)) {
                     if (catalogSongs.isNotEmpty()) {
@@ -432,7 +437,6 @@ class AudioController private constructor(private val context: Context) {
                         clearPreOfflineSnapshotAndHint()
                         publishState(upgradedState)
                         persistCurrentState()
-                        preloadUpcomingTrack()
                         ensureCurrentSongPalette()
                     }
                 }
@@ -666,15 +670,16 @@ class AudioController private constructor(private val context: Context) {
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                20_000,
-                90_000,
-                1_500,
-                3_000
+                60_000,   // minBufferMs: 60s hysteresis floor
+                600_000,  // maxBufferMs: 10 minutes so full songs stream smoothly in one continuous pass
+                2_000,    // bufferForPlaybackMs: 2s start cushion prevents immediate stutter/rebuffer
+                3_500     // bufferForPlaybackAfterRebufferMs: prevent stop-start micro-oscillation
             )
+            .setTargetBufferBytes(32 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
-        val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy() {
+        val loadErrorHandlingPolicy = object : DefaultLoadErrorHandlingPolicy(3) {
             override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
                 return if (!NetworkMonitor.isOnline(context)) {
                     C.TIME_UNSET
@@ -692,8 +697,13 @@ class AudioController private constructor(private val context: Context) {
             }
         }
 
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+
         val mediaSourceFactory = DefaultMediaSourceFactory(
-            AudioCache.createCacheDataSourceFactory(context)
+            AudioCache.createCacheDataSourceFactory(context),
+            extractorsFactory
         ).setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
 
         val exo = ExoPlayer.Builder(context, renderersFactory)
@@ -705,6 +715,18 @@ class AudioController private constructor(private val context: Context) {
             .build()
 
         exo.addListener(object : Player.Listener {
+            override fun onIsLoadingChanged(isLoading: Boolean) {
+                if (!isLoading) {
+                    val track = _playbackState.value.currentSong ?: return
+                    val knownDur = exo.duration
+                    val fullyBuffered = knownDur != C.TIME_UNSET && knownDur > 0L && exo.bufferedPosition >= knownDur - 1500L
+                    if (fullyBuffered && lastRefreshedFullyCachedSongId != track.id) {
+                        lastRefreshedFullyCachedSongId = track.id
+                        AudioCache.refreshSongCachedStatusAsync(context, track.id, track.duration)
+                    }
+                }
+            }
+
             override fun onEvents(player: Player, events: Player.Events) {
                 syncPlaybackStatus()
                 if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && player.playbackState == Player.STATE_READY) {
@@ -717,6 +739,7 @@ class AudioController private constructor(private val context: Context) {
                     offlineBufferingSinceMs = 0L
                     AudioCache.clearEarlyOfflineTruncation()
                     _playbackState.value.currentSong?.let { endedSong ->
+                        lastRefreshedFullyCachedSongId = endedSong.id
                         AudioCache.refreshSongCachedStatusAsync(context, endedSong.id, endedSong.duration)
                     }
                     handleTrackEnded()
@@ -728,8 +751,18 @@ class AudioController private constructor(private val context: Context) {
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
-                val pos = exo.currentPosition.coerceAtLeast(0L)
-                _playbackState.value = _playbackState.value.copy(currentPositionMs = pos)
+                val rawPos = exo.currentPosition.coerceAtLeast(0L)
+                val effectivePos = resolveEffectivePositionMs(rawPos)
+                val resolvedDur = resolvePlayerDurationMs(_playbackState.value.currentSong, exo)
+                val prev = _playbackState.value
+                val nextDur = if (resolvedDur > 0L) resolvedDur else prev.durationMs
+                publishState(
+                    prev.copy(
+                        currentPositionMs = effectivePos,
+                        durationMs = nextDur
+                    ),
+                    stableChanged = (prev.durationMs != nextDur)
+                )
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -819,6 +852,7 @@ class AudioController private constructor(private val context: Context) {
                             .setCustomCacheKey("song:${failedSong.id}")
                             .setMediaMetadata(mediaMetadata)
                             .build()
+                        AudioCache.cancelAllActivePreloads()
                         exo.setMediaItem(mediaItem)
                         exo.prepare()
                         if (resumePos > 0L) {
@@ -939,14 +973,174 @@ class AudioController private constructor(private val context: Context) {
         }
     }
 
+    private fun resolveEffectivePositionMs(rawPlayerPosMs: Long): Long {
+        val pending = pendingSeekTargetMs
+        if (pending >= 0L) {
+            val nowElapsed = SystemClock.elapsedRealtime()
+            val settled = abs(rawPlayerPosMs - pending) <= 1_500L && player.playbackState == Player.STATE_READY
+            if (settled || nowElapsed >= pendingSeekDeadlineMs) {
+                pendingSeekTargetMs = -1L
+                pendingSeekDeadlineMs = 0L
+                return rawPlayerPosMs
+            }
+            return pending
+        }
+        return rawPlayerPosMs
+    }
+
+    private fun resolvePlayerDurationMs(song: Song?, p: Player): Long {
+        val directDur = p.duration
+        if (directDur != C.TIME_UNSET && directDur > 0L) {
+            return directDur
+        }
+        val contentDur = p.contentDuration
+        if (contentDur != C.TIME_UNSET && contentDur > 0L) {
+            return contentDur
+        }
+        val metaDur = p.mediaMetadata.durationMs
+        if (metaDur != null && metaDur > 0L) {
+            return metaDur
+        }
+        var detectedBitrate = 0
+        try {
+            val groups = p.currentTracks.groups
+            for (g in groups) {
+                for (i in 0 until g.length) {
+                    val fmt = g.getTrackFormat(i)
+                    if (fmt.bitrate > 0 && detectedBitrate <= 0) {
+                        detectedBitrate = fmt.bitrate
+                    }
+                    val meta = fmt.metadata ?: continue
+                    for (j in 0 until meta.length()) {
+                        val entry = meta.get(j)
+                        if (entry is TextInformationFrame && entry.id.equals("TLEN", ignoreCase = true)) {
+                            val parsedMs = entry.values.firstOrNull()?.trim()?.toLongOrNull()
+                            if (parsedMs != null && parsedMs > 0L) {
+                                return parsedMs
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        val songDurMs = ((song?.duration ?: 0.0) * 1000.0).toLong()
+        if (songDurMs > 0L) {
+            return songDurMs
+        }
+
+        if (song != null && detectedBitrate > 0) {
+            val contentLength = AudioCache.getCachedContentLengthFast(song.id)
+            if (contentLength > 0L) {
+                val estimatedMs = (contentLength * 8_000L) / detectedBitrate.toLong()
+                if (estimatedMs in 1_000L..7_200_000L) {
+                    return estimatedMs
+                }
+            }
+        }
+        return 0L
+    }
+
+    private fun updateResolvedDurationInStateAndDb(songId: Int, durationMs: Long) {
+        if (songId <= 0 || durationMs <= 0L) return
+        val durationSec = durationMs / 1000.0
+        val prev = _playbackState.value
+        val curSong = prev.currentSong
+        val shouldUpdateSong = curSong != null && curSong.id == songId && curSong.duration <= 0.0
+        val nextSong = if (shouldUpdateSong) curSong!!.copy(duration = durationSec) else curSong
+        val nextOrder = if (shouldUpdateSong && prev.contextOrder.any { it.id == songId && it.duration <= 0.0 }) {
+            prev.contextOrder.map { if (it.id == songId && it.duration <= 0.0) it.copy(duration = durationSec) else it }
+        } else {
+            prev.contextOrder
+        }
+        val nextContext = if (shouldUpdateSong && prev.context?.tracks?.any { it.id == songId && it.duration <= 0.0 } == true) {
+            prev.context.copy(
+                tracks = prev.context.tracks.map { if (it.id == songId && it.duration <= 0.0) it.copy(duration = durationSec) else it }
+            )
+        } else {
+            prev.context
+        }
+        if (shouldUpdateSong || (curSong?.id == songId && prev.durationMs <= 0L)) {
+            publishState(
+                prev.copy(
+                    currentSong = nextSong,
+                    context = nextContext,
+                    contextOrder = nextOrder,
+                    durationMs = durationMs
+                ),
+                stableChanged = true
+            )
+        }
+        if (lastDurationPersistedSongId != songId) {
+            lastDurationPersistedSongId = songId
+            scope.launch(Dispatchers.IO) {
+                try {
+                    com.example.data.local.AppDatabase.getInstance(context)
+                        .songDao()
+                        .updateSongDuration(songId, durationSec)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun resolveMissingDurationAsync(song: Song) {
+        durationLookupJob?.cancel()
+        if (song.duration > 0.0) return
+        val targetId = song.id
+        durationLookupJob = scope.launch(Dispatchers.IO) {
+            try {
+                val dao = com.example.data.local.AppDatabase.getInstance(context).songDao()
+                val dbDurSec = dao.getDownloadedSong(targetId)?.duration?.takeIf { it > 0.0 }
+                    ?: dao.getCachedSong(targetId)?.duration?.takeIf { it > 0.0 }
+                if (dbDurSec != null) {
+                    val durMs = (dbDurSec * 1000.0).toLong()
+                    withContext(Dispatchers.Main) {
+                        if (_playbackState.value.currentSong?.id == targetId) {
+                            updateResolvedDurationInStateAndDb(targetId, durMs)
+                        }
+                    }
+                    return@launch
+                }
+
+                val cacheLen = androidx.media3.datasource.cache.ContentMetadata.getContentLength(
+                    AudioCache.getSimpleCache(context).getContentMetadata("song:$targetId")
+                )
+                if (cacheLen > 0L) {
+                    AudioCache.updateCachedContentLength(targetId, cacheLen)
+                }
+
+                val localPath = song.localPath?.takeIf { File(it).exists() }
+                    ?: File(File(context.filesDir, "downloads"), "$targetId.mp3").takeIf { it.exists() }?.absolutePath
+                if (localPath != null) {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(localPath)
+                        val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        val parsedMs = durStr?.toLongOrNull() ?: 0L
+                        if (parsedMs > 0L) {
+                            withContext(Dispatchers.Main) {
+                                if (_playbackState.value.currentSong?.id == targetId) {
+                                    updateResolvedDurationInStateAndDb(targetId, parsedMs)
+                                }
+                            }
+                        }
+                    } finally {
+                        runCatching { retriever.release() }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun syncPlaybackStatus() {
-        val pos = player.currentPosition.coerceAtLeast(0L)
-        val dur = player.duration.coerceAtLeast(0L)
+        val rawPos = player.currentPosition.coerceAtLeast(0L)
+        val pos = resolveEffectivePositionMs(rawPos)
+        val prev = _playbackState.value
+        val dur = resolvePlayerDurationMs(prev.currentSong, player)
         val isEnded = player.playbackState == Player.STATE_ENDED
 
         val effectivePlaying = player.playWhenReady && !isEnded && player.playbackState != Player.STATE_IDLE
-        val prev = _playbackState.value
-        val newDur = if (dur > 0) dur else prev.durationMs
+        val newDur = if (dur > 0L) dur else prev.durationMs
         val stableChanged = prev.isPlaying != effectivePlaying || prev.durationMs != newDur
         publishState(
             prev.copy(
@@ -956,6 +1150,10 @@ class AudioController private constructor(private val context: Context) {
             ),
             stableChanged = stableChanged
         )
+        val activeSong = prev.currentSong
+        if (activeSong != null && activeSong.duration <= 0.0 && newDur > 0L) {
+            updateResolvedDurationInStateAndDb(activeSong.id, newDur)
+        }
 
         if (effectivePlaying) {
             startProgressTracker()
@@ -987,16 +1185,18 @@ class AudioController private constructor(private val context: Context) {
         lastTickTimeMs = startNow
         lastCapsuleTickMs = startNow
         progressJob = scope.launch {
+            val selfJob = coroutineContext[Job]
             try {
                 var counter = 0
                 while (isActive) {
-                    val pos = player.currentPosition.coerceAtLeast(0L)
-                    val dur = player.duration.coerceAtLeast(0L)
+                    val rawPos = player.currentPosition.coerceAtLeast(0L)
+                    val pos = resolveEffectivePositionMs(rawPos)
                     val isActivelyPlaying = player.isPlaying
 
                     val prevState = _playbackState.value
+                    val dur = resolvePlayerDurationMs(prevState.currentSong, player)
                     val nextIsPlaying = player.playWhenReady && player.playbackState != Player.STATE_ENDED && player.playbackState != Player.STATE_IDLE
-                    val nextDuration = if (dur > 0) dur else prevState.durationMs
+                    val nextDuration = if (dur > 0L) dur else prevState.durationMs
                     val stableChanged = prevState.isPlaying != nextIsPlaying || prevState.durationMs != nextDuration
                     if (stableChanged || pos != prevState.currentPositionMs) {
                         publishState(
@@ -1007,6 +1207,10 @@ class AudioController private constructor(private val context: Context) {
                             ),
                             stableChanged = stableChanged
                         )
+                    }
+                    val activeSong = prevState.currentSong
+                    if (activeSong != null && activeSong.duration <= 0.0 && nextDuration > 0L) {
+                        updateResolvedDurationInStateAndDb(activeSong.id, nextDuration)
                     }
 
                     val now = System.currentTimeMillis()
@@ -1119,7 +1323,9 @@ class AudioController private constructor(private val context: Context) {
             } catch (e: Exception) {
                 Log.e("AudioController", "Exception in progress tracker loop", e)
             } finally {
-                progressJob = null
+                if (progressJob === selfJob) {
+                    progressJob = null
+                }
                 flushCurrentListeningSession()
             }
         }
@@ -1300,7 +1506,6 @@ class AudioController private constructor(private val context: Context) {
                             val merged = mergeRemainingContextTracks(curState, combinedCached)
                             if (merged != curState) {
                                 publishState(merged)
-                                preloadUpcomingTrack()
                             }
                         }
                     }
@@ -1337,7 +1542,6 @@ class AudioController private constructor(private val context: Context) {
                                 if (merged != curState) {
                                     publishState(merged)
                                     persistCurrentState(forceFull = true)
-                                    preloadUpcomingTrack()
                                 }
                             }
                         }
@@ -1486,6 +1690,9 @@ class AudioController private constructor(private val context: Context) {
         }
         lastTransientRetrySongId = null
         lastRefreshedFullyCachedSongId = null
+        lastDurationPersistedSongId = null
+        pendingSeekTargetMs = -1L
+        pendingSeekDeadlineMs = 0L
         offlineBufferingSinceMs = 0L
         AudioCache.clearEarlyOfflineTruncation()
         val state = _playbackState.value
@@ -1497,15 +1704,16 @@ class AudioController private constructor(private val context: Context) {
         }
         val updatedRecentPlayed = addToRecentPlayedHistory(song.id, state.recentPlayedSongIds)
 
-        _playbackState.value = state.copy(
-            currentSong = song,
-            currentPositionMs = 0L,
-            durationMs = (song.duration * 1000).toLong(),
-            history = updatedHistory,
-            recentPlayedSongIds = updatedRecentPlayed
-        ).also {
-            _stablePlaybackState.value = it
-        }
+        publishState(
+            state.copy(
+                currentSong = song,
+                currentPositionMs = 0L,
+                durationMs = (song.duration * 1000).toLong().coerceAtLeast(0L),
+                isPlaying = true,
+                history = updatedHistory,
+                recentPlayedSongIds = updatedRecentPlayed
+            )
+        )
 
         // Resolve local file if available
         val uri = if (song.localPath != null && File(song.localPath).exists()) {
@@ -1527,9 +1735,12 @@ class AudioController private constructor(private val context: Context) {
             .setMediaMetadata(mediaMetadata)
             .build()
 
+        AudioCache.cancelAllActivePreloads()
         player.setMediaItem(mediaItem)
         player.prepare()
         player.play()
+        startProgressTracker()
+        resolveMissingDurationAsync(song)
 
         ensureServiceStarted()
 
@@ -1540,7 +1751,6 @@ class AudioController private constructor(private val context: Context) {
         prepareNewSongListeningSession(song)
 
         persistCurrentState()
-        preloadUpcomingTrack()
     }
 
     private fun playSongAtIndex(index: Int) {
@@ -1571,6 +1781,9 @@ class AudioController private constructor(private val context: Context) {
 
         lastTransientRetrySongId = null
         lastRefreshedFullyCachedSongId = null
+        lastDurationPersistedSongId = null
+        pendingSeekTargetMs = -1L
+        pendingSeekDeadlineMs = 0L
         offlineBufferingSinceMs = 0L
         AudioCache.clearEarlyOfflineTruncation()
         val updatedRecentPlayed = addToRecentPlayedHistory(song.id, state.recentPlayedSongIds)
@@ -1579,7 +1792,8 @@ class AudioController private constructor(private val context: Context) {
                 currentSong = song,
                 contextIndex = index,
                 currentPositionMs = 0L,
-                durationMs = (song.duration * 1000).toLong(),
+                durationMs = (song.duration * 1000).toLong().coerceAtLeast(0L),
+                isPlaying = true,
                 recentPlayedSongIds = updatedRecentPlayed
             )
         )
@@ -1604,9 +1818,12 @@ class AudioController private constructor(private val context: Context) {
             .setMediaMetadata(mediaMetadata)
             .build()
 
+        AudioCache.cancelAllActivePreloads()
         player.setMediaItem(mediaItem)
         player.prepare()
         player.play()
+        startProgressTracker()
+        resolveMissingDurationAsync(song)
 
         ensureServiceStarted()
 
@@ -1617,7 +1834,6 @@ class AudioController private constructor(private val context: Context) {
         prepareNewSongListeningSession(song)
 
         persistCurrentState()
-        preloadUpcomingTrack()
     }
 
     fun getUpcomingTracks(maxCount: Int = 4): List<Song> {
@@ -1668,72 +1884,6 @@ class AudioController private constructor(private val context: Context) {
     }
 
     fun getUpcomingTrack(): Song? = getUpcomingTracks(1).firstOrNull()
-
-    private fun preloadUpcomingTrack() {
-        preloadJob?.cancel()
-        if (NetworkMonitor.shouldSkipNetworkRequests(context)) return
-        preloadJob = scope.launch(Dispatchers.IO) {
-            delay(250L)
-            ensureActive()
-            if (NetworkMonitor.shouldSkipNetworkRequests(context)) return@launch
-
-            val currentSong = _playbackState.value.currentSong
-            val upcoming4 = getUpcomingTracks(maxCount = 4)
-
-            // 1. Pre-cache full original-resolution artwork for current + next 4 songs
-            val artTargets = buildList {
-                if (currentSong != null) add(currentSong)
-                addAll(upcoming4)
-            }.distinctBy { it.id }
-
-            for (track in artTargets) {
-                if (track.coverUrl.isNotBlank()) {
-                    try {
-                        val req = ImageRequest.Builder(context)
-                            .data(track.coverUrl)
-                            .size(Size.ORIGINAL)
-                            .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-                            .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                            .build()
-                        context.imageLoader.enqueue(req)
-                    } catch (_: Exception) {}
-                }
-            }
-
-            // 2. Sequential audio pre-cache pipeline (each step waits for the previous to finish):
-            //    Current playing song -> full track
-            //    Next song (+1)       -> 20 seconds
-            //    Next +2              -> 5 seconds
-            //    Next +3              -> 5 seconds
-            if (currentSong != null && !currentSong.isDownloaded && currentSong.localPath == null) {
-                ensureActive()
-                AudioCache.preloadTrackSuspend(
-                    context = context,
-                    audioUrl = currentSong.audioUrl,
-                    songId = currentSong.id,
-                    durationSec = currentSong.duration,
-                    maxSeconds = null
-                )
-            }
-
-            val audioPlan = listOf(
-                upcoming4.getOrNull(0) to 20,
-                upcoming4.getOrNull(1) to 5,
-                upcoming4.getOrNull(2) to 5
-            )
-            for ((song, seconds) in audioPlan) {
-                ensureActive()
-                if (song == null || song.isDownloaded || song.localPath != null) continue
-                AudioCache.preloadTrackSuspend(
-                    context = context,
-                    audioUrl = song.audioUrl,
-                    songId = song.id,
-                    durationSec = song.duration,
-                    maxSeconds = seconds
-                )
-            }
-        }
-    }
 
     fun ensureServiceStarted() {
         try {
@@ -1825,6 +1975,7 @@ class AudioController private constructor(private val context: Context) {
 
     fun stop() {
         stopNearbyPinsTracking()
+        AudioCache.cancelAllActivePreloads()
         player.pause()
         player.seekTo(0)
         publishState(
@@ -1857,7 +2008,14 @@ class AudioController private constructor(private val context: Context) {
     }
 
     fun seekTo(positionMs: Long) {
-        val target = positionMs.coerceAtLeast(0L)
+        val stateDur = _playbackState.value.durationMs
+        val target = if (stateDur > 0L) {
+            positionMs.coerceIn(0L, stateDur)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
+        pendingSeekTargetMs = target
+        pendingSeekDeadlineMs = SystemClock.elapsedRealtime() + 900L
         if (player.currentMediaItem != null) {
             player.seekTo(target)
         } else if (_playbackState.value.currentSong != null) {
@@ -1866,6 +2024,9 @@ class AudioController private constructor(private val context: Context) {
             player.seekTo(target)
         }
         publishState(_playbackState.value.copy(currentPositionMs = target))
+        if (player.playWhenReady) {
+            startProgressTracker()
+        }
         persistCurrentState()
     }
 
@@ -2326,7 +2487,6 @@ class AudioController private constructor(private val context: Context) {
         newState = ensureContextBuffer(newState)
         publishState(newState)
         persistCurrentState()
-        preloadUpcomingTrack()
     }
 
     /**
@@ -2369,14 +2529,12 @@ class AudioController private constructor(private val context: Context) {
     fun addToQueue(song: Song) {
         val updated = _playbackState.value.userQueue + song
         publishState(_playbackState.value.copy(userQueue = updated))
-        preloadUpcomingTrack()
     }
 
     /** Add song immediately next in line ("Play Next") */
     fun playNext(song: Song) {
         val updated = listOf(song) + _playbackState.value.userQueue
         publishState(_playbackState.value.copy(userQueue = updated))
-        preloadUpcomingTrack()
     }
 
     /** Alias for backward compatibility */
@@ -2392,7 +2550,6 @@ class AudioController private constructor(private val context: Context) {
                 userQueue = _playbackState.value.userQueue + song
             )
         )
-        preloadUpcomingTrack()
     }
 
     /** Promote a track from context layer into userQueue at specific position */
@@ -2401,7 +2558,6 @@ class AudioController private constructor(private val context: Context) {
         val clamped = targetIndex.coerceIn(0, current.size)
         current.add(clamped, song)
         publishState(_playbackState.value.copy(userQueue = current))
-        preloadUpcomingTrack()
     }
 
     /** Remove a song from the user-enqueued layer */
@@ -2410,14 +2566,12 @@ class AudioController private constructor(private val context: Context) {
         if (index in current.indices) {
             current.removeAt(index)
             publishState(_playbackState.value.copy(userQueue = current))
-            preloadUpcomingTrack()
         }
     }
 
     /** Clear all songs from the user-enqueued layer (scoped to user queue only) */
     fun clearUserQueue() {
         publishState(_playbackState.value.copy(userQueue = emptyList()))
-        preloadUpcomingTrack()
     }
 
     /** Reorder songs inside the user-enqueued layer */
@@ -2427,7 +2581,6 @@ class AudioController private constructor(private val context: Context) {
             val moved = current.removeAt(from)
             current.add(to, moved)
             publishState(_playbackState.value.copy(userQueue = current))
-            preloadUpcomingTrack()
         }
     }
 
@@ -2489,7 +2642,6 @@ class AudioController private constructor(private val context: Context) {
             )
             updatedState = ensureContextBuffer(updatedState)
             publishState(updatedState)
-            preloadUpcomingTrack()
         }
     }
 
@@ -2506,7 +2658,6 @@ class AudioController private constructor(private val context: Context) {
                     contextIndex = if (newIndex != -1) newIndex else _playbackState.value.contextIndex
                 )
             )
-            preloadUpcomingTrack()
         }
     }
 
@@ -2547,8 +2698,7 @@ class AudioController private constructor(private val context: Context) {
         persistCurrentCapsuleSession(syncToServer = false, finalizeSession = true)
         homeQueueHydrationJob?.cancel()
         homeQueueHydrationJob = null
-        preloadJob?.cancel()
-        preloadJob = null
+        AudioCache.cancelAllActivePreloads()
         lastPersistedOrderIdentity = null
         lastPersistedContextIdentity = null
         lastPersistedRecentIdentity = null

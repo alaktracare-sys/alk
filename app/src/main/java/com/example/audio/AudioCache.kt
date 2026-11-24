@@ -10,37 +10,34 @@ import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheEvictor
 import androidx.media3.datasource.cache.CacheKeyFactory
 import androidx.media3.datasource.cache.CacheSpan
-import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.SimpleCache
+import com.example.data.remote.AppSecurityInterceptor
 import com.example.model.Song
 import com.example.util.NetworkMonitor
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.coroutineContext
+import okhttp3.CacheControl
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
 import java.io.File
 import java.io.IOException
 import java.util.Locale
 import java.util.TreeSet
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 /**
  * Dynamic LRU cache evictor that supports on-the-fly resizing of maximum cache space.
@@ -148,6 +145,7 @@ object AudioCache {
     const val MAX_CACHE_SIZE_BYTES: Long = 512L * 1024L * 1024L // 512 MB default constant
     const val PREFS_NAME = "already_prefs"
     const val KEY_CACHE_CAP_MB = "audio_cache_cap_mb"
+    private const val KEY_PRUNED_PARTIAL_SPANS_V161 = "pruned_partial_precache_spans_v161"
     const val AUDIO_CACHE_DIR = "audio_cache"
 
     val PRESET_CAPS_MB = listOf(128, 256, 512, 1024, 2048, 4096)
@@ -161,10 +159,32 @@ object AudioCache {
     @Volatile
     private var databaseProviderInstance: StandaloneDatabaseProvider? = null
 
+    @Volatile
+    private var streamingHttpClientInstance: OkHttpClient? = null
+
     private val fullyCachedSongIdsMemory = ConcurrentHashMap.newKeySet<Int>()
     private val downloadedSongIdsMemory = ConcurrentHashMap.newKeySet<Int>()
-    private val activePreloadSongIds = ConcurrentHashMap.newKeySet<Int>()
-    private val preloadSemaphore = Semaphore(permits = 1)
+    private val cachedContentLengthBySongId = ConcurrentHashMap<Int, Long>()
+    private const val CACHE_FRAGMENT_SIZE_BYTES = 20L * 1024L * 1024L
+
+    fun getCachedContentLengthFast(songId: Int): Long {
+        if (songId <= 0) return -1L
+        return cachedContentLengthBySongId[songId] ?: -1L
+    }
+
+    fun updateCachedContentLength(songId: Int, lengthBytes: Long) {
+        if (songId > 0 && lengthBytes > 0L) {
+            cachedContentLengthBySongId[songId] = lengthBytes
+        }
+    }
+
+    fun cancelActivePreloadForSong(songId: Int) {
+        // Early audio pre-caching is disabled so active playback streams uninterrupted.
+    }
+
+    fun cancelAllActivePreloads() {
+        // Early audio pre-caching is disabled so active playback streams uninterrupted.
+    }
 
     private val _playableOfflineSongIds = MutableStateFlow<Set<Int>>(emptySet())
     val playableOfflineSongIds: StateFlow<Set<Int>> = _playableOfflineSongIds.asStateFlow()
@@ -233,7 +253,13 @@ object AudioCache {
         val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (isKeyFullyCached(appContext, "song:$songId", durationSec)) {
+                val key = "song:$songId"
+                val cache = getSimpleCache(appContext)
+                val len = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+                if (len > 0L) {
+                    cachedContentLengthBySongId[songId] = len
+                }
+                if (isKeyFullyCached(appContext, key, durationSec)) {
                     if (fullyCachedSongIdsMemory.add(songId)) {
                         publishPlayableOfflineIds()
                     }
@@ -243,6 +269,36 @@ object AudioCache {
                     }
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    fun selectIncompleteCacheKeysToPrune(
+        keys: Collection<String>,
+        isKeyFullyCachedCheck: (String) -> Boolean
+    ): List<String> {
+        return keys.filter { key ->
+            extractSongIdFromKey(key) != null && !isKeyFullyCachedCheck(key)
+        }
+    }
+
+    private fun pruneIncompletePreCachedSpansOnce(appContext: Context, cache: SimpleCache) {
+        try {
+            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (prefs.getBoolean(KEY_PRUNED_PARTIAL_SPANS_V161, false)) return
+            val keysSnapshot = cache.keys.toList()
+            val keysToPrune = selectIncompleteCacheKeysToPrune(keysSnapshot) { key ->
+                isKeyFullyCached(appContext, key)
+            }
+            for (key in keysToPrune) {
+                runCatching { cache.removeResource(key) }
+                extractSongIdFromKey(key)?.let { cachedContentLengthBySongId.remove(it) }
+            }
+            prefs.edit().putBoolean(KEY_PRUNED_PARTIAL_SPANS_V161, true).apply()
+            if (keysToPrune.isNotEmpty()) {
+                Log.d(TAG, "Pruned ${keysToPrune.size} incomplete/partial pre-cached span keys")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Skipped partial span cleanup: ${e.message}")
         }
     }
 
@@ -259,6 +315,8 @@ object AudioCache {
                         name.removeSuffix(".mp3").toIntOrNull()?.let { downloadedSongIdsMemory.add(it) }
                     }
                 }
+                val cache = getSimpleCache(appContext)
+                pruneIncompletePreCachedSpansOnce(appContext, cache)
                 getFullyCachedSongIds(appContext, forceRescan = true)
             } catch (_: Exception) {
             } finally {
@@ -430,12 +488,27 @@ object AudioCache {
         }
     }
 
-    private fun createHttpDataSourceFactory(): DefaultHttpDataSource.Factory {
-        return DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8000)
-            .setReadTimeoutMs(15000)
+    private fun getStreamingOkHttpClient(): OkHttpClient {
+        return streamingHttpClientInstance ?: synchronized(this) {
+            streamingHttpClientInstance ?: OkHttpClient.Builder()
+                .connectionPool(ConnectionPool(4, 5, TimeUnit.MINUTES))
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .cache(null)
+                .addInterceptor(AppSecurityInterceptor())
+                .build()
+                .also { streamingHttpClientInstance = it }
+        }
+    }
+
+    private fun createHttpDataSourceFactory(): OkHttpAudioDataSource.Factory {
+        return OkHttpAudioDataSource.Factory(getStreamingOkHttpClient())
             .setUserAgent("AlaktraAndroidApp/${com.example.BuildConfig.VERSION_NAME}")
+            .setCacheControl(CacheControl.Builder().noTransform().build())
             .setDefaultRequestProperties(
                 mapOf("X-App-Secret" to com.example.BuildConfig.API_SECRET)
             )
@@ -444,7 +517,7 @@ object AudioCache {
     /**
      * Builds a DataSource.Factory:
      * - Delegates file://, content://, asset:// directly (used for local downloaded MP3s).
-     * - Delegates http:// and https:// through CacheDataSource with SimpleCache.
+     * - Delegates http:// and https:// through CacheDataSource with SimpleCache and OkHttp upstream.
      * - Fails upstream HTTP opens immediately when offline instead of hanging for socket timeouts.
      * - Truncates gracefully with C.RESULT_END_OF_INPUT at the boundary of already-cached bytes when offline
      *   so ExoPlayer finishes playing every cached millisecond smoothly and transitions via STATE_ENDED.
@@ -455,7 +528,7 @@ object AudioCache {
         val rawHttpFactory = createHttpDataSourceFactory()
 
         val offlineFastFailUpstream = DataSource.Factory {
-            val delegate = rawHttpFactory.createDataSource()
+            val delegate = rawHttpFactory.createDataSource() as OkHttpAudioDataSource
             object : DataSource {
                 override fun addTransferListener(transferListener: TransferListener) {
                     delegate.addTransferListener(transferListener)
@@ -466,20 +539,30 @@ object AudioCache {
                         throw IOException("Offline: skipping upstream HTTP request")
                     }
                     return try {
-                        delegate.open(dataSpec)
+                        val len = delegate.open(dataSpec)
+                        val openedUri = dataSpec.uri.toString()
+                        val cacheKey = buildCacheKey(openedUri, dataSpec.key)
+                        val songId = extractSongIdFromKey(cacheKey)
+                        if (songId != null) {
+                            val totalLen = delegate.getDocumentSizeBytes()
+                            if (totalLen > 0L) {
+                                cachedContentLengthBySongId[songId] = totalLen
+                            } else if (dataSpec.position == 0L && len > 0L) {
+                                cachedContentLengthBySongId[songId] = len
+                            }
+                        }
+                        if (NetworkMonitor.matchesActiveServer(openedUri)) {
+                            NetworkMonitor.markServerReachable()
+                        }
+                        len
                     } catch (e: IOException) {
-                        markUnreachableIfServerError(appContext, dataSpec.uri.toString(), e, isSpeculative = false)
+                        markUnreachableIfServerError(appContext, dataSpec.uri.toString(), e, isSpeculative = true)
                         throw e
                     }
                 }
 
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-                    return try {
-                        delegate.read(buffer, offset, length)
-                    } catch (e: IOException) {
-                        markUnreachableIfServerError(appContext, delegate.uri?.toString(), e, isSpeculative = false)
-                        throw e
-                    }
+                    return delegate.read(buffer, offset, length)
                 }
 
                 override fun getUri(): Uri? = delegate.uri
@@ -494,11 +577,16 @@ object AudioCache {
             return DefaultDataSource.Factory(appContext, offlineFastFailUpstream)
         }
 
+        val cacheDataSinkFactory = CacheDataSink.Factory()
+            .setCache(cache)
+            .setFragmentSize(CACHE_FRAGMENT_SIZE_BYTES)
+
         val cacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
+            .setCacheWriteDataSinkFactory(cacheDataSinkFactory)
             .setUpstreamDataSourceFactory(offlineFastFailUpstream)
             .setCacheKeyFactory(cacheKeyFactory)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE or CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
         val gracefulCacheFactory = DataSource.Factory {
             val cacheDs = cacheDataSourceFactory.createDataSource()
@@ -516,7 +604,11 @@ object AudioCache {
                     hitOfflineEndOfCache = false
                     val cacheKey = buildCacheKey(dataSpec.uri.toString(), dataSpec.key)
                     currentSongId = extractSongIdFromKey(cacheKey)
-                    return cacheDs.open(dataSpec)
+                    val len = cacheDs.open(dataSpec)
+                    if (currentSongId != null && dataSpec.position == 0L && len > 0L) {
+                        cachedContentLengthBySongId[currentSongId!!] = len
+                    }
+                    return len
                 }
 
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -598,17 +690,17 @@ object AudioCache {
                 // Exact file size is known: verify entire range [0, contentLength) is completely cached
                 cache.isCached(key, 0L, contentLength)
             } else {
-                // ContentLength unset: verify contiguous span starting at 0 and total bytes exceeds expected audio size
+                // ContentLength unset: verify contiguous cached audio starting at byte 0 meets expected size
                 val spans = cache.getCachedSpans(key)
                 if (spans.isEmpty()) return false
-                val span0 = spans.firstOrNull { it.position == 0L } ?: return false
-                val totalBytes = cache.getCachedBytes(key, 0L, -1L)
+                spans.firstOrNull { it.position == 0L } ?: return false
+                val contiguousFrom0 = cache.getCachedLength(key, 0L, Long.MAX_VALUE)
                 val minBytes = if (durationSec > 0.0) {
                     (durationSec * 12_000.0).toLong().coerceAtLeast(350_000L)
                 } else {
                     1_000_000L // 1 MB minimum for complete audio file
                 }
-                span0.length >= minBytes && totalBytes >= minBytes
+                contiguousFrom0 >= minBytes
             }
         } catch (e: Exception) {
             false
@@ -637,6 +729,10 @@ object AudioCache {
             val ids = mutableSetOf<Int>()
             for (key in cache.keys) {
                 val songId = extractSongIdFromKey(key) ?: continue
+                val contentLen = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+                if (contentLen > 0L) {
+                    cachedContentLengthBySongId[songId] = contentLen
+                }
                 if (isKeyFullyCached(context, key)) {
                     ids.add(songId)
                 }
@@ -680,7 +776,7 @@ object AudioCache {
     }
 
     /**
-     * Estimates the byte prefix length required to cover [seconds] of audio (plus container/ID3 header margin).
+     * Estimates byte length for [seconds] of audio (used purely by offline/cache tests).
      */
     fun estimateBytesForSeconds(
         durationSec: Double,
@@ -698,134 +794,6 @@ object AudioCache {
         }
     }
 
-    /**
-     * Preloads either the full audio track ([maxSeconds] == null) or a leading prefix of
-     * [maxSeconds] seconds sequentially on Dispatchers.IO, cancelling immediately on job cancellation.
-     */
-    suspend fun preloadTrackSuspend(
-        context: Context,
-        audioUrl: String,
-        songId: Int,
-        durationSec: Double = 0.0,
-        maxSeconds: Int? = null
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (songId <= 0 || audioUrl.isBlank() || audioUrl.startsWith("file://")) return@withContext false
-        val appContext = context.applicationContext
-        if (NetworkMonitor.shouldSkipNetworkRequests(appContext)) return@withContext false
-        if (downloadedSongIdsMemory.contains(songId) || fullyCachedSongIdsMemory.contains(songId)) {
-            return@withContext true
-        }
-        if (!activePreloadSongIds.add(songId)) return@withContext false
-
-        try {
-            preloadSemaphore.withPermit {
-                coroutineContext.ensureActive()
-                if (NetworkMonitor.shouldSkipNetworkRequests(appContext)) return@withPermit false
-                val cache = getSimpleCache(appContext)
-                val key = "song:$songId"
-
-                if (isSongFullyCached(appContext, songId, durationSec)) {
-                    if (fullyCachedSongIdsMemory.add(songId)) {
-                        publishPlayableOfflineIds()
-                    }
-                    return@withPermit true
-                }
-
-                val targetBytes = if (maxSeconds != null && maxSeconds > 0) {
-                    val knownLength = ContentMetadata.getContentLength(cache.getContentMetadata(key))
-                    val desired = estimateBytesForSeconds(durationSec, knownLength, maxSeconds)
-                    if (desired > 0L && cache.getCachedBytes(key, 0L, desired) >= desired) {
-                        Log.d(TAG, "Song #$songId already has >= ${maxSeconds}s ($desired bytes) cached")
-                        return@withPermit true
-                    }
-                    desired
-                } else {
-                    C.LENGTH_UNSET.toLong()
-                }
-
-                val dataSpecBuilder = DataSpec.Builder()
-                    .setUri(Uri.parse(audioUrl))
-                    .setKey(key)
-                    .setPosition(0L)
-                if (targetBytes > 0L) {
-                    dataSpecBuilder.setLength(targetBytes)
-                }
-                val dataSpec = dataSpecBuilder.build()
-
-                val httpDataSource = createHttpDataSourceFactory().createDataSource()
-                val cacheDataSource = CacheDataSource(
-                    cache,
-                    httpDataSource,
-                    CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
-                )
-
-                val cacheWriter = CacheWriter(
-                    cacheDataSource,
-                    dataSpec,
-                    null,
-                    null
-                )
-                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion {
-                    try {
-                        cacheWriter.cancel()
-                    } catch (_: Exception) {}
-                }
-                try {
-                    cacheWriter.cache()
-                } finally {
-                    cancelHandle?.dispose()
-                }
-
-                if (isKeyFullyCached(appContext, key, durationSec)) {
-                    if (fullyCachedSongIdsMemory.add(songId)) {
-                        publishPlayableOfflineIds()
-                    }
-                }
-                Log.d(
-                    TAG,
-                    if (maxSeconds == null) {
-                        "Successfully fully cached song #$songId"
-                    } else {
-                        "Successfully cached first ${maxSeconds}s of song #$songId"
-                    }
-                )
-                true
-            }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (e: Exception) {
-            if (e is IOException) {
-                markUnreachableIfServerError(appContext, audioUrl, e, isSpeculative = true)
-            }
-            Log.d(TAG, "Preload skipped or interrupted for song #$songId: ${e.message}")
-            false
-        } finally {
-            activePreloadSongIds.remove(songId)
-        }
-    }
-
-    /**
-     * Preloads an upcoming track into the streaming audio cache asynchronously.
-     * Caches the entire track so that transitions to offline mode have full tracks.
-     */
-    fun preloadTrack(
-        context: Context,
-        audioUrl: String,
-        songId: Int
-    ) {
-        if (songId <= 0 || audioUrl.isBlank() || audioUrl.startsWith("file://")) return
-        val appContext = context.applicationContext
-        CoroutineScope(Dispatchers.IO).launch {
-            preloadTrackSuspend(
-                context = appContext,
-                audioUrl = audioUrl,
-                songId = songId,
-                durationSec = 0.0,
-                maxSeconds = null
-            )
-        }
-    }
-
     private fun markUnreachableIfServerError(
         context: Context,
         uriString: String?,
@@ -840,7 +808,8 @@ object AudioCache {
                     context = context,
                     serverUrl = uriString ?: "",
                     error = error,
-                    httpCode = error.responseCode
+                    httpCode = error.responseCode,
+                    verifyFirst = isSpeculative
                 )
             }
             return
@@ -910,6 +879,7 @@ object AudioCache {
                 cache.removeResource(key)
             }
             fullyCachedSongIdsMemory.clear()
+            cachedContentLengthBySongId.clear()
             publishPlayableOfflineIds()
             Log.d(TAG, "Cleared streaming audio cache")
         } catch (e: Exception) {

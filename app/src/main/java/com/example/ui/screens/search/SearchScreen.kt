@@ -239,6 +239,37 @@ fun SearchScreen(
         }
     }
 
+    var wasOnline by remember { mutableStateOf(isOnline) }
+    LaunchedEffect(isOnline) {
+        if (!wasOnline && isOnline) {
+            val cleanQ = query.trim()
+            try {
+                if (cleanQ.isBlank()) {
+                    repository.markSearchRefreshed()
+                }
+                coroutineScope {
+                    val songsDeferred = if (cleanQ.isNotBlank()) {
+                        async { repository.searchSongs(query = cleanQ, limit = 30) }
+                    } else null
+                    val artistsDeferred = async { repository.getArtists(query = cleanQ) }
+                    val freshArtists = artistsDeferred.await()
+                    if (freshArtists.isNotEmpty() && freshArtists != matchingArtists) {
+                        matchingArtists = freshArtists
+                    }
+                    if (songsDeferred != null) {
+                        val freshSongs = songsDeferred.await()
+                        if (freshSongs.isNotEmpty() && freshSongs != results) {
+                            results = freshSongs
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
+        }
+        wasOnline = isOnline
+    }
+
     LaunchedEffect(selectedFilter) {
         if (query.isBlank() && (selectedFilter == SearchFilter.DOWNLOADED || selectedFilter == SearchFilter.FAVORITES)) {
             try {

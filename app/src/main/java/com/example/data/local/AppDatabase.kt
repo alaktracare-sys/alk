@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,9 +43,7 @@ class AppDatabase private constructor(context: Context) :
                 _downloadedSongsFlow.value = queryAllDownloadedSongs()
                 _playlistsFlow.value = queryAllPlaylists()
                 _userFlow.value = queryLatestUser()
-                if (_listeningHistoryFlow.subscriptionCount.value > 0) {
-                    _listeningHistoryFlow.value = queryAllHistory()
-                }
+                _listeningHistoryFlow.value = queryAllHistory()
                 if (_songsFlow.subscriptionCount.value > 0) {
                     _songsFlow.value = queryAllSongs()
                 }
@@ -277,9 +276,7 @@ class AppDatabase private constructor(context: Context) :
                 _downloadedSongsFlow.value = queryAllDownloadedSongs()
                 _playlistsFlow.value = queryAllPlaylists()
                 _userFlow.value = queryLatestUser()
-                if (_listeningHistoryFlow.subscriptionCount.value > 0) {
-                    _listeningHistoryFlow.value = queryAllHistory()
-                }
+                _listeningHistoryFlow.value = queryAllHistory()
                 if (_songsFlow.subscriptionCount.value > 0) {
                     _songsFlow.value = queryAllSongs()
                 }
@@ -618,6 +615,16 @@ class AppDatabase private constructor(context: Context) :
         }
         db.update("songs", values, "id = ?", arrayOf(songId.toString()))
         db.update("downloaded_songs", values, "song_id = ?", arrayOf(songId.toString()))
+    }
+
+    override suspend fun updateSongDuration(songId: Int, durationSec: Double): Unit = withContext(Dispatchers.IO) {
+        if (songId <= 0 || durationSec <= 0.0) return@withContext
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("duration", durationSec)
+        }
+        db.update("songs", values, "id = ? AND duration <= 0", arrayOf(songId.toString()))
+        db.update("downloaded_songs", values, "song_id = ? AND duration <= 0", arrayOf(songId.toString()))
     }
 
     override suspend fun getLikedSongs(): List<SongEntity> = withContext(Dispatchers.IO) {
@@ -1076,7 +1083,16 @@ class AppDatabase private constructor(context: Context) :
         return list
     }
 
-    fun getAllHistory(): Flow<List<ListeningHistoryEntity>> = _listeningHistoryFlow.asStateFlow()
+    fun getAllHistory(): StateFlow<List<ListeningHistoryEntity>> = _listeningHistoryFlow.asStateFlow()
+
+    suspend fun ensureListeningHistoryLoaded() = withContext(Dispatchers.IO) {
+        try {
+            val loaded = queryAllHistory()
+            if (_listeningHistoryFlow.value != loaded) {
+                _listeningHistoryFlow.value = loaded
+            }
+        } catch (_: Exception) {}
+    }
 
     fun getAllHistoryList(): List<ListeningHistoryEntity> = queryAllHistory()
 

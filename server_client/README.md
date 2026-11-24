@@ -48,6 +48,7 @@ You can run your Alaktra Music server globally with your custom GoDaddy domain a
    ```yaml
    tunnel: <TUNNEL_UUID>
    credentials-file: /path/to/<TUNNEL_UUID>.json
+   protocol: http2
    ingress:
      - hostname: api.alaktracare.in
        service: http://localhost:8000
@@ -55,7 +56,7 @@ You can run your Alaktra Music server globally with your custom GoDaddy domain a
    ```
 5. **Run the Tunnel**:
    ```bash
-   cloudflared tunnel run alaktra-tunnel
+   cloudflared tunnel run --protocol http2 alaktra-tunnel
    ```
 6. **Access Upload Panel & App**:
    - Web Upload Panel: `https://api.alaktracare.in/`

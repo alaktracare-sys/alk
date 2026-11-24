@@ -23,6 +23,7 @@ interface SongDao {
     suspend fun insertCachedSong(song: SongEntity)
     suspend fun updateSongLiked(songId: Int, isLiked: Boolean)
     suspend fun updateSongDominantColor(songId: Int, dominantColorHex: String)
+    suspend fun updateSongDuration(songId: Int, durationSec: Double)
     suspend fun getLikedSongs(): List<SongEntity>
     suspend fun searchCachedSongs(query: String): List<SongEntity>
 }

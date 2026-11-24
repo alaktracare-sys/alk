@@ -93,6 +93,7 @@ fun MiniPlayer(
     onExpand: () -> Unit,
     onArtworkLoaded: ((Int, String) -> Unit)? = null,
     currentPositionProvider: (() -> Long)? = null,
+    durationProvider: (() -> Long)? = null,
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
@@ -201,7 +202,10 @@ fun MiniPlayer(
             val width = size.width
             val height = size.height
             val positionMs = currentPositionProvider?.invoke() ?: playbackState.currentPositionMs
-            val durationMs = playbackState.durationMs
+            val songFallbackDurMs = if (song.duration > 0.0) (song.duration * 1000.0).toLong() else 0L
+            val durationMs = durationProvider?.invoke()?.takeIf { it > 0L }
+                ?: playbackState.durationMs.takeIf { it > 0L }
+                ?: songFallbackDurMs
             val progressFraction = if (durationMs > 0L) {
                 (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             } else {

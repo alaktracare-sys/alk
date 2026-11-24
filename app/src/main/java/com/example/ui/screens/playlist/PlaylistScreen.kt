@@ -42,6 +42,7 @@ import com.example.ui.components.DailyPlaylistCollageCover
 import com.example.ui.components.FuseBlendStoryDialog
 import com.example.ui.components.FuseContributorBadge
 import com.example.ui.components.FuseDualAvatarCover
+import com.example.ui.components.LocalIsOnline
 import com.example.ui.components.SongItemRow
 import com.example.ui.components.SongListSkeleton
 import com.example.ui.components.SongMenuBottomSheet
@@ -102,9 +103,11 @@ fun PlaylistScreen(
         else -> "alaktra:playlist:$playlistId"
     }
 
-    LaunchedEffect(playlistId, playlistName) {
+    val isOnline = LocalIsOnline.current
+
+    suspend fun loadPlaylistData(forceOnlineFetch: Boolean) {
         if (songs.isEmpty()) isLoading = true
-        val isOnline = com.example.util.NetworkMonitor.isOnline(context)
+        val onlineNow = com.example.util.NetworkMonitor.isOnline(context)
         try {
             val detectedFuse = !isDownloadedPlaylist && !isLikedPlaylist && !isOfflineBackup && !isDailyPlaylist &&
                 (FuseCodeCodec.isFusePlaylistName(playlistName) || repository.isFusePlaylist(playlistId))
@@ -118,7 +121,7 @@ fun PlaylistScreen(
                     }
                     isLoading = false
                 }
-                if (isOnline || dailyPlaylistMeta == null) {
+                if (onlineNow || forceOnlineFetch || dailyPlaylistMeta == null) {
                     val freshMeta = repository.getDailyPlaylistMeta(playlistId)
                     if (freshMeta != null) {
                         if (freshMeta != dailyPlaylistMeta) dailyPlaylistMeta = freshMeta
@@ -137,7 +140,7 @@ fun PlaylistScreen(
                     }
                     isLoading = false
                 }
-                if (isOnline) {
+                if (onlineNow || forceOnlineFetch) {
                     val freshBundle = repository.getFusePlaylistBundle(playlistId, forceRefresh = true)
                     if (freshBundle != null) {
                         if (freshBundle.playlist != fusePlaylistMeta) fusePlaylistMeta = freshBundle.playlist
@@ -156,14 +159,14 @@ fun PlaylistScreen(
                     isLoading = false
                 }
 
-                if (isOnline || isOfflineBackup || isDownloadedPlaylist) {
+                if (onlineNow || forceOnlineFetch || isOfflineBackup || isDownloadedPlaylist) {
                     val fresh = when {
                         isOfflineBackup -> repository.getOfflineBackupSongs()
                         isLikedPlaylist -> repository.getLikedSongs()
                         isDownloadedPlaylist -> repository.getDownloadedSongs()
                         else -> repository.getPlaylistSongs(playlistId)
                     }
-                    if (fresh != songs && (fresh.isNotEmpty() || isOfflineBackup || isDownloadedPlaylist || isOnline)) {
+                    if (fresh != songs && (fresh.isNotEmpty() || isOfflineBackup || isDownloadedPlaylist || onlineNow)) {
                         songs = fresh
                     }
                 }
@@ -173,6 +176,18 @@ fun PlaylistScreen(
         } finally {
             isLoading = false
         }
+    }
+
+    LaunchedEffect(playlistId, playlistName) {
+        loadPlaylistData(forceOnlineFetch = false)
+    }
+
+    var wasOnline by remember { mutableStateOf(isOnline) }
+    LaunchedEffect(isOnline) {
+        if (!wasOnline && isOnline) {
+            loadPlaylistData(forceOnlineFetch = true)
+        }
+        wasOnline = isOnline
     }
 
     Box(

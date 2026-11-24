@@ -4,6 +4,8 @@ from typing import Optional, List
 from database import get_db, MUSIC_DIR, COVER_DIR, allot_song_artists, attach_artists_to_song_dicts
 import uuid
 import os
+import asyncio
+from email.utils import formatdate
 import hashlib
 import mimetypes
 import struct
@@ -203,7 +205,7 @@ def get_songs(request: Request):
     "/{song_id}/stream",
     methods=["GET", "HEAD"]
 )
-def stream_song(song_id: int, request: Request):
+async def stream_song(song_id: int, request: Request):
     db = get_db()
     try:
         song = db.execute(
@@ -222,8 +224,8 @@ def stream_song(song_id: int, request: Request):
             raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
         file_size = os.path.getsize(file_path)
+        file_mtime = os.path.getmtime(file_path)
         etag = song["etag"]
-        updated_at_str = str(song["updated_at"] or "")
 
         if not etag:
             with open(file_path, "rb") as f:
@@ -238,32 +240,42 @@ def stream_song(song_id: int, request: Request):
     if not content_type:
         content_type = "audio/mpeg"
 
-    range_header = request.headers.get("range") or request.headers.get("Range")
+    last_modified = formatdate(file_mtime, usegmt=True)
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": content_type,
+        "ETag": etag,
+        "Last-Modified": last_modified,
+        "Cache-Control": "public, max-age=86400, no-transform",
+        "X-Accel-Buffering": "no",
+    }
 
     if request.method == "HEAD":
         return StreamingResponse(
             iter([]),
             status_code=200,
             headers={
-                "Accept-Ranges": "bytes",
+                **common_headers,
                 "Content-Length": str(file_size),
-                "Content-Type": content_type,
-                "ETag": etag,
-            }
+            },
         )
 
-    def iterfile(start: int, end: int, chunk_size: int = 16384):
+    async def aiterfile(start: int, end: int, chunk_size: int = 131072):
+        def _read_chunk(file_obj, n: int) -> bytes:
+            return file_obj.read(n)
+
         with open(file_path, "rb") as f:
             f.seek(start)
             remaining = end - start + 1
             while remaining > 0:
                 read_bytes = min(chunk_size, remaining)
-                data = f.read(read_bytes)
+                data = await asyncio.to_thread(_read_chunk, f, read_bytes)
                 if not data:
                     break
                 remaining -= len(data)
                 yield data
 
+    range_header = request.headers.get("range") or request.headers.get("Range")
     if range_header and range_header.startswith("bytes="):
         try:
             bytes_range = range_header.replace("bytes=", "").strip()
@@ -277,7 +289,7 @@ def stream_song(song_id: int, request: Request):
                     headers={
                         "Content-Range": f"bytes */{file_size}",
                         "Accept-Ranges": "bytes",
-                    }
+                    },
                 )
 
             if start_str and end_str:
@@ -300,32 +312,27 @@ def stream_song(song_id: int, request: Request):
             chunk_length = end - start + 1
 
             headers = {
+                **common_headers,
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
                 "Content-Length": str(chunk_length),
-                "Content-Type": content_type,
-                "ETag": etag,
-                "Last-Modified": updated_at_str,
             }
 
             return StreamingResponse(
-                iterfile(start, end),
+                aiterfile(start, end),
                 status_code=206,
                 headers=headers,
             )
-        except Exception as e:
+        except Exception:
             # Fallback to full stream if range parsing encounters edge case
             pass
 
-    # Full file response fallback
+    # Full file response
     headers = {
-        "Accept-Ranges": "bytes",
+        **common_headers,
         "Content-Length": str(file_size),
-        "Content-Type": content_type,
-        "ETag": etag,
     }
     return StreamingResponse(
-        iterfile(0, file_size - 1) if file_size > 0 else iter([]),
+        aiterfile(0, file_size - 1) if file_size > 0 else iter([]),
         media_type=content_type,
         headers=headers,
     )

@@ -72,6 +72,9 @@ import com.example.ui.screens.playlist.AddSongToPlaylistScreen
 import com.example.ui.screens.playlist.PlaylistScreen
 import com.example.ui.screens.profile.ProfileScreen
 import com.example.ui.screens.search.SearchScreen
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.soundcapsule.SoundCapsuleHost
@@ -141,6 +144,19 @@ fun MainShell(
 
     LaunchedEffect(Unit) {
         AudioCache.warmUpCacheIndexAsync(context)
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                com.example.util.NetworkMonitor.verifyReachabilitySoon(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     LaunchedEffect(isOnline) {
@@ -686,7 +702,7 @@ fun MainShell(
                                     val capsuleStats by capsuleVm.stats.collectAsStateWithLifecycle()
                                     val availableMonths by capsuleVm.availableMonths.collectAsStateWithLifecycle()
                                     val monthlyFeed by capsuleVm.monthlyFeed.collectAsStateWithLifecycle()
-                                    val historyList by repository.listeningHistory.collectAsStateWithLifecycle(initialValue = emptyList())
+                                    val historyList by repository.listeningHistory.collectAsStateWithLifecycle()
                                     SoundCapsuleHost(
                                         stats = capsuleStats,
                                         availableMonths = availableMonths,
@@ -778,6 +794,11 @@ fun MainShell(
                 MiniPlayer(
                     playbackState = miniPlaybackState,
                     currentPositionProvider = { playbackStateHolder.value.currentPositionMs },
+                    durationProvider = {
+                        val st = playbackStateHolder.value
+                        st.durationMs.takeIf { it > 0L }
+                            ?: ((st.currentSong?.duration ?: 0.0) * 1000.0).toLong()
+                    },
                     onTogglePlay = { audioController.togglePlayPause() },
                     onNext = { audioController.next() },
                     onPrevious = { audioController.previous() },

@@ -1489,10 +1489,18 @@ private fun LiveDurationBar(
     modifier: Modifier = Modifier
 ) {
     val liveState by audioController.playbackState.collectAsState()
+    val songId = liveState.currentSong?.id
     val positionMs = if (liveState.currentSong != null) liveState.currentPositionMs else fallbackPositionMs
+    val resolvedDurationMs = when {
+        liveState.currentSong != null && liveState.durationMs > 0L -> liveState.durationMs
+        durationMs > 0L -> durationMs
+        (liveState.currentSong?.duration ?: 0.0) > 0.0 -> ((liveState.currentSong?.duration ?: 0.0) * 1000.0).toLong()
+        else -> 0L
+    }
     CustomDurationBar(
+        songId = songId,
         positionMs = positionMs,
-        durationMs = durationMs,
+        durationMs = resolvedDurationMs,
         onSeek = { targetMs -> audioController.seekTo(targetMs) },
         modifier = modifier
     )
@@ -1500,6 +1508,7 @@ private fun LiveDurationBar(
 
 @Composable
 private fun CustomDurationBar(
+    songId: Int?,
     positionMs: Long,
     durationMs: Long,
     onSeek: (Long) -> Unit,
@@ -1507,22 +1516,40 @@ private fun CustomDurationBar(
 ) {
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    var optimisticSeekMs by remember { mutableStateOf<Long?>(null) }
 
-    // When track/duration changes, cleanly reset dragging state
-    LaunchedEffect(durationMs) {
+    // Reset dragging & optimistic seek only when track changes
+    LaunchedEffect(songId) {
         isDragging = false
+        optimisticSeekMs = null
     }
+
+    // Clear optimistic seek once live player position converges or short timeout passes
+    LaunchedEffect(positionMs, optimisticSeekMs) {
+        val target = optimisticSeekMs ?: return@LaunchedEffect
+        if (kotlin.math.abs(positionMs - target) <= 1_500L) {
+            optimisticSeekMs = null
+        } else {
+            kotlinx.coroutines.delay(750L)
+            if (optimisticSeekMs == target) {
+                optimisticSeekMs = null
+            }
+        }
+    }
+
+    val effectivePositionMs = optimisticSeekMs ?: positionMs
+    val latestDurationMs by rememberUpdatedState(durationMs)
 
     val currentFraction = if (isDragging) {
         dragFraction
     } else {
-        if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+        if (durationMs > 0L) (effectivePositionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     }
 
     val displayPositionMs = if (isDragging) {
         (dragFraction * durationMs).toLong()
     } else {
-        positionMs
+        effectivePositionMs
     }
 
     val density = LocalDensity.current
@@ -1536,26 +1563,34 @@ private fun CustomDurationBar(
                 .height(34.dp)
                 .testTag("player_seek_bar")
                 .onSizeChanged { barWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                .pointerInput(durationMs) {
+                .pointerInput(songId) {
                     detectTapGestures { offset ->
-                        if (durationMs > 0L && barWidthPx > 0f) {
+                        val dur = latestDurationMs
+                        if (dur > 0L && barWidthPx > 0f) {
                             val frac = (offset.x / barWidthPx).coerceIn(0f, 1f)
+                            val targetMs = (frac * dur).toLong()
                             dragFraction = frac
-                            onSeek((frac * durationMs).toLong())
+                            optimisticSeekMs = targetMs
+                            onSeek(targetMs)
                         }
                     }
                 }
-                .pointerInput(durationMs) {
+                .pointerInput(songId) {
                     detectHorizontalDragGestures(
                         onDragStart = { offset ->
-                            if (durationMs > 0L && barWidthPx > 0f) {
+                            val dur = latestDurationMs
+                            if (dur > 0L && barWidthPx > 0f) {
                                 isDragging = true
+                                optimisticSeekMs = null
                                 dragFraction = (offset.x / barWidthPx).coerceIn(0f, 1f)
                             }
                         },
                         onDragEnd = {
-                            if (durationMs > 0L) {
-                                onSeek((dragFraction * durationMs).toLong())
+                            val dur = latestDurationMs
+                            if (dur > 0L) {
+                                val targetMs = (dragFraction * dur).toLong()
+                                optimisticSeekMs = targetMs
+                                onSeek(targetMs)
                             }
                             isDragging = false
                         },
@@ -1564,7 +1599,8 @@ private fun CustomDurationBar(
                         },
                         onHorizontalDrag = { change, _ ->
                             change.consume()
-                            if (durationMs > 0L && barWidthPx > 0f) {
+                            val dur = latestDurationMs
+                            if (dur > 0L && barWidthPx > 0f) {
                                 dragFraction = (change.position.x / barWidthPx).coerceIn(0f, 1f)
                             }
                         }

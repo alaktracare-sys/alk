@@ -1,5 +1,7 @@
 {
   "cf_tunnel_name": "alaktra",
   "cf_host_domain": "api.alaktracare.in",
+  "cf_tunnel_protocol": "http2",
+  "cf_edge_ip_version": "auto",
   "tunnel_enabled": true
 }

@@ -58,6 +58,7 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.CoroutineScope
@@ -227,11 +228,14 @@ class MusicRepository(private val context: Context) {
                     .distinctUntilChanged()
                     .collect { isOnline ->
                         if (isOnline) {
+                            runCatching { healthProbeClient.connectionPool.evictAll() }
                             if (authPreferences.hasPendingOfflineActions()) {
                                 syncOfflineActions()
                             }
                             // Sync history only if 6-hour window was reached or missed while offline
                             syncHistoryIfDue()
+                            // Silently prewarm Sound Capsule + Today's Listening History + top artwork when online
+                            soundCapsuleRepository.prewarmOnlineCapsuleData()
                         }
                     }
             }
@@ -250,7 +254,7 @@ class MusicRepository(private val context: Context) {
         }
     }
 
-    val listeningHistory: Flow<List<ListeningHistoryEntity>> = appDatabase.getAllHistory()
+    val listeningHistory: StateFlow<List<ListeningHistoryEntity>> = appDatabase.getAllHistory()
     val downloadedSongsFlow: Flow<List<Song>> = songDao.getAllDownloadedSongs().map { list ->
         val likedIds = authPreferences.getLikedSongIds()
         list.map { entity ->
@@ -322,7 +326,13 @@ class MusicRepository(private val context: Context) {
         if (com.example.util.NetworkMonitor.isUnreachableHttpStatus(code) ||
             com.example.util.NetworkMonitor.isUnreachableHttpStatus(rawNetworkResponse.code)
         ) {
-            markServerUnreachable()
+            val statusToReport = if (com.example.util.NetworkMonitor.isUnreachableHttpStatus(code)) code else rawNetworkResponse.code
+            com.example.util.NetworkMonitor.reportSuspectedServerFailure(
+                context = context,
+                serverUrl = authPreferences.getServerBaseUrl(),
+                httpCode = statusToReport,
+                verifyFirst = true
+            )
         } else if (code in 200..499 && code != 408 && code != 429) {
             markServerReachable()
         }
@@ -377,10 +387,29 @@ class MusicRepository(private val context: Context) {
                     return@addInterceptor chain.proceed(request)
                 }
                 try {
-                    val response = chain.proceed(request)
+                    var response = chain.proceed(request)
+                    val isIdempotent = request.method.equals("GET", ignoreCase = true) ||
+                        request.method.equals("HEAD", ignoreCase = true)
+                    if (isIdempotent &&
+                        response.networkResponse != null &&
+                        com.example.util.NetworkMonitor.isUnreachableHttpStatus(response.code)
+                    ) {
+                        response.close()
+                        try {
+                            Thread.sleep(350L)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                        }
+                        response = chain.proceed(request)
+                    }
                     if (response.networkResponse != null) {
                         if (com.example.util.NetworkMonitor.isUnreachableHttpStatus(response.code)) {
-                            com.example.util.NetworkMonitor.markServerUnreachable(baseUrl)
+                            com.example.util.NetworkMonitor.reportSuspectedServerFailure(
+                                context = context,
+                                serverUrl = baseUrl,
+                                httpCode = response.code,
+                                verifyFirst = true
+                            )
                         } else if (response.code in 200..499 && response.code != 408 && response.code != 429) {
                             com.example.util.NetworkMonitor.markServerReachable()
                         }
@@ -391,7 +420,8 @@ class MusicRepository(private val context: Context) {
                         com.example.util.NetworkMonitor.reportSuspectedServerFailure(
                             context = context,
                             serverUrl = baseUrl,
-                            error = e
+                            error = e,
+                            verifyFirst = true
                         )
                     }
                     throw e
@@ -405,7 +435,7 @@ class MusicRepository(private val context: Context) {
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(25, TimeUnit.SECONDS)
             .callTimeout(12, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false)
+            .retryOnConnectionFailure(true)
             .build()
 
         val normalized = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
@@ -463,8 +493,33 @@ class MusicRepository(private val context: Context) {
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(4, TimeUnit.SECONDS)
             .callTimeout(5, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false)
+            .retryOnConnectionFailure(true)
             .build()
+    }
+
+    private fun executeHealthCheckCall(trimmedBaseUrl: String): Boolean {
+        val healthReq = okhttp3.Request.Builder()
+            .url("$trimmedBaseUrl/health")
+            .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+            .get()
+            .build()
+        healthProbeClient.newCall(healthReq).execute().use { resp ->
+            if (resp.code in 200..399) {
+                return true
+            }
+            if (resp.code == 404) {
+                // Fallback for older servers without /health
+                val songsReq = okhttp3.Request.Builder()
+                    .url("$trimmedBaseUrl/songs")
+                    .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+                    .get()
+                    .build()
+                healthProbeClient.newCall(songsReq).execute().use { songsResp ->
+                    return songsResp.code in 200..399
+                }
+            }
+            return false
+        }
     }
 
     private fun probeServerHealth(baseUrl: String): Boolean {
@@ -473,30 +528,16 @@ class MusicRepository(private val context: Context) {
             return false
         }
         return try {
-            val healthReq = okhttp3.Request.Builder()
-                .url("$trimmed/health")
-                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
-                .get()
-                .build()
-            healthProbeClient.newCall(healthReq).execute().use { resp ->
-                if (resp.code in 200..399) {
-                    return true
-                }
-                if (resp.code == 404) {
-                    // Fallback for older servers without /health
-                    val songsReq = okhttp3.Request.Builder()
-                        .url("$trimmed/songs")
-                        .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
-                        .get()
-                        .build()
-                    healthProbeClient.newCall(songsReq).execute().use { songsResp ->
-                        return songsResp.code in 200..399
-                    }
-                }
+            executeHealthCheckCall(trimmed)
+        } catch (_: Exception) {
+            // After a Wi-Fi/4G transition or dropped tunnel, an old pooled socket can fail once;
+            // evict stale connections and retry once immediately on a fresh socket.
+            try {
+                healthProbeClient.connectionPool.evictAll()
+                executeHealthCheckCall(trimmed)
+            } catch (_: Exception) {
                 false
             }
-        } catch (_: Exception) {
-            false
         }
     }
 
@@ -563,6 +604,7 @@ class MusicRepository(private val context: Context) {
                 // Sync Sound Capsule & today's history once on login via unified Sound Capsule endpoint
                 try {
                     soundCapsuleRepository.syncWithServer(user.id, force = true)
+                    soundCapsuleRepository.prewarmOnlineCapsuleData(user.id)
                     authPreferences.setLastSyncTime(KEY_HISTORY_SYNC, System.currentTimeMillis())
                 } catch (_: Exception) {}
 

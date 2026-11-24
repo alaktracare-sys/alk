@@ -227,4 +227,36 @@ class AudioCacheTest {
         )
         assertEquals(265_536L, fallback5s)
     }
+
+    @Test
+    fun `OkHttpAudioDataSource range header omits Range for full stream from 0 and builds exact byte ranges otherwise`() {
+        assertNull(OkHttpAudioDataSource.buildRangeHeader(0L, androidx.media3.common.C.LENGTH_UNSET.toLong()))
+        assertEquals("bytes=1048576-", OkHttpAudioDataSource.buildRangeHeader(1_048_576L, androidx.media3.common.C.LENGTH_UNSET.toLong()))
+        assertEquals("bytes=0-1023", OkHttpAudioDataSource.buildRangeHeader(0L, 1024L))
+        assertEquals("bytes=500-999", OkHttpAudioDataSource.buildRangeHeader(500L, 500L))
+    }
+
+    @Test
+    fun `OkHttpAudioDataSource parses Content-Range total document size accurately`() {
+        assertEquals(6_400_000L, OkHttpAudioDataSource.parseTotalLengthFromContentRange("bytes 0-1023/6400000"))
+        assertEquals(-1L, OkHttpAudioDataSource.parseTotalLengthFromContentRange("bytes 0-1023/*"))
+        assertEquals(-1L, OkHttpAudioDataSource.parseTotalLengthFromContentRange(null))
+        assertEquals(-1L, OkHttpAudioDataSource.parseTotalLengthFromContentRange(""))
+    }
+
+    @Test
+    fun `selectIncompleteCacheKeysToPrune targets only incomplete song keys and preserves full tracks`() {
+        val keys = listOf("song:1", "song:2", "song:3", "other:key")
+        val fullyCached = setOf("song:1", "song:3")
+
+        val toPrune = AudioCache.selectIncompleteCacheKeysToPrune(keys) { it in fullyCached }
+
+        assertEquals(listOf("song:2"), toPrune)
+
+        AudioCache.updateCachedContentLength(777, 4_567_890L)
+        assertEquals(4_567_890L, AudioCache.getCachedContentLengthFast(777))
+
+        AudioCache.cancelActivePreloadForSong(1)
+        AudioCache.cancelAllActivePreloads()
+    }
 }

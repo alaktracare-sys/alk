@@ -120,6 +120,32 @@ class UnifiedOfflineStateTest {
     }
 
     @Test
+    fun `verifyReachabilitySoon immediately probes and restores online state without waiting 15s cooldown`() = runBlocking {
+        val probeShouldSucceed = AtomicBoolean(false)
+        val probeCalls = AtomicInteger(0)
+
+        NetworkMonitor.setServerRecoveryProbe {
+            probeCalls.incrementAndGet()
+            delay(25)
+            probeShouldSucceed.get()
+        }
+
+        NetworkMonitor.isOnline(context)
+        // Long cooldown (30s) simulates server offline waiting for timer
+        NetworkMonitor.markServerUnreachable("https://api.alaktracare.in", cooldownMs = 30_000L)
+        assertFalse(NetworkMonitor.isOnline(context))
+
+        // Server comes back up and user foregrounds app / transport validates
+        probeShouldSucceed.set(true)
+        NetworkMonitor.verifyReachabilitySoon(context, minIntervalMs = 0L)
+
+        delay(200)
+        assertTrue("Expected immediate recovery probe to run", probeCalls.get() >= 1)
+        assertTrue("Unified online state should immediately restore to true", NetworkMonitor.isOnline(context))
+        assertTrue(NetworkMonitor.observeNetwork(context).first())
+    }
+
+    @Test
     fun `cancelled IOException does not trigger offline state`() = runBlocking {
         val probeCalls = AtomicInteger(0)
         NetworkMonitor.setServerRecoveryProbe {
@@ -159,6 +185,40 @@ class UnifiedOfflineStateTest {
         delay(120)
         assertTrue(probeCalls.get() == 1)
         assertTrue("Healthy server must stay online after verified timeout", NetworkMonitor.isOnline(context))
+    }
+
+    @Test
+    fun `transient 530 gateway error with verifyFirst probes health before flipping offline`() = runBlocking {
+        val serverHealthy = AtomicBoolean(true)
+        val probeCalls = AtomicInteger(0)
+        NetworkMonitor.setServerRecoveryProbe {
+            probeCalls.incrementAndGet()
+            delay(25)
+            serverHealthy.get()
+        }
+        assertTrue(NetworkMonitor.isOnline(context))
+
+        // First transient 530 when /health succeeds must not flip the app offline
+        NetworkMonitor.reportSuspectedServerFailure(
+            context = context,
+            serverUrl = "https://api.alaktracare.in",
+            httpCode = 530,
+            verifyFirst = true
+        )
+        delay(120)
+        assertTrue(probeCalls.get() == 1)
+        assertTrue("Healthy server must stay online after transient 530", NetworkMonitor.isOnline(context))
+
+        // Real outage (530 + failing /health) must flip offline
+        serverHealthy.set(false)
+        NetworkMonitor.reportSuspectedServerFailure(
+            context = context,
+            serverUrl = "https://api.alaktracare.in",
+            httpCode = 530,
+            verifyFirst = true
+        )
+        delay(120)
+        assertFalse("Real outage (530 + failed /health) must mark server unreachable", NetworkMonitor.isOnline(context))
     }
 
     @Test
