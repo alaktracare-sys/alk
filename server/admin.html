@@ -828,22 +828,9 @@ $('#power').addEventListener('click', async () => {
     fields: [
       { k: 'tunnel', type: 'check', label: s.tunnel.installed ? 'Also start the Cloudflare tunnel' : 'Also start the Cloudflare tunnel (cloudflared not found)', value: st.tunnel_enabled && s.tunnel.installed },
       { k: 'cf_tunnel_name', label: 'Tunnel name', value: st.cf_tunnel_name, ph: 'alaktra' },
-      { k: 'cf_host_domain', label: 'Public hostname', value: st.cf_host_domain, ph: 'api.alaktracare.in' },
-      { k: 'cf_tunnel_protocol', type: 'select', label: 'Tunnel protocol', value: st.cf_tunnel_protocol || 'http2',
-        hint: 'HTTP/2 (TCP 443) avoids QUIC UDP timeout disconnects on most routers/ISPs.',
-        options: [
-          { value: 'http2', label: 'HTTP/2 over TCP (Recommended)' },
-          { value: 'quic', label: 'QUIC over UDP' },
-          { value: 'auto', label: 'Auto' }
-        ] },
-      { k: 'cf_edge_ip_version', type: 'select', label: 'Tunnel edge IP', value: st.cf_edge_ip_version || 'auto',
-        options: [
-          { value: 'auto', label: 'Auto (IPv4 + IPv6)' },
-          { value: '4', label: 'IPv4 only' },
-          { value: '6', label: 'IPv6 only' }
-        ] }],
+      { k: 'cf_host_domain', label: 'Public hostname', value: st.cf_host_domain, ph: 'api.alaktracare.in' }],
     onSubmit: async v => {
-      const r = await api('/server/start', { method: 'POST', body: { tunnel: v.tunnel, cf_tunnel_name: v.cf_tunnel_name, cf_host_domain: v.cf_host_domain, cf_tunnel_protocol: v.cf_tunnel_protocol, cf_edge_ip_version: v.cf_edge_ip_version } });
+      const r = await api('/server/start', { method: 'POST', body: { tunnel: v.tunnel, cf_tunnel_name: v.cf_tunnel_name, cf_host_domain: v.cf_host_domain } });
       toast(`API ${r.api}` + (r.tunnel ? ` · tunnel: ${r.tunnel}` : ''));
       await sleep(400); loadStatus(); loadOverview(true);
     }
@@ -889,10 +876,9 @@ function renderServices(sv) {
   const a = sv.api, t = sv.tunnel;
   const aSub = `FastAPI · port ${a.port}` + (a.running ? (a.managed ? ` · pid ${a.pid}` : ' · started outside console') : '');
   const tPill = !t.installed ? pill('Not installed') : t.running ? pill('Running', 'up') : pill('Stopped');
-  const tSub = (t.host || '—') + (t.protocol ? ` · ${String(t.protocol).toUpperCase()}` : '');
   $('#ovServices').innerHTML =
     `<div class="svc"><div class="name">API server<small>${esc(aSub)}</small></div>${a.running ? pill('Running', 'up') : pill('Stopped')}</div>` +
-    `<div class="svc"><div class="name">Cloudflare Tunnel<small>${esc(tSub)}</small></div>${tPill}</div>` +
+    `<div class="svc"><div class="name">Cloudflare Tunnel<small>${esc(t.host || '—')}</small></div>${tPill}</div>` +
     `<div class="svc"><div class="name">Database<small>SQLite · ${esc(sv.db.journal)}</small></div>${pill(sv.db.size)}</div>`;
 }
 let actRange = '30d';

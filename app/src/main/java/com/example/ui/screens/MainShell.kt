@@ -4,7 +4,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -32,7 +31,6 @@ import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,18 +45,12 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import com.example.audio.AudioCache
 import com.example.audio.AudioController
 import com.example.data.fuse.FuseCodeCodec
 import com.example.data.repository.MusicRepository
 import com.example.model.Playlist
 import com.example.model.Song
-import com.example.ui.components.AlaktraModalBottomSheet
 import com.example.ui.components.ArtistCreditsBottomSheet
-import com.example.ui.components.BottomNavGradientScrim
-import com.example.ui.components.LocalCacheIndexWarmed
-import com.example.ui.components.LocalIsOnline
-import com.example.ui.components.LocalOfflinePlayableIds
 import com.example.ui.components.MiniPlayer
 import com.example.ui.responsive.rememberWindowSizeInfo
 import com.example.ui.screens.artist.ArtistProfileScreen
@@ -72,9 +64,6 @@ import com.example.ui.screens.playlist.AddSongToPlaylistScreen
 import com.example.ui.screens.playlist.PlaylistScreen
 import com.example.ui.screens.profile.ProfileScreen
 import com.example.ui.screens.search.SearchScreen
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.soundcapsule.SoundCapsuleHost
@@ -132,42 +121,22 @@ fun MainShell(
         }
     }
 
-    val stablePlaybackStateHolder = audioController.stablePlaybackState.collectAsState()
     val playbackStateHolder = audioController.playbackState.collectAsState()
     val hasCurrentSong by remember {
-        derivedStateOf { stablePlaybackStateHolder.value.currentSong != null }
+        derivedStateOf { playbackStateHolder.value.currentSong != null }
     }
     val isOnline by remember { com.example.util.NetworkMonitor.observeNetwork(context) }
-        .collectAsStateWithLifecycle(initialValue = com.example.util.NetworkMonitor.isOnline(context))
-    val offlinePlayableIds by AudioCache.playableOfflineSongIds.collectAsStateWithLifecycle()
-    val cacheIndexWarmed by AudioCache.cacheIndexWarmedState.collectAsStateWithLifecycle()
+        .collectAsState(initial = com.example.util.NetworkMonitor.isOnline(context))
 
     LaunchedEffect(Unit) {
-        AudioCache.warmUpCacheIndexAsync(context)
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                com.example.util.NetworkMonitor.verifyReachabilitySoon(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        PinsSessionCache.prewarm(context, repository)
     }
 
     LaunchedEffect(isOnline) {
         if (isOnline && repository.authPreferences.hasPendingOfflineActions()) {
-            try {
-                val count = repository.syncOfflineActions()
-                if (count > 0) {
-                    Toast.makeText(context, "Synced $count offline change(s) with server", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
+            val count = repository.syncOfflineActions()
+            if (count > 0) {
+                Toast.makeText(context, "Synced $count offline change(s) with server", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -248,12 +217,7 @@ fun MainShell(
 
     fun openArtistByHint(artistIdHint: Int?, artistName: String) {
         scope.launch {
-            val resolved = try {
-                repository.resolveArtistId(artistIdHint = artistIdHint, artistNameHint = artistName) ?: (artistIdHint ?: 0)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                artistIdHint ?: 0
-            }
+            val resolved = repository.resolveArtistId(artistIdHint = artistIdHint, artistNameHint = artistName) ?: (artistIdHint ?: 0)
             openArtistProfile(resolved, artistName)
         }
     }
@@ -308,19 +272,13 @@ fun MainShell(
     )
     val hasBottomBar = !useNavRail && !showFullPlayer && currentScreen in screensWithBottomNav
 
-    CompositionLocalProvider(
-        LocalIsOnline provides isOnline,
-        LocalOfflinePlayableIds provides offlinePlayableIds,
-        LocalCacheIndexWarmed provides cacheIndexWarmed
-    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(AlaktraBackground)
     ) {
         Scaffold(
-            containerColor = Color.Transparent,
-            contentWindowInsets = WindowInsets.statusBars
+            containerColor = Color.Transparent
         ) { padding ->
             Row(
                 modifier = Modifier
@@ -500,108 +458,92 @@ fun MainShell(
                             .weight(1f)
                             .fillMaxWidth()
                     ) {
-                        val saveableStateHolder = rememberSaveableStateHolder()
                         AnimatedContent(
                             targetState = currentScreen,
                             transitionSpec = {
-                                val isPrimaryNav = (targetState == Screen.HOME || targetState == Screen.SEARCH ||
-                                    targetState == Screen.LIBRARY || targetState == Screen.PINS) &&
-                                    (initialState == Screen.HOME || initialState == Screen.SEARCH ||
-                                        initialState == Screen.LIBRARY || initialState == Screen.PINS ||
-                                        targetState == Screen.HOME || targetState == Screen.SEARCH)
-                                if (isPrimaryNav) {
-                                    fadeIn(
-                                        animationSpec = tween(durationMillis = 130, easing = FastOutSlowInEasing)
-                                    ).togetherWith(
-                                        fadeOut(
-                                            animationSpec = tween(durationMillis = 90, easing = LinearOutSlowInEasing)
+                                val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                                (slideInHorizontally(
+                                    initialOffsetX = { (it * 0.2f * direction).toInt() },
+                                    animationSpec = spring(
+                                        dampingRatio = 0.82f,
+                                        stiffness = 320f
+                                    )
+                                ) + fadeIn(animationSpec = tween(200)) + scaleIn(
+                                    initialScale = 0.95f,
+                                    animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)
+                                )).togetherWith(
+                                    slideOutHorizontally(
+                                        targetOffsetX = { (-it * 0.2f * direction).toInt() },
+                                        animationSpec = spring(
+                                            dampingRatio = 0.82f,
+                                            stiffness = 320f
                                         )
-                                    ).using(SizeTransform(clip = false))
-                                } else {
-                                    val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
-                                    (slideInHorizontally(
-                                        initialOffsetX = { (it * 0.10f * direction).toInt() },
-                                        animationSpec = tween(durationMillis = 170, easing = FastOutSlowInEasing)
-                                    ) + fadeIn(
-                                        animationSpec = tween(durationMillis = 140)
-                                    )).togetherWith(
-                                        fadeOut(
-                                            animationSpec = tween(durationMillis = 110, easing = LinearOutSlowInEasing)
-                                        )
-                                    ).using(SizeTransform(clip = false))
-                                }
+                                    ) + fadeOut(animationSpec = tween(180))
+                                ).using(SizeTransform(clip = false))
                             },
-                            label = "AlaktraScreenTransition",
+                            label = "PinterestScreenTransition",
                             modifier = Modifier.fillMaxSize()
                         ) { targetScreen ->
                             when (targetScreen) {
                                 Screen.HOME -> {
-                                    saveableStateHolder.SaveableStateProvider(key = "tab_home") {
-                                        HomeScreen(
-                                            repository = repository,
-                                            audioController = audioController,
-                                            onNavigateToProfile = { currentScreen = Screen.PROFILE },
-                                            onNavigateToEqualizer = { currentScreen = Screen.EQUALIZER },
-                                            onNavigateToPlaylistSelect = { song ->
-                                                scope.launch {
-                                                    availablePlaylists = loadEditableUserPlaylists()
-                                                    songForPlaylistSelection = song
-                                                }
-                                            },
-                                            onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
-                                            onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
-                                            onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
-                                            onViewSongArtist = { song -> openArtistForSong(song) }
-                                        )
-                                    }
+                                    HomeScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        onNavigateToProfile = { currentScreen = Screen.PROFILE },
+                                        onNavigateToEqualizer = { currentScreen = Screen.EQUALIZER },
+                                        onNavigateToPlaylistSelect = { song ->
+                                            scope.launch {
+                                                availablePlaylists = loadEditableUserPlaylists()
+                                                songForPlaylistSelection = song
+                                            }
+                                        },
+                                        onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
+                                        onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
+                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
+                                    )
                                 }
 
                                 Screen.SEARCH -> {
-                                    saveableStateHolder.SaveableStateProvider(key = "tab_search") {
-                                        SearchScreen(
-                                            repository = repository,
-                                            audioController = audioController,
-                                            onNavigateToPlaylistSelect = { song ->
-                                                scope.launch {
-                                                    availablePlaylists = loadEditableUserPlaylists()
-                                                    songForPlaylistSelection = song
-                                                }
-                                            },
-                                            onOpenArtist = { id, name -> openArtistProfile(id, name) },
-                                            onViewSongArtist = { song -> openArtistForSong(song) }
-                                        )
-                                    }
+                                    SearchScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        onNavigateToPlaylistSelect = { song ->
+                                            scope.launch {
+                                                availablePlaylists = loadEditableUserPlaylists()
+                                                songForPlaylistSelection = song
+                                            }
+                                        },
+                                        onOpenArtist = { id, name -> openArtistProfile(id, name) },
+                                        onViewSongArtist = { song -> openArtistForSong(song) }
+                                    )
                                 }
 
                                 Screen.LIBRARY -> {
-                                    saveableStateHolder.SaveableStateProvider(key = "tab_library") {
-                                        LibraryScreen(
-                                            repository = repository,
-                                            onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
-                                            onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
-                                            onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
-                                            onNavigateToFuse = {
-                                                currentTab = 2
-                                                currentScreen = Screen.FUSE
-                                            },
-                                            onNavigateToClub = { clubId ->
-                                                activeClubId = clubId
-                                                currentTab = 2
-                                                currentScreen = Screen.CLUB
-                                            },
-                                            onNavigateToSoundCapsule = { openSoundCapsule() }
-                                        )
-                                    }
+                                    LibraryScreen(
+                                        repository = repository,
+                                        onNavigateToPlaylist = { id, name -> openPlaylist(id, name) },
+                                        onNavigateToLikedSongs = { openPlaylist(Playlist.ID_LIKED, "Liked Songs") },
+                                        onNavigateToDownloadedSongs = { openPlaylist(Playlist.ID_DOWNLOADED, "Downloaded Songs") },
+                                        onNavigateToFuse = {
+                                            currentTab = 2
+                                            currentScreen = Screen.FUSE
+                                        },
+                                        onNavigateToClub = { clubId ->
+                                            activeClubId = clubId
+                                            currentTab = 2
+                                            currentScreen = Screen.CLUB
+                                        },
+                                        onNavigateToSoundCapsule = { openSoundCapsule() }
+                                    )
                                 }
 
                                 Screen.PINS -> {
-                                    saveableStateHolder.SaveableStateProvider(key = "tab_pins") {
-                                        LocationPinsScreen(
-                                            repository = repository,
-                                            audioController = audioController,
-                                            refreshTrigger = pinsRefreshTrigger
-                                        )
-                                    }
+                                    LocationPinsScreen(
+                                        repository = repository,
+                                        audioController = audioController,
+                                        refreshTrigger = pinsRefreshTrigger
+                                    )
                                 }
 
                                 Screen.PLAYLIST -> {
@@ -702,7 +644,7 @@ fun MainShell(
                                     val capsuleStats by capsuleVm.stats.collectAsStateWithLifecycle()
                                     val availableMonths by capsuleVm.availableMonths.collectAsStateWithLifecycle()
                                     val monthlyFeed by capsuleVm.monthlyFeed.collectAsStateWithLifecycle()
-                                    val historyList by repository.listeningHistory.collectAsStateWithLifecycle()
+                                    val historyList by repository.listeningHistory.collectAsStateWithLifecycle(initialValue = emptyList())
                                     SoundCapsuleHost(
                                         stats = capsuleStats,
                                         availableMonths = availableMonths,
@@ -765,12 +707,23 @@ fun MainShell(
 
         // Bottom navigation gradient scrim (transparent at top to pitch black at bottom)
         if (!showFullPlayer) {
-            BottomNavGradientScrim(
+            val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val bottomScrimHeight = if (hasBottomBar) {
+                navBarBottom + 84.dp
+            } else {
+                (navBarBottom + 48.dp).coerceAtLeast(72.dp)
+            }
+            Box(
                 modifier = Modifier
                     .zIndex(1f)
-                    .align(Alignment.BottomCenter),
-                extraHeight = if (hasBottomBar) 84.dp else 48.dp,
-                minHeight = 72.dp
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(bottomScrimHeight)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black)
+                        )
+                    )
             )
         }
 
@@ -790,33 +743,23 @@ fun MainShell(
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(tween(200)),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(tween(160))
             ) {
-                val miniPlaybackState = stablePlaybackStateHolder.value
+                val miniPlaybackState = playbackStateHolder.value
                 MiniPlayer(
                     playbackState = miniPlaybackState,
-                    currentPositionProvider = { playbackStateHolder.value.currentPositionMs },
-                    durationProvider = {
-                        val st = playbackStateHolder.value
-                        st.durationMs.takeIf { it > 0L }
-                            ?: ((st.currentSong?.duration ?: 0.0) * 1000.0).toLong()
-                    },
                     onTogglePlay = { audioController.togglePlayPause() },
                     onNext = { audioController.next() },
                     onPrevious = { audioController.previous() },
                     onLikeToggle = {
                         miniPlaybackState.currentSong?.let { song ->
                             scope.launch {
-                                try {
-                                    val isLiked = repository.toggleLike(song)
-                                    audioController.updateSongLiked(song.id, isLiked)
-                                } catch (e: Exception) {
-                                    if (e is kotlinx.coroutines.CancellationException) throw e
-                                }
+                                val isLiked = repository.toggleLike(song)
+                                audioController.updateSongLiked(song.id, isLiked)
                             }
                         }
                     },
                     onExpand = { showFullPlayer = true },
-                    onArtworkLoaded = { songId, coverUrl ->
-                        audioController.onCurrentSongArtworkLoaded(songId, coverUrl)
+                    onArtworkLoaded = { songId, coverUrl, drawable ->
+                        audioController.onCurrentSongArtworkLoaded(songId, coverUrl, drawable)
                     },
                     modifier = Modifier
                         .widthIn(max = 550.dp)
@@ -825,70 +768,201 @@ fun MainShell(
                 )
             }
 
-            // 2. Circular Translucent Capsule Navigation Bar (isolated recomposition scope)
+            // 2. Circular Translucent Capsule Navigation Bar
             if (hasBottomBar) {
-                val isHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
-                    (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
-                    (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0)) ||
-                    (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 0)
+                val navPillShape = RoundedCornerShape(36.dp)
+                Surface(
+                    modifier = Modifier
+                        .padding(horizontal = 24.dp, vertical = 3.dp)
+                        .widthIn(max = 320.dp)
+                        .fillMaxWidth()
+                        .height(58.dp)
+                        .shadow(
+                            elevation = 20.dp,
+                            shape = navPillShape,
+                            spotColor = Color.Black.copy(alpha = 0.70f),
+                            ambientColor = Color.Black.copy(alpha = 0.50f)
+                        ),
+                    shape = navPillShape,
+                    // Bottom Navigation Bar Transparency:
+                    // Modify the alpha value below (0.0f = completely transparent, 1.0f = completely solid/opaque, 0.82f = translucent frosted)
+                    color = Color(0xFF000000).copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                    tonalElevation = 0.dp
+                ) {
+                    val isHomeSelected = (currentScreen == Screen.HOME && currentTab == 0) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 0) ||
+                        (currentScreen == Screen.PROFILE && (playlistOriginTab == 0 || currentTab == 0)) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 0)
 
-                val isSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
-                    (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1) ||
-                    (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 1)
+                    val isSearchSelected = (currentScreen == Screen.SEARCH && currentTab == 1) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 1) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 1)
 
-                val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
-                    currentScreen == Screen.FUSE ||
-                    currentScreen == Screen.CLUB ||
-                    (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2) ||
-                    (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 2)
+                    val isLibrarySelected = (currentScreen == Screen.LIBRARY && currentTab == 2) ||
+                        currentScreen == Screen.FUSE ||
+                        currentScreen == Screen.CLUB ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 2) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 2)
 
-                val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
-                    (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3) ||
-                    (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 3)
+                    val isPinsSelected = (currentScreen == Screen.PINS && currentTab == 3) ||
+                        (currentScreen == Screen.PLAYLIST && playlistOriginTab == 3) ||
+                        (currentScreen == Screen.SOUND_CAPSULE && soundCapsuleOriginTab == 3)
 
-                val activeIndex = when {
-                    isHomeSelected -> 0
-                    isSearchSelected -> 1
-                    isLibrarySelected -> 2
-                    isPinsSelected -> 3
-                    else -> 0
-                }
+                    val activeIndex = when {
+                        isHomeSelected -> 0
+                        isSearchSelected -> 1
+                        isLibrarySelected -> 2
+                        isPinsSelected -> 3
+                        else -> 0
+                    }
 
-                FloatingCapsuleNavBar(
-                    activeIndex = activeIndex,
-                    isHomeSelected = isHomeSelected,
-                    isSearchSelected = isSearchSelected,
-                    isLibrarySelected = isLibrarySelected,
-                    isPinsSelected = isPinsSelected,
-                    onSelectHome = {
-                        if (currentScreen != Screen.HOME || currentTab != 0) {
-                            currentTab = 0
-                            currentScreen = Screen.HOME
+                    val animatedIndex by animateFloatAsState(
+                        targetValue = activeIndex.toFloat(),
+                        animationSpec = spring(
+                            dampingRatio = 0.80f,
+                            stiffness = 280f
+                        ),
+                        label = "gel_pill_slide"
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        // The selected tab gets a wider slot (it must fit icon + label);
+                        // the other tabs share the rest. The SAME weights drive both the Row
+                        // and the pill, so the pill always sits exactly behind the selected tab.
+                        val selectedWeight = 1.7f
+                        val idx = animatedIndex.coerceIn(0f, 3f)
+                        val w0 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 0f)).coerceIn(0f, 1f)
+                        val w1 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 1f)).coerceIn(0f, 1f)
+                        val w2 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 2f)).coerceIn(0f, 1f)
+                        val w3 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 3f)).coerceIn(0f, 1f)
+                        val weightSum = w0 + w1 + w2 + w3
+
+                        fun weightAt(i: Int): Float = when (i) {
+                            0 -> w0
+                            1 -> w1
+                            2 -> w2
+                            else -> w3
                         }
-                    },
-                    onSelectSearch = {
-                        if (currentScreen != Screen.SEARCH || currentTab != 1) {
-                            currentTab = 1
-                            currentScreen = Screen.SEARCH
+
+                        fun slotStart(i: Int): Float = when (i) {
+                            0 -> 0f
+                            1 -> w0
+                            2 -> w0 + w1
+                            else -> w0 + w1 + w2
                         }
-                    },
-                    onSelectLibrary = {
-                        if (currentScreen != Screen.LIBRARY || currentTab != 2) {
-                            currentTab = 2
-                            currentScreen = Screen.LIBRARY
-                        }
-                    },
-                    onSelectPins = {
-                        if (currentScreen == Screen.PINS && currentTab == 3) {
-                            pinsRefreshTrigger++
-                        } else {
-                            currentTab = 3
-                            currentScreen = Screen.PINS
+
+                        val from = idx.toInt().coerceIn(0, 3)
+                        val to = (from + 1).coerceAtMost(3)
+                        val fraction = idx - from
+
+                        val startW = slotStart(from) * (1f - fraction) + slotStart(to) * fraction
+                        val endW = (slotStart(from) + weightAt(from)) * (1f - fraction) +
+                            (slotStart(to) + weightAt(to)) * fraction
+
+                        // Sliding green pill (single-pass layout without SubcomposeLayout)
+                        Box(
+                            modifier = Modifier
+                                .layout { measurable, constraints ->
+                                    val totalWidthPx = constraints.maxWidth.toFloat()
+                                    val unitWidthPx = totalWidthPx / weightSum
+                                    val insetPx = 2.dp.toPx()
+                                    val pillOffsetPx = (unitWidthPx * startW + insetPx).toInt()
+                                    val pillWidthPx = (unitWidthPx * (endW - startW) - insetPx * 2f).toInt().coerceAtLeast(0)
+                                    val pillHeightPx = 46.dp.roundToPx().coerceAtMost(constraints.maxHeight)
+                                    val placeable = measurable.measure(
+                                        Constraints.fixed(pillWidthPx, pillHeightPx)
+                                    )
+                                    layout(constraints.maxWidth, constraints.maxHeight) {
+                                        placeable.placeRelative(
+                                            x = pillOffsetPx,
+                                            y = ((constraints.maxHeight - pillHeightPx) / 2).coerceAtLeast(0)
+                                        )
+                                    }
+                                }
+                                .clip(RoundedCornerShape(23.dp))
+                                .background(AlaktraMint.copy(alpha = 0.22f))
+                                .border(1.dp, AlaktraMint.copy(alpha = 0.45f), RoundedCornerShape(23.dp))
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CapsuleNavItem(
+                                selected = isHomeSelected,
+                                onClick = {
+                                    if (currentScreen != Screen.HOME || currentTab != 0) {
+                                        currentTab = 0
+                                        currentScreen = Screen.HOME
+                                    }
+                                },
+                                icon = Icons.Outlined.Home,
+                                selectedIcon = Icons.Default.Home,
+                                label = "Home",
+                                modifier = Modifier.weight(w0)
+                            )
+
+                            CapsuleNavItem(
+                                selected = isSearchSelected,
+                                onClick = {
+                                    if (currentScreen != Screen.SEARCH || currentTab != 1) {
+                                        currentTab = 1
+                                        currentScreen = Screen.SEARCH
+                                    }
+                                },
+                                icon = Icons.Outlined.Search,
+                                selectedIcon = Icons.Default.Search,
+                                label = "Search",
+                                modifier = Modifier.weight(w1)
+                            )
+
+                            CapsuleNavItem(
+                                selected = isLibrarySelected,
+                                onClick = {
+                                    if (currentScreen != Screen.LIBRARY || currentTab != 2) {
+                                        currentTab = 2
+                                        currentScreen = Screen.LIBRARY
+                                    }
+                                },
+                                icon = Icons.Outlined.LibraryMusic,
+                                selectedIcon = Icons.Default.LibraryMusic,
+                                label = "Library",
+                                modifier = Modifier.weight(w2)
+                            )
+
+                            CapsuleNavItem(
+                                selected = isPinsSelected,
+                                onClick = {
+                                    if (currentScreen == Screen.PINS && currentTab == 3) {
+                                        pinsRefreshTrigger++
+                                    } else {
+                                        currentTab = 3
+                                        currentScreen = Screen.PINS
+                                    }
+                                },
+                                icon = Icons.Outlined.Place,
+                                selectedIcon = Icons.Default.Place,
+                                label = "Pins",
+                                modifier = Modifier.weight(w3)
+                            )
                         }
                     }
-                )
+                }
             }
         }
+
+        // Pre-composite the active song's small shape wallpaper on a background CPU thread
+        // (0 GPU VRAM used while closed, instant cache hit on Frame 1 when PlayerScreen opens)
+        SongShapePrewarmer(
+            context = context,
+            playbackStateHolder = playbackStateHolder
+        )
 
         // Full Screen Player Modal / Overlay
         AnimatedVisibility(
@@ -899,7 +973,9 @@ fun MainShell(
             enter = slideInVertically(initialOffsetY = { it }),
             exit = slideOutVertically(targetOffsetY = { it })
         ) {
-            val playerPlaybackState = stablePlaybackStateHolder.value
+            val playerPlaybackState by remember {
+                derivedStateOf { playbackStateHolder.value.copy(currentPositionMs = 0L) }
+            }
             val downloadProgressMap by repository.downloadManager.downloadProgress.collectAsState()
             var isDownloaded by remember(playerPlaybackState.currentSong?.id) { mutableStateOf(false) }
             LaunchedEffect(playerPlaybackState.currentSong?.id) {
@@ -932,18 +1008,14 @@ fun MainShell(
                     if (!isPlayingFromFuse) {
                         playerPlaybackState.currentSong?.let { song ->
                             scope.launch {
-                                try {
-                                    if (isDownloaded) {
-                                        repository.downloadManager.removeDownload(song.id)
-                                        isDownloaded = false
-                                        android.widget.Toast.makeText(context, "Download removed", android.widget.Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        android.widget.Toast.makeText(context, "Downloading ${song.title}...", android.widget.Toast.LENGTH_SHORT).show()
-                                        repository.downloadManager.downloadSong(song)
-                                        isDownloaded = repository.downloadManager.isDownloaded(song.id)
-                                    }
-                                } catch (e: Exception) {
-                                    if (e is kotlinx.coroutines.CancellationException) throw e
+                                if (isDownloaded) {
+                                    repository.downloadManager.removeDownload(song.id)
+                                    isDownloaded = false
+                                    android.widget.Toast.makeText(context, "Download removed", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "Downloading ${song.title}...", android.widget.Toast.LENGTH_SHORT).show()
+                                    repository.downloadManager.downloadSong(song)
+                                    isDownloaded = repository.downloadManager.isDownloaded(song.id)
                                 }
                             }
                         }
@@ -952,12 +1024,8 @@ fun MainShell(
                 onAddToPlaylist = {
                     playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
-                            try {
-                                availablePlaylists = loadEditableUserPlaylists()
-                                songForPlaylistSelection = song
-                            } catch (e: Exception) {
-                                if (e is kotlinx.coroutines.CancellationException) throw e
-                            }
+                            availablePlaylists = loadEditableUserPlaylists()
+                            songForPlaylistSelection = song
                         }
                     }
                 },
@@ -969,12 +1037,8 @@ fun MainShell(
                 onLikeToggle = {
                     playerPlaybackState.currentSong?.let { song ->
                         scope.launch {
-                            try {
-                                val isLiked = repository.toggleLike(song)
-                                audioController.updateSongLiked(song.id, isLiked)
-                            } catch (e: Exception) {
-                                if (e is kotlinx.coroutines.CancellationException) throw e
-                            }
+                            val isLiked = repository.toggleLike(song)
+                            audioController.updateSongLiked(song.id, isLiked)
                         }
                     }
                 }
@@ -995,7 +1059,7 @@ fun MainShell(
 
         // Add to Playlist Selection Modal Bottom Sheet
         songForPlaylistSelection?.let { song ->
-            AlaktraModalBottomSheet(
+            ModalBottomSheet(
                 onDismissRequest = { songForPlaylistSelection = null },
                 containerColor = AlaktraCard,
                 contentColor = AlaktraTextPrimary,
@@ -1019,8 +1083,7 @@ fun MainShell(
                         )
 
                         LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
-                            contentPadding = PaddingValues(bottom = 12.dp)
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)
                         ) {
                             items(
                                 items = availablePlaylists,
@@ -1062,155 +1125,9 @@ fun MainShell(
                             }
                         }
 
-                        Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                         Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
-            }
-        }
-    }
-    }
-}
-
-private val NavPillOuterShape = RoundedCornerShape(36.dp)
-private val NavPillInnerShape = RoundedCornerShape(23.dp)
-private val NavPillBg = Color(0xFF000000).copy(alpha = 0.85f)
-private val NavPillBorder = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
-
-@Composable
-private fun FloatingCapsuleNavBar(
-    activeIndex: Int,
-    isHomeSelected: Boolean,
-    isSearchSelected: Boolean,
-    isLibrarySelected: Boolean,
-    isPinsSelected: Boolean,
-    onSelectHome: () -> Unit,
-    onSelectSearch: () -> Unit,
-    onSelectLibrary: () -> Unit,
-    onSelectPins: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .padding(horizontal = 24.dp, vertical = 3.dp)
-            .widthIn(max = 320.dp)
-            .fillMaxWidth()
-            .height(58.dp)
-            .shadow(
-                elevation = 20.dp,
-                shape = NavPillOuterShape,
-                spotColor = Color.Black.copy(alpha = 0.70f),
-                ambientColor = Color.Black.copy(alpha = 0.50f)
-            ),
-        shape = NavPillOuterShape,
-        color = NavPillBg,
-        border = NavPillBorder,
-        tonalElevation = 0.dp
-    ) {
-        val animatedIndex by animateFloatAsState(
-            targetValue = activeIndex.toFloat(),
-            animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
-            label = "gel_pill_slide"
-        )
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 4.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            val selectedWeight = 1.7f
-            val idx = animatedIndex.coerceIn(0f, 3f)
-            val w0 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 0f)).coerceIn(0f, 1f)
-            val w1 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 1f)).coerceIn(0f, 1f)
-            val w2 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 2f)).coerceIn(0f, 1f)
-            val w3 = 1f + (selectedWeight - 1f) * (1f - kotlin.math.abs(idx - 3f)).coerceIn(0f, 1f)
-            val weightSum = w0 + w1 + w2 + w3
-
-            fun weightAt(i: Int): Float = when (i) {
-                0 -> w0
-                1 -> w1
-                2 -> w2
-                else -> w3
-            }
-
-            fun slotStart(i: Int): Float = when (i) {
-                0 -> 0f
-                1 -> w0
-                2 -> w0 + w1
-                else -> w0 + w1 + w2
-            }
-
-            val from = idx.toInt().coerceIn(0, 3)
-            val to = (from + 1).coerceAtMost(3)
-            val fraction = idx - from
-
-            val startW = slotStart(from) * (1f - fraction) + slotStart(to) * fraction
-            val endW = (slotStart(from) + weightAt(from)) * (1f - fraction) +
-                (slotStart(to) + weightAt(to)) * fraction
-
-            Box(
-                modifier = Modifier
-                    .layout { measurable, constraints ->
-                        val totalWidthPx = constraints.maxWidth.toFloat()
-                        val unitWidthPx = totalWidthPx / weightSum
-                        val insetPx = 2.dp.toPx()
-                        val pillOffsetPx = (unitWidthPx * startW + insetPx).toInt()
-                        val pillWidthPx = (unitWidthPx * (endW - startW) - insetPx * 2f).toInt().coerceAtLeast(0)
-                        val pillHeightPx = 46.dp.roundToPx().coerceAtMost(constraints.maxHeight)
-                        val placeable = measurable.measure(
-                            Constraints.fixed(pillWidthPx, pillHeightPx)
-                        )
-                        layout(constraints.maxWidth, constraints.maxHeight) {
-                            placeable.placeRelative(
-                                x = pillOffsetPx,
-                                y = ((constraints.maxHeight - pillHeightPx) / 2).coerceAtLeast(0)
-                            )
-                        }
-                    }
-                    .clip(NavPillInnerShape)
-                    .background(AlaktraMint.copy(alpha = 0.22f))
-                    .border(1.dp, AlaktraMint.copy(alpha = 0.45f), NavPillInnerShape)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxSize(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CapsuleNavItem(
-                    selected = isHomeSelected,
-                    onClick = onSelectHome,
-                    icon = Icons.Outlined.Home,
-                    selectedIcon = Icons.Default.Home,
-                    label = "Home",
-                    modifier = Modifier.weight(w0)
-                )
-
-                CapsuleNavItem(
-                    selected = isSearchSelected,
-                    onClick = onSelectSearch,
-                    icon = Icons.Outlined.Search,
-                    selectedIcon = Icons.Default.Search,
-                    label = "Search",
-                    modifier = Modifier.weight(w1)
-                )
-
-                CapsuleNavItem(
-                    selected = isLibrarySelected,
-                    onClick = onSelectLibrary,
-                    icon = Icons.Outlined.LibraryMusic,
-                    selectedIcon = Icons.Default.LibraryMusic,
-                    label = "Library",
-                    modifier = Modifier.weight(w2)
-                )
-
-                CapsuleNavItem(
-                    selected = isPinsSelected,
-                    onClick = onSelectPins,
-                    icon = Icons.Outlined.Place,
-                    selectedIcon = Icons.Default.Place,
-                    label = "Pins",
-                    modifier = Modifier.weight(w3)
-                )
             }
         }
     }
@@ -1229,14 +1146,20 @@ private fun CapsuleNavItem(
     val inactiveColor = Color.White.copy(alpha = 0.60f)
 
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.08f else 1.0f,
-        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        targetValue = if (selected) 1.12f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.75f,
+            stiffness = 280f
+        ),
         label = "icon_scale"
     )
 
     val textAlpha by animateFloatAsState(
         targetValue = if (selected) 1f else 0f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = 260f
+        ),
         label = "text_alpha"
     )
 
@@ -1335,5 +1258,27 @@ private fun LandscapePelletNavItem(
                 softWrap = false
             )
         }
+    }
+}
+
+@Composable
+private fun SongShapePrewarmer(
+    context: android.content.Context,
+    playbackStateHolder: State<com.example.audio.PlaybackState>
+) {
+    val prewarmTarget by remember {
+        derivedStateOf {
+            val s = playbackStateHolder.value
+            val song = s.currentSong ?: return@derivedStateOf null
+            Triple(song.id, song.title, s.dominantColor)
+        }
+    }
+    LaunchedEffect(prewarmTarget) {
+        val (id, title, dominantColor) = prewarmTarget ?: return@LaunchedEffect
+        com.example.ui.screens.player.ShapeAtlas.prewarmWallpaper(
+            context = context,
+            seedKey = "${id}_${title}",
+            palette = com.example.ui.screens.player.buildShapePalette(dominantColor)
+        )
     }
 }

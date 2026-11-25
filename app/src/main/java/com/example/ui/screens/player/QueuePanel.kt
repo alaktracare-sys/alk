@@ -35,16 +35,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.audio.AudioCache
 import com.example.audio.AudioController
 import com.example.audio.PlaybackState
 import com.example.audio.RepeatMode
 import com.example.model.Song
 import com.example.ui.components.SongCover
-import com.example.ui.components.isSongPlayableInUi
-import com.example.ui.components.showOfflineUnplayableToast
-import com.example.util.NetworkMonitor
 import kotlinx.coroutines.launch
 
 // Existing Spotify Theme Tokens
@@ -80,10 +75,6 @@ fun QueuePanel(
     onNavigateToSource: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val isOnline by remember { NetworkMonitor.observeNetwork(context) }
-        .collectAsStateWithLifecycle(initialValue = NetworkMonitor.isOnline(context))
-    val offlinePlayableIds by AudioCache.playableOfflineSongIds.collectAsStateWithLifecycle()
-    val cacheIndexWarmed by AudioCache.cacheIndexWarmedState.collectAsStateWithLifecycle()
     var isPromotingDragActive by remember { mutableStateOf(false) }
     var promotedTrackTitle by remember { mutableStateOf<String?>(null) }
     var isDebugExpanded by remember { mutableStateOf(false) }
@@ -247,14 +238,13 @@ fun QueuePanel(
             }
         }
 
-        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         // Main flattened projection list
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(bottom = navBarBottom + 32.dp),
+            contentPadding = PaddingValues(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             // ==========================================
@@ -336,11 +326,9 @@ fun QueuePanel(
                     key = { idx, s -> "user_q_${s.id}_$idx" },
                     contentType = { _, _ -> "queue_track" }
                 ) { index, song ->
-                    val isTrackPlayable = isSongPlayableInUi(song, isOnline, offlinePlayableIds, cacheIndexWarmed)
                     QueueTrackRow(
                         song = song,
                         isUserQueue = true,
-                        isPlayable = isTrackPlayable,
                         onPlayNow = {
                             audioController.playUserQueueItem(index)
                         },
@@ -444,11 +432,9 @@ fun QueuePanel(
                     contentType = { _, _ -> "queue_track" }
                 ) { relIndex, song ->
                     val actualContextIndex = playbackState.contextIndex + 1 + relIndex
-                    val isTrackPlayable = isSongPlayableInUi(song, isOnline, offlinePlayableIds, cacheIndexWarmed)
                     QueueTrackRow(
                         song = song,
                         isUserQueue = false,
-                        isPlayable = isTrackPlayable,
                         onPlayNow = {
                             audioController.playContextQueueItem(actualContextIndex)
                         },
@@ -500,8 +486,7 @@ fun QueuePanel(
                     key = { idx, s -> "autoplay_${s.id}_$idx" },
                     contentType = { _, _ -> "autoplay_track" }
                 ) { _, song ->
-                    val isTrackPlayable = isSongPlayableInUi(song, isOnline, offlinePlayableIds, cacheIndexWarmed)
-                    AutoplayRow(song = song, isPlayable = isTrackPlayable)
+                    AutoplayRow(song = song)
                 }
             }
         }
@@ -577,8 +562,6 @@ fun QueuePanel(
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
         }
     }
 }
@@ -753,7 +736,6 @@ private fun AnimatedEqualizerBars(
 private fun QueueTrackRow(
     song: Song,
     isUserQueue: Boolean,
-    isPlayable: Boolean = true,
     onPlayNow: () -> Unit,
     onRemove: (() -> Unit)?,
     onPromote: (() -> Unit)?,
@@ -764,14 +746,12 @@ private fun QueueTrackRow(
     onDragPromotionCommit: (() -> Unit)? = null,
     onDragPromotionCancel: (() -> Unit)? = null
 ) {
-    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val swipeOffset = remember { Animatable(0f) }
     val swipeThresholdPx = with(density) { 60.dp.toPx() }
     val maxSwipePx = with(density) { 110.dp.toPx() }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    val trackAlpha = if (isPlayable) 1f else 0.40f
 
     Box(
         modifier = Modifier
@@ -873,13 +853,7 @@ private fun QueueTrackRow(
                         }
                     )
                 }
-                .clickable {
-                    if (isPlayable) {
-                        onPlayNow()
-                    } else {
-                        showOfflineUnplayableToast(context)
-                    }
-                }
+                .clickable { onPlayNow() }
                 .padding(vertical = 4.dp, horizontal = 2.dp)
         ) {
             Row(
@@ -889,18 +863,12 @@ private fun QueueTrackRow(
                 SongCover(
                     imageUrl = song.coverUrl,
                     size = 44.dp,
-                    modifier = Modifier
-                        .graphicsLayer { alpha = trackAlpha }
-                        .clip(RoundedCornerShape(4.dp))
+                    modifier = Modifier.clip(RoundedCornerShape(4.dp))
                 )
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .graphicsLayer { alpha = trackAlpha }
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = song.title,
                         style = MaterialTheme.typography.bodyMedium.copy(
@@ -912,25 +880,13 @@ private fun QueueTrackRow(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(2.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!isPlayable) {
-                            Icon(
-                                imageVector = Icons.Default.WifiOff,
-                                contentDescription = "Unavailable offline",
-                                tint = SpotifyTextSecondary,
-                                modifier = Modifier
-                                    .padding(end = 5.dp)
-                                    .size(12.dp)
-                            )
-                        }
-                        Text(
-                            text = song.artist,
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                            color = SpotifyTextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = song.artist,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
+                        color = SpotifyTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 // Drag handle for reordering inside userQueue
@@ -972,15 +928,12 @@ private fun QueueTrackRow(
  * Dimmed Autoplay recommendation row.
  */
 @Composable
-private fun AutoplayRow(
-    song: Song,
-    isPlayable: Boolean = true
-) {
+private fun AutoplayRow(song: Song) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .graphicsLayer { alpha = if (isPlayable) 0.5f else 0.28f }
+            .graphicsLayer(alpha = 0.5f)
             .padding(vertical = 4.dp)
     ) {
         SongCover(
@@ -1003,25 +956,13 @@ private fun AutoplayRow(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!isPlayable) {
-                    Icon(
-                        imageVector = Icons.Default.WifiOff,
-                        contentDescription = "Unavailable offline",
-                        tint = SpotifyTextSecondary,
-                        modifier = Modifier
-                            .padding(end = 5.dp)
-                            .size(12.dp)
-                    )
-                }
-                Text(
-                    text = song.artist,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                    color = SpotifyTextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = song.artist,
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
+                color = SpotifyTextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
         Icon(

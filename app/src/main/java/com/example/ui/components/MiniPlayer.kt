@@ -91,9 +91,7 @@ fun MiniPlayer(
     onPrevious: () -> Unit,
     onLikeToggle: () -> Unit,
     onExpand: () -> Unit,
-    onArtworkLoaded: ((Int, String) -> Unit)? = null,
-    currentPositionProvider: (() -> Long)? = null,
-    durationProvider: (() -> Long)? = null,
+    onArtworkLoaded: ((Int, String, android.graphics.drawable.Drawable) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
@@ -102,8 +100,8 @@ fun MiniPlayer(
     val backWavePath = remember { Path() }
     val wavePath = remember { Path() }
 
-    // Continuous wave animation loop (runs normally both while playing and when paused)
-    val infiniteTransition = rememberInfiniteTransition(label = "miniPlayerWave")
+    // Wave animation controller: 2-second repeat loop (equivalent to Flutter's AnimationController..repeat())
+    val infiniteTransition = rememberInfiniteTransition(label = "liquid_wave")
     val wavePhase by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -111,7 +109,7 @@ fun MiniPlayer(
             animation = tween(durationMillis = 2000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "wavePhase"
+        label = "wave_phase"
     )
     val backWavePhase by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -120,7 +118,7 @@ fun MiniPlayer(
             animation = tween(durationMillis = 1400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "backWavePhase"
+        label = "back_wave_phase"
     )
 
     val rawMajorColor = when {
@@ -159,6 +157,14 @@ fun MiniPlayer(
         animationSpec = tween(500),
         label = "waveEndColor"
     )
+
+    val progressFraction = remember(playbackState.currentPositionMs, playbackState.durationMs) {
+        if (playbackState.durationMs > 0) {
+            (playbackState.currentPositionMs.toFloat() / playbackState.durationMs).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+    }
 
     val cardShape = RoundedCornerShape(32.dp)
 
@@ -201,16 +207,6 @@ fun MiniPlayer(
         ) {
             val width = size.width
             val height = size.height
-            val positionMs = currentPositionProvider?.invoke() ?: playbackState.currentPositionMs
-            val songFallbackDurMs = if (song.duration > 0.0) (song.duration * 1000.0).toLong() else 0L
-            val durationMs = durationProvider?.invoke()?.takeIf { it > 0L }
-                ?: playbackState.durationMs.takeIf { it > 0L }
-                ?: songFallbackDurMs
-            val progressFraction = if (durationMs > 0L) {
-                (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-            } else {
-                0f
-            }
             val fillWidth = width * progressFraction
 
             if (fillWidth > 0f && waveMidColor.alpha > 0f) {
@@ -285,7 +281,7 @@ fun MiniPlayer(
                 size = 46.dp,
                 cornerRadius = 23.dp,
                 onArtworkLoaded = if (onArtworkLoaded != null) {
-                    { onArtworkLoaded(song.id, song.coverUrl) }
+                    { drawable -> onArtworkLoaded(song.id, song.coverUrl, drawable) }
                 } else {
                     null
                 }

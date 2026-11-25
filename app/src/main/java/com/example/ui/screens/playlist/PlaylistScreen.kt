@@ -42,13 +42,10 @@ import com.example.ui.components.DailyPlaylistCollageCover
 import com.example.ui.components.FuseBlendStoryDialog
 import com.example.ui.components.FuseContributorBadge
 import com.example.ui.components.FuseDualAvatarCover
-import com.example.ui.components.LocalIsOnline
 import com.example.ui.components.SongItemRow
-import com.example.ui.components.SongListSkeleton
 import com.example.ui.components.SongMenuBottomSheet
 import com.example.ui.components.parseDailyAccentColor
 import com.example.ui.theme.*
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -92,7 +89,7 @@ fun PlaylistScreen(
     val fuseUser2Name = fusePlaylistMeta?.fuseUser2Name?.takeIf { it.isNotBlank() } ?: fallbackNames.second
     val fuseMatchScore = (fusePlaylistMeta?.fuseMatchScore ?: 0).let { if (it > 0) it else 84 }
 
-    val playbackState by audioController.stablePlaybackState.collectAsState()
+    val playbackState by audioController.playbackState.collectAsState()
     val downloadProgress by repository.downloadManager.downloadProgress.collectAsState()
     val liveDownloadedSongs by repository.downloadedSongsFlow.collectAsState(initial = emptyList())
 
@@ -103,91 +100,64 @@ fun PlaylistScreen(
         else -> "alaktra:playlist:$playlistId"
     }
 
-    val isOnline = LocalIsOnline.current
+    LaunchedEffect(playlistId, playlistName) {
+        isLoading = true
+        val detectedFuse = !isDownloadedPlaylist && !isLikedPlaylist && !isOfflineBackup && !isDailyPlaylist &&
+            (FuseCodeCodec.isFusePlaylistName(playlistName) || repository.isFusePlaylist(playlistId))
 
-    suspend fun loadPlaylistData(forceOnlineFetch: Boolean) {
-        if (songs.isEmpty()) isLoading = true
-        val onlineNow = com.example.util.NetworkMonitor.isOnline(context)
-        try {
-            val detectedFuse = !isDownloadedPlaylist && !isLikedPlaylist && !isOfflineBackup && !isDailyPlaylist &&
-                (FuseCodeCodec.isFusePlaylistName(playlistName) || repository.isFusePlaylist(playlistId))
-
-            if (isDailyPlaylist) {
-                val cachedMeta = repository.getCachedDailyPlaylists().find { it.id == playlistId }
-                if (cachedMeta != null) {
-                    if (cachedMeta != dailyPlaylistMeta) dailyPlaylistMeta = cachedMeta
-                    if (cachedMeta.songs.isNotEmpty() && cachedMeta.songs != songs) {
-                        songs = cachedMeta.songs
-                    }
+        if (isDailyPlaylist) {
+            val cachedMeta = repository.getCachedDailyPlaylists().find { it.id == playlistId }
+            if (cachedMeta != null) {
+                dailyPlaylistMeta = cachedMeta
+                if (cachedMeta.songs.isNotEmpty()) {
+                    songs = cachedMeta.songs
                     isLoading = false
-                }
-                if (onlineNow || forceOnlineFetch || dailyPlaylistMeta == null) {
-                    val freshMeta = repository.getDailyPlaylistMeta(playlistId)
-                    if (freshMeta != null) {
-                        if (freshMeta != dailyPlaylistMeta) dailyPlaylistMeta = freshMeta
-                        if (freshMeta.songs != songs) songs = freshMeta.songs
-                    } else if (songs.isEmpty()) {
-                        val fallbackSongs = repository.getPlaylistSongs(playlistId)
-                        if (fallbackSongs != songs) songs = fallbackSongs
-                    }
-                }
-            } else if (detectedFuse) {
-                val cachedBundle = repository.getFusePlaylistBundle(playlistId, forceRefresh = false)
-                if (cachedBundle != null) {
-                    if (cachedBundle.playlist != fusePlaylistMeta) fusePlaylistMeta = cachedBundle.playlist
-                    if (cachedBundle.songs.isNotEmpty() && cachedBundle.songs != songs) {
-                        songs = cachedBundle.songs
-                    }
-                    isLoading = false
-                }
-                if (onlineNow || forceOnlineFetch) {
-                    val freshBundle = repository.getFusePlaylistBundle(playlistId, forceRefresh = true)
-                    if (freshBundle != null) {
-                        if (freshBundle.playlist != fusePlaylistMeta) fusePlaylistMeta = freshBundle.playlist
-                        if (freshBundle.songs != songs) songs = freshBundle.songs
-                    }
-                }
-            } else {
-                val cached = when {
-                    isOfflineBackup -> repository.getOfflineBackupSongs()
-                    isLikedPlaylist -> repository.getCachedLikedSongs()
-                    isDownloadedPlaylist -> repository.getDownloadedSongs()
-                    else -> repository.getCachedPlaylistSongs(playlistId)
-                }
-                if (cached.isNotEmpty() && cached != songs) {
-                    songs = cached
-                    isLoading = false
-                }
-
-                if (onlineNow || forceOnlineFetch || isOfflineBackup || isDownloadedPlaylist) {
-                    val fresh = when {
-                        isOfflineBackup -> repository.getOfflineBackupSongs()
-                        isLikedPlaylist -> repository.getLikedSongs()
-                        isDownloadedPlaylist -> repository.getDownloadedSongs()
-                        else -> repository.getPlaylistSongs(playlistId)
-                    }
-                    if (fresh != songs && (fresh.isNotEmpty() || isOfflineBackup || isDownloadedPlaylist || onlineNow)) {
-                        songs = fresh
-                    }
                 }
             }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-        } finally {
+            val freshMeta = repository.getDailyPlaylistMeta(playlistId)
+            if (freshMeta != null) {
+                dailyPlaylistMeta = freshMeta
+                songs = freshMeta.songs
+            } else {
+                songs = repository.getPlaylistSongs(playlistId)
+            }
+            isLoading = false
+        } else if (detectedFuse) {
+            val cachedBundle = repository.getFusePlaylistBundle(playlistId, forceRefresh = false)
+            if (cachedBundle != null) {
+                fusePlaylistMeta = cachedBundle.playlist
+                if (cachedBundle.songs.isNotEmpty()) {
+                    songs = cachedBundle.songs
+                    isLoading = false
+                }
+            }
+            val freshBundle = repository.getFusePlaylistBundle(playlistId, forceRefresh = true)
+            if (freshBundle != null) {
+                fusePlaylistMeta = freshBundle.playlist
+                songs = freshBundle.songs
+            }
+            isLoading = false
+        } else {
+            val cached = when {
+                isOfflineBackup -> repository.getOfflineBackupSongs()
+                isLikedPlaylist -> repository.getCachedLikedSongs()
+                isDownloadedPlaylist -> repository.getDownloadedSongs()
+                else -> repository.getCachedPlaylistSongs(playlistId)
+            }
+            if (cached.isNotEmpty()) {
+                songs = cached
+                isLoading = false
+            }
+
+            val fresh = when {
+                isOfflineBackup -> repository.getOfflineBackupSongs()
+                isLikedPlaylist -> repository.getLikedSongs()
+                isDownloadedPlaylist -> repository.getDownloadedSongs()
+                else -> repository.getPlaylistSongs(playlistId)
+            }
+            songs = fresh
             isLoading = false
         }
-    }
-
-    LaunchedEffect(playlistId, playlistName) {
-        loadPlaylistData(forceOnlineFetch = false)
-    }
-
-    var wasOnline by remember { mutableStateOf(isOnline) }
-    LaunchedEffect(isOnline) {
-        if (!wasOnline && isOnline) {
-            loadPlaylistData(forceOnlineFetch = true)
-        }
-        wasOnline = isOnline
     }
 
     Box(
@@ -332,11 +302,11 @@ fun PlaylistScreen(
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
                                         text = when {
-                                            isDailyPlaylist -> "Personalized Daily Mix"
+                                            isDailyPlaylist -> "${displaySongs.size} tracks • Personalized Daily Mix"
                                             isOfflineBackup -> "${displaySongs.size} tracks • Offline Backup (Cache Memory)"
                                             isDownloadedPlaylist -> "${displaySongs.size} tracks • Offline Music"
                                             isLikedPlaylist -> "${displaySongs.size} tracks • Favorites Collection"
-                                            else -> "${displaySongs.size} tracks"
+                                            else -> "${displaySongs.size} tracks • Alaktra Collection"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (isDailyPlaylist) dailyAccentColor else AlaktraTextSecondary
@@ -648,12 +618,15 @@ fun PlaylistScreen(
             }
 
             if (isLoading && displaySongs.isEmpty()) {
-                item(key = "playlist_loading_skeleton") {
-                    SongListSkeleton(
-                        count = 6,
-                        horizontalPadding = 20.dp,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+                item {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp)
+                    ) {
+                        CircularProgressIndicator(color = AlaktraMint)
+                    }
                 }
             } else if (displaySongs.isEmpty()) {
                 item {

@@ -1,10 +1,14 @@
 package com.example.audio
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.media.ExifInterface
 import android.net.Uri
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.palette.graphics.Palette
 import coil.imageLoader
 import java.io.File
 import java.io.RandomAccessFile
@@ -14,7 +18,7 @@ import java.util.Locale
 /**
  * Extracts dominant color metadata (`DOMINANT_COLOR:#RRGGBB`) embedded inside cover artwork files
  * across all formats (JPEG EXIF tags, PNG tEXt/iTXt chunks, WebP metadata, and raw HTTP cache entries)
- * both online and offline. Never extracts colors visually from image pixels.
+ * both online and offline, with lightweight visual Palette fallback when no metadata tag is embedded.
  */
 object ArtworkColorExtractor {
 
@@ -297,6 +301,46 @@ object ArtworkColorExtractor {
             }
         } catch (_: Exception) {}
         return false
+    }
+
+    /**
+     * Lightweight visual fallback using AndroidX Palette when an image has no embedded
+     * `DOMINANT_COLOR` tag in its metadata. Downscales to <= 64x64 so RAM usage is negligible (< 16 KB).
+     */
+    fun extractVisualPaletteHex(drawable: Drawable?): String? {
+        val bmp = (drawable as? BitmapDrawable)?.bitmap ?: return null
+        return extractVisualPaletteHex(bmp)
+    }
+
+    fun extractVisualPaletteHex(bitmap: Bitmap?): String? {
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
+        return try {
+            val safeBitmap = if (bitmap.config == Bitmap.Config.HARDWARE) {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            } else {
+                bitmap
+            } ?: return null
+
+            val palette = Palette.from(safeBitmap)
+                .resizeBitmapArea(64 * 64)
+                .maximumColorCount(16)
+                .generate()
+
+            if (safeBitmap !== bitmap && !safeBitmap.isRecycled) {
+                safeBitmap.recycle()
+            }
+
+            val swatch = palette.vibrantSwatch
+                ?: palette.lightVibrantSwatch
+                ?: palette.darkVibrantSwatch
+                ?: palette.dominantSwatch
+                ?: palette.mutedSwatch
+                ?: return null
+
+            String.format(Locale.US, "#%06X", 0xFFFFFF and swatch.rgb)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun Char.isHexDigit(): Boolean =

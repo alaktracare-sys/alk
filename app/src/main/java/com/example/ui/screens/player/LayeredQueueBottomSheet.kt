@@ -11,7 +11,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.audio.AudioController
 import com.example.audio.PlaybackState
-import com.example.ui.components.AlaktraModalBottomSheet
 
 private val SpotifyBlack = Color(0xFF121212)
 
@@ -22,7 +21,7 @@ fun LayeredQueueBottomSheet(
     audioController: AudioController,
     onDismiss: () -> Unit
 ) {
-    AlaktraModalBottomSheet(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = SpotifyBlack,
         contentColor = Color.White,

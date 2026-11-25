@@ -3,45 +3,19 @@ package com.example.data.preferences
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.model.ArtistCreditJsonCodec
-import com.example.model.ArtistDetailBundle
-import com.example.model.ArtistProfile
-import com.example.model.ClubPlaylistDetails
-import com.example.model.ClubPlaylistSummary
 import com.example.model.DailyPlaylist
 import com.example.model.Playlist
 import com.example.model.Song
 import com.example.model.User
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import org.json.JSONArray
 import org.json.JSONObject
 
 class AuthPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("already_prefs", Context.MODE_PRIVATE)
-    private val gson = Gson()
-    private val artistListType = object : TypeToken<List<ArtistProfile>>() {}.type
-    private val artistDetailMapType = object : TypeToken<LinkedHashMap<Int, ArtistDetailBundle>>() {}.type
-    private val clubSummaryListType = object : TypeToken<List<ClubPlaylistSummary>>() {}.type
-    private val clubDetailMapType = object : TypeToken<LinkedHashMap<Int, ClubPlaylistDetails>>() {}.type
 
     @Volatile
     private var memoryCachedPins: List<com.example.model.LocationPin>? = null
-
-    @Volatile
-    private var memoryDailySnapshot: Pair<Int, DailyPlaylistsSnapshot>? = null
-
-    @Volatile
-    private var memoryCachedArtists: List<ArtistProfile>? = null
-
-    @Volatile
-    private var memoryArtistDetails: LinkedHashMap<Int, ArtistDetailBundle>? = null
-
-    @Volatile
-    private var memoryMyClubs: Pair<Int, List<ClubPlaylistSummary>>? = null
-
-    @Volatile
-    private var memoryClubDetails: Pair<Int, LinkedHashMap<Int, ClubPlaylistDetails>>? = null
 
     fun saveUser(userId: Int, username: String, email: String, token: String? = null, name: String? = null, avatarUrl: String? = null) {
         prefs.edit()
@@ -92,11 +66,6 @@ class AuthPreferences(context: Context) {
 
     fun clear() {
         memoryCachedPins = null
-        memoryDailySnapshot = null
-        memoryCachedArtists = null
-        memoryArtistDetails = null
-        memoryMyClubs = null
-        memoryClubDetails = null
         prefs.edit().clear().apply()
     }
 
@@ -377,35 +346,6 @@ class AuthPreferences(context: Context) {
         return SavedContextInfo(uri = uri, typeName = typeName, name = name, tracks = tracks)
     }
 
-    data class PreOfflineHint(
-        val uri: String,
-        val resumeIndex: Int,
-        val preserveExactRandomOrder: Boolean
-    )
-
-    fun savePreOfflineHint(uri: String, resumeIndex: Int, preserveExactRandomOrder: Boolean) {
-        prefs.edit()
-            .putString(KEY_PRE_OFFLINE_URI, uri)
-            .putInt(KEY_PRE_OFFLINE_RESUME_IDX, resumeIndex)
-            .putBoolean(KEY_PRE_OFFLINE_PRESERVE_SHUFFLE, preserveExactRandomOrder)
-            .apply()
-    }
-
-    fun getPreOfflineHint(): PreOfflineHint? {
-        val uri = prefs.getString(KEY_PRE_OFFLINE_URI, null)?.takeIf { it.isNotBlank() } ?: return null
-        val idx = prefs.getInt(KEY_PRE_OFFLINE_RESUME_IDX, 0).coerceAtLeast(0)
-        val preserve = prefs.getBoolean(KEY_PRE_OFFLINE_PRESERVE_SHUFFLE, false)
-        return PreOfflineHint(uri = uri, resumeIndex = idx, preserveExactRandomOrder = preserve)
-    }
-
-    fun clearPreOfflineHint() {
-        prefs.edit()
-            .remove(KEY_PRE_OFFLINE_URI)
-            .remove(KEY_PRE_OFFLINE_RESUME_IDX)
-            .remove(KEY_PRE_OFFLINE_PRESERVE_SHUFFLE)
-            .apply()
-    }
-
     fun clearPlaybackState() {
         prefs.edit()
             .remove(KEY_LAST_SONG_JSON)
@@ -415,9 +355,6 @@ class AuthPreferences(context: Context) {
             .remove(KEY_SAVED_CONTEXT_TYPE)
             .remove(KEY_SAVED_CONTEXT_NAME)
             .remove(KEY_SAVED_CONTEXT_TRACKS)
-            .remove(KEY_PRE_OFFLINE_URI)
-            .remove(KEY_PRE_OFFLINE_RESUME_IDX)
-            .remove(KEY_PRE_OFFLINE_PRESERVE_SHUFFLE)
             .apply()
     }
 
@@ -600,7 +537,6 @@ class AuthPreferences(context: Context) {
         source: String,
         playlists: List<DailyPlaylist>
     ) {
-        memoryDailySnapshot = userId to DailyPlaylistsSnapshot(date = date, source = source, playlists = playlists)
         val playlistsArr = JSONArray()
         playlists.forEach { dp ->
             val coversArr = JSONArray()
@@ -647,14 +583,6 @@ class AuthPreferences(context: Context) {
     }
 
     fun getDailyPlaylistsSnapshot(userId: Int, expectedDate: String): DailyPlaylistsSnapshot? {
-        val mem = memoryDailySnapshot
-        if (mem != null && mem.first == userId) {
-            if (mem.second.date == expectedDate) {
-                return mem.second
-            } else {
-                memoryDailySnapshot = null
-            }
-        }
         val key = "$KEY_DAILY_PLAYLISTS_PREFIX$userId"
         val raw = prefs.getString(key, null) ?: return null
         return try {
@@ -662,7 +590,6 @@ class AuthPreferences(context: Context) {
             val storedDate = root.optString("date", "")
             if (storedDate != expectedDate) {
                 // New day: delete old saved playlists for this user
-                memoryDailySnapshot = null
                 prefs.edit().remove(key).apply()
                 return null
             }
@@ -725,166 +652,15 @@ class AuthPreferences(context: Context) {
                 )
             }
             if (list.isEmpty()) return null
-            val snapshot = DailyPlaylistsSnapshot(date = storedDate, source = source, playlists = list)
-            memoryDailySnapshot = userId to snapshot
-            snapshot
+            DailyPlaylistsSnapshot(date = storedDate, source = source, playlists = list)
         } catch (_: Exception) {
-            memoryDailySnapshot = null
             prefs.edit().remove(key).apply()
             null
         }
     }
 
     fun clearDailyPlaylistsSnapshot(userId: Int) {
-        if (memoryDailySnapshot?.first == userId) {
-            memoryDailySnapshot = null
-        }
         prefs.edit().remove("$KEY_DAILY_PLAYLISTS_PREFIX$userId").apply()
-    }
-
-    // ==========================================
-    // SEARCH ARTISTS & ARTIST PROFILE PERSISTENCE
-    // ==========================================
-
-    fun saveCachedArtists(artists: List<ArtistProfile>) {
-        val capped = artists.take(250)
-        memoryCachedArtists = capped
-        runCatching {
-            prefs.edit().putString(KEY_CACHED_ARTISTS, gson.toJson(capped, artistListType)).apply()
-        }
-    }
-
-    fun getCachedArtists(): List<ArtistProfile> {
-        memoryCachedArtists?.let { return it }
-        val raw = prefs.getString(KEY_CACHED_ARTISTS, null)
-        if (raw.isNullOrBlank()) {
-            memoryCachedArtists = emptyList()
-            return emptyList()
-        }
-        return try {
-            val parsed: List<ArtistProfile>? = gson.fromJson(raw, artistListType)
-            val list = parsed.orEmpty()
-            memoryCachedArtists = list
-            list
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    fun saveCachedArtistDetail(bundle: ArtistDetailBundle) {
-        val updated = LinkedHashMap<Int, ArtistDetailBundle>(MAX_CACHED_ARTIST_DETAILS)
-        synchronized(this) {
-            val existing = getOrLoadArtistDetailMap()
-            updated.putAll(existing)
-            updated.remove(bundle.artist.id)
-            updated[bundle.artist.id] = bundle
-            while (updated.size > MAX_CACHED_ARTIST_DETAILS) {
-                val eldestKey = updated.keys.firstOrNull() ?: break
-                updated.remove(eldestKey)
-            }
-            memoryArtistDetails = updated
-        }
-        runCatching {
-            prefs.edit().putString(KEY_CACHED_ARTIST_DETAILS, gson.toJson(updated, artistDetailMapType)).apply()
-        }
-    }
-
-    fun getCachedArtistDetail(artistId: Int): ArtistDetailBundle? {
-        return synchronized(this) {
-            getOrLoadArtistDetailMap()[artistId]
-        }
-    }
-
-    private fun getOrLoadArtistDetailMap(): LinkedHashMap<Int, ArtistDetailBundle> {
-        memoryArtistDetails?.let { return it }
-        val raw = prefs.getString(KEY_CACHED_ARTIST_DETAILS, null)
-        val parsed = if (raw.isNullOrBlank()) {
-            LinkedHashMap()
-        } else {
-            try {
-                gson.fromJson<LinkedHashMap<Int, ArtistDetailBundle>>(raw, artistDetailMapType) ?: LinkedHashMap()
-            } catch (_: Exception) {
-                LinkedHashMap()
-            }
-        }
-        memoryArtistDetails = parsed
-        return parsed
-    }
-
-    // ==========================================
-    // CLUB PLAYLISTS PERSISTENCE (Per User)
-    // ==========================================
-
-    fun saveCachedMyClubs(userId: Int, clubs: List<ClubPlaylistSummary>) {
-        val capped = clubs.take(50)
-        memoryMyClubs = userId to capped
-        runCatching {
-            prefs.edit().putString("$KEY_CACHED_MY_CLUBS_PREFIX$userId", gson.toJson(capped, clubSummaryListType)).apply()
-        }
-    }
-
-    fun getCachedMyClubs(userId: Int): List<ClubPlaylistSummary> {
-        val mem = memoryMyClubs
-        if (mem != null && mem.first == userId) {
-            return mem.second
-        }
-        val raw = prefs.getString("$KEY_CACHED_MY_CLUBS_PREFIX$userId", null)
-        if (raw.isNullOrBlank()) {
-            val empty = emptyList<ClubPlaylistSummary>()
-            memoryMyClubs = userId to empty
-            return empty
-        }
-        return try {
-            val parsed: List<ClubPlaylistSummary>? = gson.fromJson(raw, clubSummaryListType)
-            val list = parsed.orEmpty()
-            memoryMyClubs = userId to list
-            list
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    fun saveCachedClubDetails(userId: Int, details: ClubPlaylistDetails) {
-        val updated = LinkedHashMap<Int, ClubPlaylistDetails>()
-        synchronized(this) {
-            val existing = getOrLoadClubDetailsMap(userId)
-            updated.putAll(existing)
-            updated.remove(details.clubId)
-            updated[details.clubId] = details
-            while (updated.size > MAX_CACHED_CLUB_DETAILS) {
-                val eldestKey = updated.keys.firstOrNull() ?: break
-                updated.remove(eldestKey)
-            }
-            memoryClubDetails = userId to updated
-        }
-        runCatching {
-            prefs.edit().putString("$KEY_CACHED_CLUB_DETAILS_PREFIX$userId", gson.toJson(updated, clubDetailMapType)).apply()
-        }
-    }
-
-    fun getCachedClubDetails(userId: Int, clubId: Int): ClubPlaylistDetails? {
-        return synchronized(this) {
-            getOrLoadClubDetailsMap(userId)[clubId]
-        }
-    }
-
-    private fun getOrLoadClubDetailsMap(userId: Int): LinkedHashMap<Int, ClubPlaylistDetails> {
-        val mem = memoryClubDetails
-        if (mem != null && mem.first == userId) {
-            return mem.second
-        }
-        val raw = prefs.getString("$KEY_CACHED_CLUB_DETAILS_PREFIX$userId", null)
-        val parsed = if (raw.isNullOrBlank()) {
-            LinkedHashMap()
-        } else {
-            try {
-                gson.fromJson<LinkedHashMap<Int, ClubPlaylistDetails>>(raw, clubDetailMapType) ?: LinkedHashMap()
-            } catch (_: Exception) {
-                LinkedHashMap()
-            }
-        }
-        memoryClubDetails = userId to parsed
-        return parsed
     }
 
     companion object {
@@ -910,18 +686,9 @@ class AuthPreferences(context: Context) {
         private const val KEY_SAVED_CONTEXT_TYPE = "saved_playback_context_type"
         private const val KEY_SAVED_CONTEXT_NAME = "saved_playback_context_name"
         private const val KEY_SAVED_CONTEXT_TRACKS = "saved_playback_context_tracks"
-        private const val KEY_PRE_OFFLINE_URI = "pre_offline_context_uri"
-        private const val KEY_PRE_OFFLINE_RESUME_IDX = "pre_offline_resume_idx"
-        private const val KEY_PRE_OFFLINE_PRESERVE_SHUFFLE = "pre_offline_preserve_shuffle"
         private const val KEY_AUDIO_CACHE_CAP_MB = "audio_cache_cap_mb"
         private const val KEY_RECENT_SEARCHES = "recent_searches_list"
         private const val KEY_CACHED_PINS = "cached_location_pins"
         private const val KEY_DAILY_PLAYLISTS_PREFIX = "daily_playlists_v1_"
-        private const val KEY_CACHED_ARTISTS = "cached_artists_directory_v1"
-        private const val KEY_CACHED_ARTIST_DETAILS = "cached_artist_details_v1"
-        private const val KEY_CACHED_MY_CLUBS_PREFIX = "cached_my_clubs_v1_"
-        private const val KEY_CACHED_CLUB_DETAILS_PREFIX = "cached_club_details_v1_"
-        private const val MAX_CACHED_ARTIST_DETAILS = 25
-        private const val MAX_CACHED_CLUB_DETAILS = 20
     }
 }

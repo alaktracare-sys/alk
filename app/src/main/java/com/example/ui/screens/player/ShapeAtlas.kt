@@ -131,19 +131,6 @@ object ShapeAtlas {
     // Keep at most 3 small pre-composited song wallpapers (~1.6 MB each) in memory.
     private val wallpaperCache = LruCache<WallpaperCacheKey, ImageBitmap>(3)
 
-    fun clearCache() {
-        wallpaperCache.evictAll()
-        val prev = atlasData
-        atlasData = null
-        loadingStarted.set(false)
-        atlasVersion = 0
-        runCatching {
-            if (prev != null && !prev.bitmap.isRecycled) {
-                prev.bitmap.recycle()
-            }
-        }
-    }
-
     fun preloadAsync(context: Context) {
         if (atlasData != null) return
         if (!loadingStarted.compareAndSet(false, true)) return

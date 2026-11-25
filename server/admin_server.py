@@ -285,36 +285,14 @@ def pct_change(cur: float, prev: float) -> str:
 
 # --------------------------------------------------------------- settings --
 _settings_lock = threading.Lock()
-_VALID_CF_PROTOCOLS = {"http2", "quic", "auto"}
-_VALID_CF_EDGE_IPS = {"auto", "4", "6"}
-
-def _norm_cf_protocol(val: str) -> str:
-    v = str(val or "").strip().lower()
-    return v if v in _VALID_CF_PROTOCOLS else "http2"
-
-def _norm_cf_edge_ip(val: str) -> str:
-    v = str(val or "").strip().lower()
-    return v if v in _VALID_CF_EDGE_IPS else "auto"
-
 SETTINGS = {
     "cf_tunnel_name": os.getenv("CF_TUNNEL_NAME", "") or "alaktra",
     "cf_host_domain": os.getenv("CF_HOST_DOMAIN", "api.alaktracare.in"),
-    "cf_tunnel_protocol": _norm_cf_protocol(os.getenv("CF_TUNNEL_PROTOCOL", "http2")),
-    "cf_edge_ip_version": _norm_cf_edge_ip(os.getenv("CF_EDGE_IP_VERSION", "auto")),
     "tunnel_enabled": True,
 }
 try:
     with open(SETTINGS_FILE, "r", encoding="utf-8") as _f:
-        _loaded = json.load(_f)
-        for _k, _v in _loaded.items():
-            if _k not in SETTINGS:
-                continue
-            if _k == "cf_tunnel_protocol":
-                SETTINGS[_k] = _norm_cf_protocol(_v)
-            elif _k == "cf_edge_ip_version":
-                SETTINGS[_k] = _norm_cf_edge_ip(_v)
-            else:
-                SETTINGS[_k] = _v
+        SETTINGS.update({k: v for k, v in json.load(_f).items() if k in SETTINGS})
 except Exception:
     pass
 
@@ -448,13 +426,8 @@ class Processes:
         self.api: subprocess.Popen | None = None
         self.tunnel: subprocess.Popen | None = None
         self.api_started = 0.0
-        self.tunnel_started = 0.0
         self.lock = threading.RLock()
         self._ext_tunnel = (0.0, False)
-        self._ext_warned = False
-        self._shutting_down = False
-        self._tunnel_restarts = 0
-        self._tunnel_restart_timer: threading.Timer | None = None
 
     # -- helpers
     def _spawn(self, src: str, cmd: list[str]) -> subprocess.Popen:
@@ -469,40 +442,9 @@ class Processes:
             code = proc.wait()
             add_log(src, f"{'API server' if src == 'api' else 'Cloudflare tunnel'} exited (code {code})",
                     "info" if code in (0, -15, 143) else "err")
-            if src == "tunnel":
-                self._maybe_schedule_tunnel_restart(proc, code)
 
         threading.Thread(target=pump, daemon=True, name=f"pump-{src}").start()
         return proc
-
-    def _maybe_schedule_tunnel_restart(self, exited_proc: subprocess.Popen, code: int) -> None:
-        with self.lock:
-            if self._shutting_down or not SETTINGS.get("tunnel_enabled", True):
-                return
-            if self.tunnel is not exited_proc:
-                return
-            if self._tunnel_restart_timer is not None:
-                self._tunnel_restart_timer.cancel()
-                self._tunnel_restart_timer = None
-            uptime = time.time() - self.tunnel_started if self.tunnel_started else 0.0
-            if uptime > 30.0:
-                self._tunnel_restarts = 0
-            delay = min(30, 2 * (2 ** min(self._tunnel_restarts, 4)))
-            self._tunnel_restarts += 1
-            add_log("admin", f"Tunnel exited unexpectedly (code {code}); restarting in {delay}s…", "warn")
-
-            def _retry():
-                with self.lock:
-                    self._tunnel_restart_timer = None
-                    if self._shutting_down or not SETTINGS.get("tunnel_enabled", True):
-                        return
-                    if not self.tunnel_managed() and not self.tunnel_external():
-                        self.ensure_tunnel()
-
-            t = threading.Timer(delay, _retry)
-            t.daemon = True
-            t.start()
-            self._tunnel_restart_timer = t
 
     def api_managed(self) -> bool:
         return self.api is not None and self.api.poll() is None
@@ -524,96 +466,30 @@ class Processes:
         self._ext_tunnel = (now, ok)
         return ok
 
-    def ensure_tunnel(
-        self,
-        tunnel_name: str = "",
-        protocol: str = "",
-        edge_ip_version: str = "",
-        force_restart: bool = False,
-    ) -> str:
+    def ensure_tunnel(self, tunnel_name: str = "") -> str:
         with self.lock:
-            changed = False
-            if tunnel_name and tunnel_name != SETTINGS["cf_tunnel_name"]:
+            if tunnel_name:
                 SETTINGS["cf_tunnel_name"] = tunnel_name
-                changed = True
-            if protocol:
-                norm_proto = _norm_cf_protocol(protocol)
-                if norm_proto != SETTINGS["cf_tunnel_protocol"]:
-                    SETTINGS["cf_tunnel_protocol"] = norm_proto
-                    changed = True
-            if edge_ip_version:
-                norm_edge = _norm_cf_edge_ip(edge_ip_version)
-                if norm_edge != SETTINGS["cf_edge_ip_version"]:
-                    SETTINGS["cf_edge_ip_version"] = norm_edge
-                    changed = True
-            if changed:
                 save_settings()
-
             name = SETTINGS["cf_tunnel_name"]
-            proto = _norm_cf_protocol(SETTINGS.get("cf_tunnel_protocol", "http2"))
-            edge_ip = _norm_cf_edge_ip(SETTINGS.get("cf_edge_ip_version", "auto"))
-
-            if (force_restart or changed) and self.tunnel_managed():
-                old = self.tunnel
-                self.tunnel = None
-                if self._tunnel_restart_timer is not None:
-                    self._tunnel_restart_timer.cancel()
-                    self._tunnel_restart_timer = None
-                if old is not None:
-                    kill_tree(old)
-
-            if self.tunnel_managed():
-                return "already running"
-            if self.tunnel_external():
-                if not self._ext_warned:
-                    self._ext_warned = True
-                    add_log("admin", "Using externally started cloudflared process (ensure protocol: http2 is configured to prevent QUIC UDP timeouts).", "info")
+            if self.tunnel_managed() or self.tunnel_external():
                 return "already running"
             if not shutil.which("cloudflared"):
                 add_log("admin", "cloudflared not found in PATH - tunnel not started.", "warn")
                 return "cloudflared is not installed"
-
-            if self._tunnel_restart_timer is not None:
-                self._tunnel_restart_timer.cancel()
-                self._tunnel_restart_timer = None
-
-            cmd = ["cloudflared", "tunnel", "run"]
-            if proto in ("http2", "quic"):
-                cmd += ["--protocol", proto]
-            if edge_ip in ("4", "6"):
-                cmd += ["--edge-ip-version", edge_ip]
-            cmd.append(name)
-
-            add_log("admin", f"Starting Cloudflare tunnel ({name}, protocol={proto}, edge_ip={edge_ip}) for admin & API routing", "info")
-            self.tunnel_started = time.time()
-            self.tunnel = self._spawn("tunnel", cmd)
+            add_log("admin", f"Starting Cloudflare tunnel ({name}) for admin & API routing", "info")
+            self.tunnel = self._spawn("tunnel", ["cloudflared", "tunnel", "run", name])
             return "started"
 
     # -- actions
-    def start(
-        self,
-        tunnel: bool,
-        tunnel_name: str,
-        host: str,
-        tunnel_protocol: str = "",
-        edge_ip_version: str = "",
-    ) -> dict:
+    def start(self, tunnel: bool, tunnel_name: str, host: str) -> dict:
         global _alive_cache
         with self.lock:
             out: dict = {}
-            tunnel_changed = (
-                (bool(tunnel_name) and tunnel_name != SETTINGS["cf_tunnel_name"])
-                or (bool(tunnel_protocol) and _norm_cf_protocol(tunnel_protocol) != SETTINGS["cf_tunnel_protocol"])
-                or (bool(edge_ip_version) and _norm_cf_edge_ip(edge_ip_version) != SETTINGS["cf_edge_ip_version"])
-            )
             if tunnel_name:
                 SETTINGS["cf_tunnel_name"] = tunnel_name
             if host:
                 SETTINGS["cf_host_domain"] = host
-            if tunnel_protocol:
-                SETTINGS["cf_tunnel_protocol"] = _norm_cf_protocol(tunnel_protocol)
-            if edge_ip_version:
-                SETTINGS["cf_edge_ip_version"] = _norm_cf_edge_ip(edge_ip_version)
             SETTINGS["tunnel_enabled"] = bool(tunnel)
             save_settings()
 
@@ -622,11 +498,7 @@ class Processes:
             else:
                 if port_in_use(API_PORT):
                     raise ApiError(409, f"Port {API_PORT} is already used by another program.")
-                cmd = [
-                    server_python(), "-m", "uvicorn", "main:app",
-                    "--host", API_HOST, "--port", str(API_PORT),
-                    "--timeout-keep-alive", "95",
-                ]
+                cmd = [server_python(), "-m", "uvicorn", "main:app", "--host", API_HOST, "--port", str(API_PORT)]
                 add_log("admin", f"Starting API: {' '.join(cmd)}", "info")
                 self.api = self._spawn("api", cmd)
                 self.api_started = time.time()
@@ -642,12 +514,7 @@ class Processes:
                 out["api"] = "started" if probe_api() else "starting"
 
             if tunnel:
-                out["tunnel"] = self.ensure_tunnel(
-                    tunnel_name=tunnel_name,
-                    protocol=tunnel_protocol,
-                    edge_ip_version=edge_ip_version,
-                    force_restart=tunnel_changed,
-                )
+                out["tunnel"] = self.ensure_tunnel(tunnel_name)
             return out
 
     def stop(self) -> dict:
@@ -670,11 +537,6 @@ class Processes:
             return {"stopped": stopped}
 
     def shutdown(self) -> None:
-        self._shutting_down = True
-        with self.lock:
-            if self._tunnel_restart_timer is not None:
-                self._tunnel_restart_timer.cancel()
-                self._tunnel_restart_timer = None
         if KEEP_API_ON_EXIT:
             return
         for p in (self.tunnel, self.api):
@@ -693,8 +555,6 @@ class Processes:
                     "uptime": int(time.time() - self.api_started) if managed else None},
             "tunnel": {"installed": bool(shutil.which("cloudflared")), "running": tunnel_on,
                        "managed": t_managed, "name": SETTINGS["cf_tunnel_name"], "host": host,
-                       "protocol": SETTINGS["cf_tunnel_protocol"],
-                       "edge_ip_version": SETTINGS["cf_edge_ip_version"],
                        "enabled": SETTINGS["tunnel_enabled"]},
             "admin": {"port": ADMIN_PORT, "host": ADMIN_HOST},
             "lan_ip": lan_ip(),
@@ -777,13 +637,8 @@ def api_server_status(ctx: Ctx):
 
 def api_server_start(ctx: Ctx):
     b = ctx.body
-    res = PROCS.start(
-        bool(b.get("tunnel", SETTINGS["tunnel_enabled"])),
-        str(b.get("cf_tunnel_name", "")).strip(),
-        str(b.get("cf_host_domain", "")).strip(),
-        str(b.get("cf_tunnel_protocol", "")).strip(),
-        str(b.get("cf_edge_ip_version", "")).strip(),
-    )
+    res = PROCS.start(bool(b.get("tunnel", SETTINGS["tunnel_enabled"])),
+                      str(b.get("cf_tunnel_name", "")).strip(), str(b.get("cf_host_domain", "")).strip())
     add_log("admin", f"Start requested -> {res}", "info")
     return {"success": True, **res}
 

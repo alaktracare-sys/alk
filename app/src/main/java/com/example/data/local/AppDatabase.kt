@@ -10,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,17 +37,7 @@ class AppDatabase private constructor(context: Context) :
     private val _userFlow = MutableStateFlow<UserEntity?>(null)
 
     init {
-        dbScope.launch {
-            try {
-                _downloadedSongsFlow.value = queryAllDownloadedSongs()
-                _playlistsFlow.value = queryAllPlaylists()
-                _userFlow.value = queryLatestUser()
-                _listeningHistoryFlow.value = queryAllHistory()
-                if (_songsFlow.subscriptionCount.value > 0) {
-                    _songsFlow.value = queryAllSongs()
-                }
-            } catch (_: Exception) {}
-        }
+        refreshFlow()
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -274,21 +263,10 @@ class AppDatabase private constructor(context: Context) :
         dbScope.launch {
             try {
                 _downloadedSongsFlow.value = queryAllDownloadedSongs()
+                _listeningHistoryFlow.value = queryAllHistory()
+                _songsFlow.value = queryAllSongs()
                 _playlistsFlow.value = queryAllPlaylists()
                 _userFlow.value = queryLatestUser()
-                _listeningHistoryFlow.value = queryAllHistory()
-                if (_songsFlow.subscriptionCount.value > 0) {
-                    _songsFlow.value = queryAllSongs()
-                }
-            } catch (_: Exception) {}
-        }
-    }
-
-    private fun refreshSongsOnly() {
-        if (_songsFlow.subscriptionCount.value <= 0) return
-        dbScope.launch {
-            try {
-                _songsFlow.value = queryAllSongs()
             } catch (_: Exception) {}
         }
     }
@@ -437,8 +415,10 @@ class AppDatabase private constructor(context: Context) :
     // CACHED SONGS (SongDao)
     // ==========================================================
 
-    private fun readSongEntitiesFromCursor(cursor: android.database.Cursor): List<SongEntity> {
+    private fun queryAllSongs(): List<SongEntity> {
         val list = mutableListOf<SongEntity>()
+        val db = readableDatabase
+        val cursor = db.query("songs", null, null, null, null, null, "id DESC")
         cursor.use {
             val idCol = it.getColumnIndexOrThrow("id")
             val titleCol = it.getColumnIndexOrThrow("title")
@@ -473,45 +453,10 @@ class AppDatabase private constructor(context: Context) :
         return list
     }
 
-    private fun queryAllSongs(): List<SongEntity> {
-        val db = readableDatabase
-        val cursor = db.query("songs", null, null, null, null, null, "id DESC")
-        return readSongEntitiesFromCursor(cursor)
-    }
-
     override fun getAllCachedSongsFlow(): Flow<List<SongEntity>> = _songsFlow.asStateFlow()
 
     override suspend fun getAllCachedSongs(): List<SongEntity> = withContext(Dispatchers.IO) {
         queryAllSongs()
-    }
-
-    override suspend fun getCachedSongsPage(limit: Int, offset: Int): List<SongEntity> = withContext(Dispatchers.IO) {
-        val safeLimit = limit.coerceAtLeast(1)
-        val safeOffset = offset.coerceAtLeast(0)
-        val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT * FROM songs ORDER BY id DESC LIMIT ? OFFSET ?",
-            arrayOf(safeLimit.toString(), safeOffset.toString())
-        )
-        readSongEntitiesFromCursor(cursor)
-    }
-
-    override suspend fun getOldestCachedSongs(limit: Int): List<SongEntity> = withContext(Dispatchers.IO) {
-        val safeLimit = limit.coerceAtLeast(1)
-        val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT * FROM songs ORDER BY id ASC LIMIT ?",
-            arrayOf(safeLimit.toString())
-        )
-        readSongEntitiesFromCursor(cursor)
-    }
-
-    override suspend fun getCachedSongsCount(): Int = withContext(Dispatchers.IO) {
-        try {
-            android.database.DatabaseUtils.queryNumEntries(readableDatabase, "songs").toInt()
-        } catch (_: Exception) {
-            0
-        }
     }
 
     override suspend fun getCachedSong(songId: Int): SongEntity? = withContext(Dispatchers.IO) {
@@ -570,7 +515,7 @@ class AppDatabase private constructor(context: Context) :
         } finally {
             db.endTransaction()
         }
-        refreshSongsOnly()
+        refreshFlow()
     }
 
     override suspend fun insertCachedSong(song: SongEntity): Unit = withContext(Dispatchers.IO) {
@@ -595,7 +540,7 @@ class AppDatabase private constructor(context: Context) :
             put("last_synced_at", song.lastSyncedAt)
         }
         db.insertWithOnConflict("songs", null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        refreshSongsOnly()
+        refreshFlow()
     }
 
     override suspend fun updateSongLiked(songId: Int, isLiked: Boolean): Unit = withContext(Dispatchers.IO) {
@@ -604,7 +549,7 @@ class AppDatabase private constructor(context: Context) :
             put("is_liked", if (isLiked) 1 else 0)
         }
         db.update("songs", values, "id = ?", arrayOf(songId.toString()))
-        refreshSongsOnly()
+        refreshFlow()
     }
 
     override suspend fun updateSongDominantColor(songId: Int, dominantColorHex: String): Unit = withContext(Dispatchers.IO) {
@@ -615,16 +560,6 @@ class AppDatabase private constructor(context: Context) :
         }
         db.update("songs", values, "id = ?", arrayOf(songId.toString()))
         db.update("downloaded_songs", values, "song_id = ?", arrayOf(songId.toString()))
-    }
-
-    override suspend fun updateSongDuration(songId: Int, durationSec: Double): Unit = withContext(Dispatchers.IO) {
-        if (songId <= 0 || durationSec <= 0.0) return@withContext
-        val db = writableDatabase
-        val values = ContentValues().apply {
-            put("duration", durationSec)
-        }
-        db.update("songs", values, "id = ? AND duration <= 0", arrayOf(songId.toString()))
-        db.update("downloaded_songs", values, "song_id = ? AND duration <= 0", arrayOf(songId.toString()))
     }
 
     override suspend fun getLikedSongs(): List<SongEntity> = withContext(Dispatchers.IO) {
@@ -1083,16 +1018,7 @@ class AppDatabase private constructor(context: Context) :
         return list
     }
 
-    fun getAllHistory(): StateFlow<List<ListeningHistoryEntity>> = _listeningHistoryFlow.asStateFlow()
-
-    suspend fun ensureListeningHistoryLoaded() = withContext(Dispatchers.IO) {
-        try {
-            val loaded = queryAllHistory()
-            if (_listeningHistoryFlow.value != loaded) {
-                _listeningHistoryFlow.value = loaded
-            }
-        } catch (_: Exception) {}
-    }
+    fun getAllHistory(): Flow<List<ListeningHistoryEntity>> = _listeningHistoryFlow.asStateFlow()
 
     fun getAllHistoryList(): List<ListeningHistoryEntity> = queryAllHistory()
 

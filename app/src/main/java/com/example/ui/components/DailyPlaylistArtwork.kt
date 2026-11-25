@@ -49,25 +49,21 @@ fun DailyPlaylistCollageCover(
     modifier: Modifier = Modifier
 ) {
     val cleanCovers = remember(coverUrls) { coverUrls.filter { it.isNotBlank() }.distinct() }
-    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
-    val backgroundBrush = remember(accentColor) {
-        Brush.linearGradient(
-            colors = listOf(
-                accentColor.copy(alpha = 0.55f),
-                Color(0xFF1A1C28),
-                AlaktraCard
-            )
-        )
-    }
-    val tiles = remember(cleanCovers) {
-        if (cleanCovers.size >= 2) List(4) { idx -> cleanCovers[idx % cleanCovers.size] } else emptyList()
-    }
+    val shape = RoundedCornerShape(cornerRadius)
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .clip(shape)
-            .background(backgroundBrush),
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.55f),
+                        Color(0xFF1A1C28),
+                        AlaktraCard
+                    )
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
         when {
@@ -83,6 +79,7 @@ fun DailyPlaylistCollageCover(
                 CollageTileImage(url = cleanCovers[0], modifier = Modifier.fillMaxSize())
             }
             else -> {
+                val tiles = List(4) { idx -> cleanCovers[idx % cleanCovers.size] }
                 Column(
                     verticalArrangement = Arrangement.spacedBy(1.5.dp),
                     modifier = Modifier
@@ -153,7 +150,7 @@ private fun CollageTileImage(
             model = remember(url) {
                 ImageRequest.Builder(context)
                     .data(url)
-                    .size(coil.size.Size.ORIGINAL)
+                    .crossfade(true)
                     .build()
             },
             contentDescription = null,

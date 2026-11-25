@@ -145,7 +145,6 @@ class DownloadManager(private val context: Context) {
                 fileSize = targetAudioFile.length()
             )
             songDao.insertDownloadedSong(entity)
-            com.example.audio.AudioCache.markDownloaded(song.id)
             if (!resolvedColorHex.isNullOrBlank()) {
                 songDao.updateSongDominantColor(song.id, resolvedColorHex)
             }
@@ -167,7 +166,6 @@ class DownloadManager(private val context: Context) {
         val coverFile = File(downloadsDir, "${songId}_cover.jpg")
         if (coverFile.exists()) coverFile.delete()
         songDao.deleteDownloadedSong(songId)
-        com.example.audio.AudioCache.unmarkDownloaded(songId)
     }
 
     suspend fun getLocalPath(songId: Int): String? = withContext(Dispatchers.IO) {

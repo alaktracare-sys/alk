@@ -40,7 +40,6 @@ import com.example.model.ArtistDetailBundle
 import com.example.model.ArtistProfile
 import com.example.model.Song
 import com.example.model.UserArtistStatus
-import com.example.ui.components.ArtistStudioSkeleton
 import com.example.ui.components.SongCover
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
@@ -182,7 +181,9 @@ fun ArtistStudioScreen(
             contentAlignment = Alignment.TopCenter
         ) {
             if (isLoading) {
-                ArtistStudioSkeleton()
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = AlaktraMint)
+                }
             } else if (user == null) {
                 Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
@@ -221,12 +222,7 @@ fun ArtistStudioScreen(
                             ) {
                                 if (claimed.avatarUrl.isNotBlank()) {
                                     AsyncImage(
-                                        model = remember(claimed.avatarUrl) {
-                                            ImageRequest.Builder(context)
-                                                .data(claimed.avatarUrl)
-                                                .size(192)
-                                                .build()
-                                        },
+                                        model = ImageRequest.Builder(context).data(claimed.avatarUrl).crossfade(true).build(),
                                         contentDescription = claimed.name,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()

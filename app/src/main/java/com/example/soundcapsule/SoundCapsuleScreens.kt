@@ -364,8 +364,8 @@ private fun ArtistsScreen(
         HeroCard(
             label = "#1 · Top artist",
             title = first.name,
-            big = "${fmt(first.plays)} plays",
-            sub = "${fmt(first.minutes)} minutes",
+            big = "${fmt(first.minutes)} minutes",
+            sub = "${first.plays} plays",
             onClick = { onOpenArtist(first.artistId, first.name) },
             testTag = "sound_capsule_hero_artist",
         ) {
@@ -377,8 +377,8 @@ private fun ArtistsScreen(
                     rank = i + 2,
                     title = a.name,
                     sub = "${fmt(a.minutes)} min",
-                    right = "${fmt(a.plays)} plays",
-                    fraction = a.plays.toFloat() / first.plays.coerceAtLeast(1),
+                    right = "${a.plays} plays",
+                    fraction = a.minutes.toFloat() / first.minutes.coerceAtLeast(1),
                     url = a.artworkUrl,
                     round = true,
                     onClick = { onOpenArtist(a.artistId, a.name) },
@@ -404,7 +404,7 @@ private fun SongsScreen(
         HeroCard(
             label = "#1 · Top song",
             title = first.title,
-            big = "${fmt(first.plays)} plays",
+            big = "${first.plays} plays",
             sub = "${first.artistName} · ${fmt(first.minutes)} minutes",
         ) {
             CapsuleArtwork(first.artworkUrl, 2, RoundedCornerShape(6.dp), Modifier.size(80.dp))
@@ -415,7 +415,7 @@ private fun SongsScreen(
                     rank = i + 2,
                     title = s.title,
                     sub = "${s.artistName} · ${fmt(s.minutes)} min",
-                    right = "${fmt(s.plays)} plays",
+                    right = "${s.plays} plays",
                     fraction = s.plays.toFloat() / first.plays.coerceAtLeast(1),
                     url = s.artworkUrl,
                     round = false,
@@ -591,7 +591,7 @@ fun CapsuleArtwork(url: String?, seed: Int, shape: Shape, modifier: Modifier = M
                 model = remember(url) {
                     ImageRequest.Builder(context)
                         .data(url)
-                        .size(coil.size.Size.ORIGINAL)
+                        .crossfade(true)
                         .build()
                 },
                 contentDescription = "Artwork",

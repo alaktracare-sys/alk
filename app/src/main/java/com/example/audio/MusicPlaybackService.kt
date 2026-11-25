@@ -372,11 +372,7 @@ class MusicPlaybackService : MediaSessionService() {
     }
 
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        try {
-            super.onUpdateNotification(session, startInForegroundRequired)
-        } catch (e: Exception) {
-            Log.w("MusicPlaybackService", "Failed to update media notification", e)
-        }
+        super.onUpdateNotification(session, startInForegroundRequired)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {

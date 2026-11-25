@@ -2,10 +2,6 @@ package com.example.soundcapsule
 
 import android.content.Context
 import android.util.Log
-import coil.imageLoader
-import coil.request.CachePolicy
-import coil.request.ImageRequest
-import coil.size.Size
 import com.example.data.local.AppDatabase
 import com.example.data.local.ListeningHistoryEntity
 import com.example.data.preferences.AuthPreferences
@@ -35,9 +31,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Collections
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToLong
 
@@ -56,12 +50,7 @@ class SoundCapsuleRepository(
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val pushMutex = Mutex()
     private val syncMutex = Mutex()
-    private val onlinePrewarmMutex = Mutex()
     private val cacheLock = Any()
-    private val prewarmedArtUrls = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
-
-    @Volatile
-    private var lastOnlinePrewarmAtMs: Long = 0L
 
     @Volatile
     private var debouncedPushJob: Job? = null
@@ -151,8 +140,6 @@ class SoundCapsuleRepository(
      */
     private fun primeColdBootSnapshot(userId: Int) {
         val decodedList = SoundCapsuleSnapshotCodec.decodeList(authPreferences.getCachedCapsuleSnapshot(userId))
-        val nowMonth = YearMonth.now(zone)
-        val rolling12 = buildRolling12Months()
         synchronized(cacheLock) {
             if (accumulatorUserId != userId) {
                 activeMonthStatsMap.clear()
@@ -164,10 +151,6 @@ class SoundCapsuleRepository(
                 }
             }
             _monthlyFeedFlow.value = buildOrderedFeedLocked(userId)
-            _availableMonthsFlow.value = (rolling12 + activeMonthStatsMap.keys + _serverAvailableMonths.value)
-                .filter { !it.isAfter(nowMonth) }
-                .distinct()
-                .sortedDescending()
         }
     }
 
@@ -302,9 +285,7 @@ class SoundCapsuleRepository(
         }
         val built: SoundCapsuleStats
         val updatedFeed: List<SoundCapsuleStats>
-        val feedChanged: Boolean
         synchronized(cacheLock) {
-            val prevFeed = _monthlyFeedFlow.value
             accumulatorUserId = userId
             currentMonthAccumulator = freshAcc
             isCurrentMonthHydratedFromDb = true
@@ -316,15 +297,10 @@ class SoundCapsuleRepository(
                 activeMonthStatsMap.remove(nowMonth)
             }
             updatedFeed = buildOrderedFeedLocked(userId)
-            feedChanged = updatedFeed != prevFeed
-            if (feedChanged) {
-                _monthlyFeedFlow.value = updatedFeed
-            }
+            _monthlyFeedFlow.value = updatedFeed
         }
-        if (feedChanged) {
-            schedulePersistFeedSnapshot(userId, updatedFeed)
-            bumpHotStatsVersion()
-        }
+        schedulePersistFeedSnapshot(userId, updatedFeed)
+        bumpHotStatsVersion()
         built
     }
 
@@ -375,11 +351,7 @@ class SoundCapsuleRepository(
         val rolling12 = buildRolling12Months()
         val updatedFeed: List<SoundCapsuleStats>
         val mergedAvailable: List<YearMonth>
-        val feedChanged: Boolean
-        val availableChanged: Boolean
         synchronized(cacheLock) {
-            val prevFeed = _monthlyFeedFlow.value
-            val prevAvailable = _availableMonthsFlow.value
             activeMonthStatsMap.clear()
             activeMonthStatsMap.putAll(builtMap)
             mergedAvailable = (rolling12 + builtMap.keys + _serverAvailableMonths.value)
@@ -387,121 +359,28 @@ class SoundCapsuleRepository(
                 .distinct()
                 .sortedDescending()
             updatedFeed = buildOrderedFeedLocked(userId)
-            feedChanged = updatedFeed != prevFeed
-            availableChanged = mergedAvailable != prevAvailable
-            if (feedChanged) {
-                _monthlyFeedFlow.value = updatedFeed
-            }
+            _monthlyFeedFlow.value = updatedFeed
         }
-        if (availableChanged) {
-            _availableMonthsFlow.value = mergedAvailable
-        }
-        if (feedChanged) {
-            schedulePersistFeedSnapshot(userId, updatedFeed)
-            bumpHotStatsVersion()
-        }
+        _availableMonthsFlow.value = mergedAvailable
+        schedulePersistFeedSnapshot(userId, updatedFeed)
+        bumpHotStatsVersion()
     }
 
     /**
-     * Hydrates the Sound Capsule local snapshot, Today's Listening History flow, and bounded
-     * key artwork on app launch so opening Sound Capsule or Today's History feels instant.
+     * Prewarms the multi-month Sound Capsule feed on app launch / user switch.
      */
     fun warmUpAsync(userId: Int = getEffectiveUserId()) {
         primeColdBootSnapshot(userId)
         backgroundScope.launch {
             try {
-                legacyDatabase.ensureListeningHistoryLoaded()
                 importLocalListeningHistory(userId)
                 hydrateMonthlyFeedFromDb(userId)
-                legacyDatabase.ensureListeningHistoryLoaded()
-                prewarmTodayAndCapsuleArtwork(userId)
+                if (NetworkMonitor.isOnline(context)) {
+                    syncWithServer(userId, force = false)
+                }
             } catch (e: Exception) {
                 Log.w("SoundCapsuleRepo", "Warm-up skipped: ${e.message}")
             }
-        }
-    }
-
-    /**
-     * Silently warms Sound Capsule stats, Today's Listening History, and key artwork from the server
-     * once connectivity is live (coalesced to avoid duplicate requests across rapid network flips).
-     */
-    fun prewarmOnlineCapsuleData(userId: Int = getEffectiveUserId()) {
-        backgroundScope.launch {
-            if (!NetworkMonitor.isOnline(context)) return@launch
-            onlinePrewarmMutex.withLock {
-                val now = System.currentTimeMillis()
-                val alreadyWarmedRecently = (now - lastOnlinePrewarmAtMs) < ONLINE_PREWARM_COOLDOWN_MS &&
-                    isCurrentMonthHydratedFromDb &&
-                    accumulatorUserId == userId
-                if (alreadyWarmedRecently) {
-                    prewarmTodayAndCapsuleArtwork(userId)
-                    return@withLock
-                }
-                lastOnlinePrewarmAtMs = now
-                try {
-                    legacyDatabase.ensureListeningHistoryLoaded()
-                    importLocalListeningHistory(userId)
-                    if (!isCurrentMonthHydratedFromDb || accumulatorUserId != userId) {
-                        hydrateMonthlyFeedFromDb(userId)
-                    }
-                    syncWithServer(userId, force = false)
-                    legacyDatabase.ensureListeningHistoryLoaded()
-                    prewarmTodayAndCapsuleArtwork(userId)
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    Log.w("SoundCapsuleRepo", "Online Sound Capsule prewarm skipped: ${e.message}")
-                }
-            }
-        }
-    }
-
-    private fun prewarmTodayAndCapsuleArtwork(userId: Int) {
-        try {
-            val urls = LinkedHashSet<String>(14)
-            val today = LocalDate.now(zone)
-            val historySnapshot = legacyDatabase.getAllHistory().value
-            for (item in historySnapshot) {
-                if (urls.size >= MAX_PREWARM_TODAY_ART_URLS) break
-                if (item.playedAt <= 0L) continue
-                val date = Instant.ofEpochMilli(item.playedAt).atZone(zone).toLocalDate()
-                if (date == today) {
-                    val clean = urlSanitizer(item.coverUrl).takeIf { it.isNotBlank() } ?: continue
-                    urls.add(clean)
-                }
-            }
-            val primaryStats = synchronized(cacheLock) {
-                buildOrderedFeedLocked(userId).firstOrNull()
-            }
-            if (primaryStats != null) {
-                primaryStats.topArtists.take(3).forEach { artist ->
-                    val clean = urlSanitizer(artist.artworkUrl).takeIf { it.isNotBlank() }
-                    if (clean != null) urls.add(clean)
-                }
-                primaryStats.topSongs.take(3).forEach { track ->
-                    val clean = urlSanitizer(track.artworkUrl).takeIf { it.isNotBlank() }
-                    if (clean != null) urls.add(clean)
-                }
-            }
-            if (urls.isEmpty()) return
-
-            if (prewarmedArtUrls.size > 48) {
-                prewarmedArtUrls.clear()
-            }
-            val online = NetworkMonitor.isOnline(context)
-            val loader = context.imageLoader
-            for (url in urls) {
-                if (!prewarmedArtUrls.add(url)) continue
-                val req = ImageRequest.Builder(context)
-                    .data(url)
-                    .size(Size.ORIGINAL)
-                    .memoryCachePolicy(CachePolicy.ENABLED)
-                    .diskCachePolicy(CachePolicy.ENABLED)
-                    .networkCachePolicy(if (online) CachePolicy.ENABLED else CachePolicy.READ_ONLY)
-                    .build()
-                loader.enqueue(req)
-            }
-        } catch (e: Exception) {
-            Log.w("SoundCapsuleRepo", "Artwork prewarm skipped: ${e.message}")
         }
     }
 
@@ -512,7 +391,6 @@ class SoundCapsuleRepository(
         synchronized(cacheLock) {
             extraCachedStatsLru.clear()
         }
-        prewarmedArtUrls.clear()
     }
 
     /**
@@ -788,7 +666,7 @@ class SoundCapsuleRepository(
             if (!isCurrentMonthHydratedFromDb || accumulatorUserId != userId) {
                 hydrateMonthlyFeedFromDb(userId)
             }
-            if (NetworkMonitor.shouldSkipNetworkRequests(context, force)) return@withLock
+            if (!NetworkMonitor.isOnline(context)) return@withLock
 
             val now = System.currentTimeMillis()
             val pullSyncKey = "$KEY_CAPSULE_PULL_PREFIX$userId"
@@ -815,14 +693,6 @@ class SoundCapsuleRepository(
 
             try {
                 val resp = api.getSoundCapsule(userId)
-                val rawNet = resp.raw().networkResponse
-                if (rawNet != null) {
-                    if (NetworkMonitor.isUnreachableHttpStatus(resp.code())) {
-                        NetworkMonitor.markServerUnreachable(authPreferences.getServerBaseUrl())
-                    } else if (resp.code() in 200..499 && resp.code() != 408 && resp.code() != 429) {
-                        NetworkMonitor.markServerReachable()
-                    }
-                }
                 if (resp.isSuccessful && resp.body() != null) {
                     val body = resp.body()!!
                     val today = LocalDate.now(zone)
@@ -896,10 +766,6 @@ class SoundCapsuleRepository(
                     authPreferences.setLastSyncTime(pullSyncKey, syncedAt)
                 }
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException || e.javaClass.name.contains("Cancellation")) throw e
-                if (e is java.io.IOException) {
-                    NetworkMonitor.reportSuspectedServerFailure(context, authPreferences.getServerBaseUrl(), e)
-                }
                 Log.w("SoundCapsuleRepo", "Failed syncing /history/sound-capsule: ${e.message}")
             }
 
@@ -916,10 +782,8 @@ class SoundCapsuleRepository(
         private const val KEY_HISTORY_SYNC = "history_sync"
         private const val KEY_CAPSULE_PULL_PREFIX = "sound_capsule_pull_"
         private const val KEY_LEGACY_IMPORT_PREFIX = "capsule_legacy_import_"
-        private const val MAX_FEED_MONTHS = 36
-        private const val MAX_EXTRA_CACHED_MONTHS = 6
-        private const val ONLINE_PREWARM_COOLDOWN_MS = 20_000L
-        private const val MAX_PREWARM_TODAY_ART_URLS = 8
+        private const val MAX_FEED_MONTHS = 24
+        private const val MAX_EXTRA_CACHED_MONTHS = 2
 
         fun canonicalArtistId(artistName: String): String {
             return artistName

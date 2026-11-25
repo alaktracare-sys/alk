@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -38,17 +37,10 @@ import com.example.data.repository.MusicRepository
 import com.example.model.ArtistDetailBundle
 import com.example.model.ArtistProfile
 import com.example.model.Song
-import com.example.ui.components.ArtistProfileSkeleton
-import com.example.ui.components.LocalCacheIndexWarmed
-import com.example.ui.components.LocalIsOnline
-import com.example.ui.components.LocalOfflinePlayableIds
 import com.example.ui.components.SongCover
 import com.example.ui.components.SongItemRow
 import com.example.ui.components.SongMenuBottomSheet
-import com.example.ui.components.isSongPlayableInUi
-import com.example.ui.components.showOfflineUnplayableToast
 import com.example.ui.theme.*
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -75,52 +67,23 @@ fun ArtistProfileScreen(
     var bioExpanded by remember(artistId) { mutableStateOf(false) }
     var selectedSongForMenu by remember { mutableStateOf<Song?>(null) }
 
-    val playbackState by audioController.stablePlaybackState.collectAsState()
+    val playbackState by audioController.playbackState.collectAsState()
     val downloadProgress by repository.downloadManager.downloadProgress.collectAsState()
 
     fun refreshProfile() {
         scope.launch {
-            if (detailBundle == null) {
-                isLoading = true
-            }
+            isLoading = true
             errorMessage = null
-            try {
-                val resolvedId = if (artistId > 0) artistId else {
-                    repository.resolveArtistId(artistIdHint = null, artistNameHint = initialArtistName) ?: 0
-                }
-                val cached = repository.getCachedArtistDetail(resolvedId, fallbackName = initialArtistName)
-                if (cached != null) {
-                    if (cached != detailBundle) {
-                        detailBundle = cached
-                    }
-                    isLoading = false
-                }
-                if (com.example.util.NetworkMonitor.isOnline(context)) {
-                    val res = repository.getArtistDetail(
-                        artistId = resolvedId,
-                        fallbackName = initialArtistName,
-                        forceRefresh = true
-                    )
-                    res.onSuccess { fresh ->
-                        if (fresh != detailBundle) {
-                            detailBundle = fresh
-                        }
-                    }.onFailure { err ->
-                        if (detailBundle == null) {
-                            errorMessage = err.message ?: "Unable to load artist profile."
-                        }
-                    }
-                } else if (detailBundle == null) {
-                    errorMessage = "Offline — artist profile not cached yet."
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                if (detailBundle == null) {
-                    errorMessage = e.message ?: "Unable to load artist profile."
-                }
-            } finally {
-                isLoading = false
+            val resolvedId = if (artistId > 0) artistId else {
+                repository.resolveArtistId(artistIdHint = null, artistNameHint = initialArtistName) ?: 0
             }
+            val res = repository.getArtistDetail(resolvedId, fallbackName = initialArtistName)
+            res.onSuccess {
+                detailBundle = it
+            }.onFailure { err ->
+                errorMessage = err.message ?: "Unable to load artist profile."
+            }
+            isLoading = false
         }
     }
 
@@ -149,7 +112,9 @@ fun ArtistProfileScreen(
             contentAlignment = Alignment.TopCenter
         ) {
             if (isLoading && detailBundle == null) {
-                ArtistProfileSkeleton()
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = AlaktraMint)
+                }
             } else if (detailBundle == null) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -403,7 +368,7 @@ private fun ArtistHeroHeader(
                     model = remember(bannerSource) {
                         ImageRequest.Builder(context)
                             .data(bannerSource)
-                            .size(720)
+                            .crossfade(true)
                             .build()
                     },
                     contentDescription = "${artist.name} cover banner",
@@ -517,7 +482,7 @@ private fun ArtistHeroHeader(
                             model = remember(artist.avatarUrl) {
                                 ImageRequest.Builder(context)
                                     .data(artist.avatarUrl)
-                                    .size(256)
+                                    .crossfade(true)
                                     .build()
                             },
                             contentDescription = "${artist.name} avatar",
@@ -718,15 +683,6 @@ private fun PopularArtistTrackRow(
     onLikeToggle: () -> Unit,
     onMoreClick: () -> Unit
 ) {
-    val context = LocalContext.current
-    val isPlayableNow = isPlaying || isSongPlayableInUi(
-        song = song,
-        isOnline = LocalIsOnline.current,
-        offlinePlayableIds = LocalOfflinePlayableIds.current,
-        cacheIndexWarmed = LocalCacheIndexWarmed.current
-    )
-    val contentAlpha = if (isPlayableNow) 1f else 0.40f
-
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -734,9 +690,7 @@ private fun PopularArtistTrackRow(
             .padding(horizontal = 12.dp, vertical = 3.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(if (isPlaying) Color(0xFF1E202C) else Color.Transparent)
-            .clickable {
-                if (isPlayableNow) onClick() else showOfflineUnplayableToast(context)
-            }
+            .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 8.dp)
             .testTag("artist_popular_track_${song.id}")
     ) {
@@ -744,25 +698,18 @@ private fun PopularArtistTrackRow(
             text = rank.toString(),
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.ExtraBold),
             color = if (isPlaying) AlaktraMint else AlaktraTextMuted,
-            modifier = Modifier
-                .width(24.dp)
-                .graphicsLayer { alpha = contentAlpha }
+            modifier = Modifier.width(24.dp)
         )
 
         SongCover(
             imageUrl = song.coverUrl,
             size = 48.dp,
-            cornerRadius = 10.dp,
-            modifier = Modifier.graphicsLayer { alpha = contentAlpha }
+            cornerRadius = 10.dp
         )
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .graphicsLayer { alpha = contentAlpha }
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = song.title,
                 maxLines = 1,
@@ -772,32 +719,18 @@ private fun PopularArtistTrackRow(
                 fontSize = 15.sp
             )
             Spacer(modifier = Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!isPlayableNow) {
-                    Icon(
-                        imageVector = Icons.Default.WifiOff,
-                        contentDescription = "Unavailable offline",
-                        tint = AlaktraTextMuted,
-                        modifier = Modifier
-                            .padding(end = 5.dp)
-                            .size(12.dp)
-                    )
-                }
-                Text(
-                    text = if (song.playCount > 0) "${formatCount(song.playCount)} plays • ${song.artist}" else song.artist,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = AlaktraTextSecondary,
-                    fontSize = 12.sp
-                )
-            }
+            Text(
+                text = if (song.playCount > 0) "${formatCount(song.playCount)} plays • ${song.artist}" else song.artist,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = AlaktraTextSecondary,
+                fontSize = 12.sp
+            )
         }
 
         IconButton(
             onClick = onLikeToggle,
-            modifier = Modifier
-                .size(48.dp)
-                .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.65f }
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 imageVector = if (song.isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -809,9 +742,7 @@ private fun PopularArtistTrackRow(
 
         IconButton(
             onClick = onMoreClick,
-            modifier = Modifier
-                .size(48.dp)
-                .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.65f }
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,

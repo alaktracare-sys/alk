@@ -127,38 +127,5 @@ class SoundCapsuleStatsTest {
         assertEquals(incremental, decodedList[0])
         assertEquals(octoberSample, decodedList[1])
     }
-
-    @Test
-    fun computeSoundCapsule_ranksTopArtistsAndTopSongsByPlaysBeforeMinutes() {
-        val month = YearMonth.of(2026, 11)
-        val events = listOf(
-            // Artist/Song A: 1 very long play (15 minutes, 1 play)
-            eventAt("sA", "Long Anthem", "aA", "Marathon Artist", LocalDateTime.of(2026, 11, 1, 10, 0), 900_000L),
-            // Artist/Song B: 4 short plays (1 minute each = 4 minutes total, 4 plays) -> MUST beat A
-            eventAt("sB", "Replay Hit", "aB", "Replay Artist", LocalDateTime.of(2026, 11, 2, 10, 0), 60_000L),
-            eventAt("sB", "Replay Hit", "aB", "Replay Artist", LocalDateTime.of(2026, 11, 2, 11, 0), 60_000L),
-            eventAt("sB", "Replay Hit", "aB", "Replay Artist", LocalDateTime.of(2026, 11, 2, 12, 0), 60_000L),
-            eventAt("sB", "Replay Hit", "aB", "Replay Artist", LocalDateTime.of(2026, 11, 2, 13, 0), 60_000L),
-            // Artist/Song C: 2 medium plays (5 minutes total, 2 plays) -> ranks between B and A
-            eventAt("sC", "Mid Song", "aC", "Mid Artist", LocalDateTime.of(2026, 11, 3, 10, 0), 150_000L),
-            eventAt("sC", "Mid Song", "aC", "Mid Artist", LocalDateTime.of(2026, 11, 3, 11, 0), 150_000L),
-            // Artist/Song D: tied at 2 plays with C, but shorter duration (2 minutes total) -> ranks below C
-            eventAt("sD", "Short Tie", "aD", "Short Tie Artist", LocalDateTime.of(2026, 11, 4, 10, 0), 60_000L),
-            eventAt("sD", "Short Tie", "aD", "Short Tie Artist", LocalDateTime.of(2026, 11, 4, 11, 0), 60_000L),
-        )
-
-        val stats = computeSoundCapsule(events = events, month = month, zone = zone)
-
-        assertEquals(
-            listOf("Replay Artist", "Mid Artist", "Short Tie Artist", "Marathon Artist"),
-            stats.topArtists.map { it.name },
-        )
-        assertEquals(listOf(4, 2, 2, 1), stats.topArtists.map { it.plays })
-
-        assertEquals(
-            listOf("Replay Hit", "Mid Song", "Short Tie", "Long Anthem"),
-            stats.topSongs.map { it.title },
-        )
-        assertEquals(listOf(4, 2, 2, 1), stats.topSongs.map { it.plays })
-    }
 }
+

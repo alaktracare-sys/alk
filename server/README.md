@@ -72,16 +72,14 @@ You can run your Alaktra Music server globally with your custom GoDaddy domain a
    ```yaml
    tunnel: <TUNNEL_UUID>
    credentials-file: /path/to/<TUNNEL_UUID>.json
-   protocol: http2
    ingress:
      - hostname: api.alaktracare.in
        service: http://localhost:8000
      - service: http_status:404
    ```
-   *(Using `protocol: http2` routes the tunnel over TCP port 443 instead of QUIC/UDP 7844, preventing random `"no recent network activity"` tunnel disconnects on CGNAT/home routers. If IPv6 is unstable on your ISP, also add `edge-ip-version: "4"`.)*
 5. **Run the Tunnel**:
    ```bash
-   cloudflared tunnel run --protocol http2 alaktra-tunnel
+   cloudflared tunnel run alaktra-tunnel
    ```
 6. **Access Upload Panel & App**:
    - Web Upload Panel: `https://api.alaktracare.in/`
@@ -160,7 +158,7 @@ If you want the server to automatically start when your Raspberry Pi or Linux bo
    Type=simple
    User=youruser
    WorkingDirectory=/path/to/server_client
-   ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 95
+   ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
    Restart=always
 
    [Install]

@@ -39,12 +39,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import com.example.audio.AudioController
 import com.example.audio.PlaybackState
 import com.example.audio.RepeatMode
 import com.example.model.Song
-import com.example.ui.components.BottomNavGradientScrim
 import com.example.ui.components.SongCover
 import com.example.ui.theme.*
 import java.util.Locale
@@ -127,6 +125,11 @@ fun PlayerScreen(
             1.0f to Color.Black.copy(alpha = 0.86f)
         )
     }
+    val bottomScrimBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
+        )
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -196,16 +199,13 @@ fun PlayerScreen(
         val likeIconContainerSize = (28.dp * heightScale).coerceIn(24.dp, 32.dp)
         val likeIconSize = (16.dp * heightScale).coerceIn(14.dp, 19.dp)
 
-        val shapeMinCount = 18
-        val shapeMaxCount = 34
-
         // 1. Random shapes layer at the back (above base black)
         RandomShapesBackground(
             seedKey = "${song.id}_${song.title}",
             palette = shapePalette,
             isLandscape = isLandscape,
-            minCount = shapeMinCount,
-            maxCount = shapeMaxCount,
+            minCount = 24,
+            maxCount = 44,
             minSizeFraction = 0.09f,
             maxSizeFraction = 0.25f,
             minAlpha = 0.52f,
@@ -221,14 +221,14 @@ fun PlayerScreen(
                 .testTag("player_gradient_overlay")
         )
 
-        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        if (!isLandscape || navBarBottom > 0.dp) {
-            BottomNavGradientScrim(
+        if (!isLandscape) {
+            val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .zIndex(0.5f),
-                extraHeight = 56.dp,
-                minHeight = if (isLandscape) 0.dp else 72.dp
+                    .fillMaxWidth()
+                    .height((navBarBottom + 48.dp).coerceAtLeast(72.dp))
+                    .background(bottomScrimBrush)
             )
         }
 
@@ -275,8 +275,8 @@ fun PlayerScreen(
                                         size = artworkSize,
                                         cornerRadius = 24.dp,
                                         modifier = Modifier.fillMaxSize(),
-                                        onArtworkLoaded = {
-                                            audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl)
+                                        onArtworkLoaded = { drawable ->
+                                            audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
                                         }
                                     )
                                 }
@@ -712,8 +712,8 @@ fun PlayerScreen(
                             size = artworkSize,
                             cornerRadius = 10.dp,
                             modifier = Modifier.fillMaxSize(),
-                            onArtworkLoaded = {
-                                audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl)
+                            onArtworkLoaded = { drawable ->
+                                audioController.onCurrentSongArtworkLoaded(song.id, song.coverUrl, drawable)
                             }
                         )
                     }
@@ -1489,18 +1489,10 @@ private fun LiveDurationBar(
     modifier: Modifier = Modifier
 ) {
     val liveState by audioController.playbackState.collectAsState()
-    val songId = liveState.currentSong?.id
     val positionMs = if (liveState.currentSong != null) liveState.currentPositionMs else fallbackPositionMs
-    val resolvedDurationMs = when {
-        liveState.currentSong != null && liveState.durationMs > 0L -> liveState.durationMs
-        durationMs > 0L -> durationMs
-        (liveState.currentSong?.duration ?: 0.0) > 0.0 -> ((liveState.currentSong?.duration ?: 0.0) * 1000.0).toLong()
-        else -> 0L
-    }
     CustomDurationBar(
-        songId = songId,
         positionMs = positionMs,
-        durationMs = resolvedDurationMs,
+        durationMs = durationMs,
         onSeek = { targetMs -> audioController.seekTo(targetMs) },
         modifier = modifier
     )
@@ -1508,7 +1500,6 @@ private fun LiveDurationBar(
 
 @Composable
 private fun CustomDurationBar(
-    songId: Int?,
     positionMs: Long,
     durationMs: Long,
     onSeek: (Long) -> Unit,
@@ -1516,40 +1507,22 @@ private fun CustomDurationBar(
 ) {
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
-    var optimisticSeekMs by remember { mutableStateOf<Long?>(null) }
 
-    // Reset dragging & optimistic seek only when track changes
-    LaunchedEffect(songId) {
+    // When track/duration changes, cleanly reset dragging state
+    LaunchedEffect(durationMs) {
         isDragging = false
-        optimisticSeekMs = null
     }
-
-    // Clear optimistic seek once live player position converges or short timeout passes
-    LaunchedEffect(positionMs, optimisticSeekMs) {
-        val target = optimisticSeekMs ?: return@LaunchedEffect
-        if (kotlin.math.abs(positionMs - target) <= 1_500L) {
-            optimisticSeekMs = null
-        } else {
-            kotlinx.coroutines.delay(750L)
-            if (optimisticSeekMs == target) {
-                optimisticSeekMs = null
-            }
-        }
-    }
-
-    val effectivePositionMs = optimisticSeekMs ?: positionMs
-    val latestDurationMs by rememberUpdatedState(durationMs)
 
     val currentFraction = if (isDragging) {
         dragFraction
     } else {
-        if (durationMs > 0L) (effectivePositionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+        if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     }
 
     val displayPositionMs = if (isDragging) {
         (dragFraction * durationMs).toLong()
     } else {
-        effectivePositionMs
+        positionMs
     }
 
     val density = LocalDensity.current
@@ -1563,34 +1536,26 @@ private fun CustomDurationBar(
                 .height(34.dp)
                 .testTag("player_seek_bar")
                 .onSizeChanged { barWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                .pointerInput(songId) {
+                .pointerInput(durationMs) {
                     detectTapGestures { offset ->
-                        val dur = latestDurationMs
-                        if (dur > 0L && barWidthPx > 0f) {
+                        if (durationMs > 0L && barWidthPx > 0f) {
                             val frac = (offset.x / barWidthPx).coerceIn(0f, 1f)
-                            val targetMs = (frac * dur).toLong()
                             dragFraction = frac
-                            optimisticSeekMs = targetMs
-                            onSeek(targetMs)
+                            onSeek((frac * durationMs).toLong())
                         }
                     }
                 }
-                .pointerInput(songId) {
+                .pointerInput(durationMs) {
                     detectHorizontalDragGestures(
                         onDragStart = { offset ->
-                            val dur = latestDurationMs
-                            if (dur > 0L && barWidthPx > 0f) {
+                            if (durationMs > 0L && barWidthPx > 0f) {
                                 isDragging = true
-                                optimisticSeekMs = null
                                 dragFraction = (offset.x / barWidthPx).coerceIn(0f, 1f)
                             }
                         },
                         onDragEnd = {
-                            val dur = latestDurationMs
-                            if (dur > 0L) {
-                                val targetMs = (dragFraction * dur).toLong()
-                                optimisticSeekMs = targetMs
-                                onSeek(targetMs)
+                            if (durationMs > 0L) {
+                                onSeek((dragFraction * durationMs).toLong())
                             }
                             isDragging = false
                         },
@@ -1599,8 +1564,7 @@ private fun CustomDurationBar(
                         },
                         onHorizontalDrag = { change, _ ->
                             change.consume()
-                            val dur = latestDurationMs
-                            if (dur > 0L && barWidthPx > 0f) {
+                            if (durationMs > 0L && barWidthPx > 0f) {
                                 dragFraction = (change.position.x / barWidthPx).coerceIn(0f, 1f)
                             }
                         }
@@ -1608,40 +1572,41 @@ private fun CustomDurationBar(
                 },
             contentAlignment = Alignment.CenterStart
         ) {
-            androidx.compose.foundation.Canvas(
+            val totalWidthPx = barWidthPx
+            val activeWidthPx = totalWidthPx * currentFraction
+
+            // Inactive track line (centered vertically)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(14.dp)
-            ) {
-                val trackHeightPx = 3.5.dp.toPx()
-                val cornerPx = 2.dp.toPx()
-                val centerY = size.height * 0.5f
-                val trackTop = centerY - trackHeightPx * 0.5f
-                val totalW = size.width
-                val activeW = (totalW * currentFraction).coerceIn(0f, totalW)
+                    .height(3.5.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White.copy(alpha = 0.25f))
+            )
 
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.25f),
-                    topLeft = androidx.compose.ui.geometry.Offset(0f, trackTop),
-                    size = androidx.compose.ui.geometry.Size(totalW, trackHeightPx),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
-                )
-                if (activeW > 0f) {
-                    drawRoundRect(
-                        color = Color.White,
-                        topLeft = androidx.compose.ui.geometry.Offset(0f, trackTop),
-                        size = androidx.compose.ui.geometry.Size(activeW, trackHeightPx),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
-                    )
-                }
-                val thumbRadiusPx = 5.5.dp.toPx()
-                val thumbCenterX = activeW.coerceIn(thumbRadiusPx, (totalW - thumbRadiusPx).coerceAtLeast(thumbRadiusPx))
-                drawCircle(
-                    color = Color.White,
-                    radius = thumbRadiusPx,
-                    center = androidx.compose.ui.geometry.Offset(thumbCenterX, centerY)
-                )
+            // Active track line (centered vertically)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(currentFraction)
+                    .height(3.5.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White)
+            )
+
+            // Small white thumb circle dot
+            val thumbRadiusDp = 5.dp
+            val thumbRadiusPx = with(density) { thumbRadiusDp.toPx() }
+            val thumbOffsetDp = with(density) {
+                ((activeWidthPx - thumbRadiusPx).coerceIn(0f, (totalWidthPx - thumbRadiusPx * 2f).coerceAtLeast(0f))).toDp()
             }
+
+            Box(
+                modifier = Modifier
+                    .offset(x = thumbOffsetDp)
+                    .size(11.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+            )
         }
 
         Spacer(modifier = Modifier.height(2.dp))

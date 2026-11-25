@@ -13,8 +13,8 @@ android {
         applicationId = "com.aistudio.musicplayer.bbsmxs"
         minSdk = 26
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.6.2"
+        versionCode = 6
+        versionName = "1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "API_SECRET", "\"alaktra_secure_app_secret_998877\"")
@@ -74,6 +74,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.palette.ktx)
 
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)

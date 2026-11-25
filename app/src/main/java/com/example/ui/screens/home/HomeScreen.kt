@@ -11,7 +11,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -40,48 +38,18 @@ import com.example.data.repository.MusicRepository
 import com.example.model.DailyPlaylist
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.components.AlaktraShimmerBox
 import com.example.ui.components.DailyPlaylistCollageCover
-import com.example.ui.components.HomeLoadingSkeleton
-import com.example.ui.components.LocalCacheIndexWarmed
-import com.example.ui.components.LocalIsOnline
-import com.example.ui.components.LocalOfflinePlayableIds
 import com.example.ui.components.SongCover
 import com.example.ui.components.SongItemRow
-import com.example.ui.components.SongListSkeleton
 import com.example.ui.components.SongMenuBottomSheet
-import com.example.ui.components.isSongPlayableInUi
 import com.example.ui.components.parseDailyAccentColor
-import com.example.ui.components.showOfflineUnplayableToast
 import com.example.ui.responsive.WindowWidthSize
 import com.example.ui.responsive.rememberWindowSizeInfo
 import com.example.ui.screens.profile.AVATAR_PRESETS
 import com.example.ui.theme.*
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.Calendar
-
-private val LikedShortcutBrush = Brush.linearGradient(listOf(Color(0xFF4F46E5), Color(0xFF06B6D4)))
-private val DownloadedShortcutBrush = Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF14B8A6)))
-private val MadeForYouCardBrush = Brush.verticalGradient(listOf(Color(0xFF1F2236), AlaktraCard))
-private val PlaylistPlaceholderBrush = Brush.linearGradient(listOf(Color(0xFF3B82F6), Color(0xFF1E1B4B)))
-private val DailyCardScrimBrush = Brush.verticalGradient(
-    colors = listOf(
-        Color.Black.copy(alpha = 0.25f),
-        Color.Transparent,
-        Color.Black.copy(alpha = 0.55f)
-    )
-)
-private val QuickTileShape = RoundedCornerShape(8.dp)
-private val ShortcutCardShape = RoundedCornerShape(10.dp)
-private val CardCornerShape11 = RoundedCornerShape(11.dp)
-private val CardCornerShape14 = RoundedCornerShape(14.dp)
-private val CardCornerShape16 = RoundedCornerShape(16.dp)
-private val BadgeShape6 = RoundedCornerShape(6.dp)
-private val HeaderLogoShape = RoundedCornerShape(20.dp)
 
 @Composable
 fun HomeScreen(
@@ -96,224 +64,91 @@ fun HomeScreen(
     onViewSongArtist: (Song) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val isOnline = LocalIsOnline.current
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val oneScreenTrackCount = remember(maxHeight) {
-            (maxHeight / 72.dp).toInt().coerceIn(8, 18)
+    val isOnline by remember { com.example.util.NetworkMonitor.observeNetwork(context) }
+        .collectAsState(initial = com.example.util.NetworkMonitor.isOnline(context))
+    var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
+    var playlists by remember { mutableStateOf<List<Playlist>>(emptyList()) }
+    var dailyPlaylists by remember { mutableStateOf<List<DailyPlaylist>>(emptyList()) }
+    val historyList by repository.listeningHistory.collectAsState(initial = emptyList())
+    var isLoading by remember { mutableStateOf(true) }
+    var selectedSongForMenu by remember { mutableStateOf<Song?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val playbackState by audioController.playbackState.collectAsState()
+    val downloadProgress by repository.downloadManager.downloadProgress.collectAsState()
+
+    val user = remember { repository.authPreferences.getUser() }
+
+    val greeting = remember {
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        when (hour) {
+            in 5..11 -> "Good morning"
+            in 12..17 -> "Good afternoon"
+            else -> "Good evening"
         }
-        val listState = rememberLazyListState()
-        var songs by remember { mutableStateOf(repository.peekCachedSongsPage(oneScreenTrackCount)) }
-        var discoverSongs by remember { mutableStateOf(repository.peekDiscoverSongs(6)) }
-        var hasMoreSongs by remember { mutableStateOf(true) }
-        var isLoadingMore by remember { mutableStateOf(false) }
-        var playlists by remember { mutableStateOf(repository.peekCachedPlaylists()) }
-        var dailyPlaylists by remember { mutableStateOf(repository.peekCachedDailyPlaylists()) }
-        var isLoading by remember { mutableStateOf(songs.isEmpty() && dailyPlaylists.isEmpty() && isOnline) }
-        var selectedSongForMenu by remember { mutableStateOf<Song?>(null) }
-        val scope = rememberCoroutineScope()
+    }
 
-        val playbackState by audioController.stablePlaybackState.collectAsState()
-        val downloadProgress by repository.downloadManager.downloadProgress.collectAsState()
-
-        val user = remember { repository.authPreferences.getUser() }
-
-        val greeting = remember {
-            val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-            when (hour) {
-                in 5..11 -> "Good morning"
-                in 12..17 -> "Good afternoon"
-                else -> "Good evening"
-            }
+    LaunchedEffect(Unit) {
+        val initialCached = repository.getCachedSongs()
+        if (initialCached.isNotEmpty()) {
+            songs = initialCached
+            isLoading = false
         }
-
-        fun refreshFromServerInBackground(forceRefresh: Boolean = false) {
-            if (forceRefresh) {
-                repository.markHomeRefreshed()
-            }
-            scope.launch {
-                try {
-                    val freshDaily = repository.getDailyPlaylists(forceRefresh = forceRefresh)
-                    if (freshDaily.isNotEmpty() && freshDaily != dailyPlaylists) {
-                        dailyPlaylists = freshDaily
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                }
-            }
-            scope.launch {
-                try {
-                    val windowLimit = songs.size.coerceAtLeast(oneScreenTrackCount)
-                    val freshPage = repository.getSongsPage(
-                        limit = windowLimit,
-                        offset = 0,
-                        forceRefresh = forceRefresh
-                    )
-                    if (freshPage.songs.isNotEmpty() && freshPage.songs != songs) {
-                        songs = freshPage.songs
-                        hasMoreSongs = freshPage.hasMore
-                    } else if (freshPage.songs.isNotEmpty()) {
-                        hasMoreSongs = freshPage.hasMore
-                    }
-                    if (discoverSongs.isEmpty()) {
-                        val freshDiscover = repository.getCachedDiscoverSongs(6)
-                        if (freshDiscover.isNotEmpty()) {
-                            discoverSongs = freshDiscover
-                        }
-                    }
-                    if (dailyPlaylists.isEmpty() && freshPage.songs.isNotEmpty()) {
-                        val regenerated = repository.getDailyPlaylists(forceRefresh = false)
-                        if (regenerated != dailyPlaylists) {
-                            dailyPlaylists = regenerated
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                } finally {
-                    isLoading = false
-                }
-            }
-            scope.launch {
-                try {
-                    val freshPlaylists = repository.getPlaylists(forceRefresh = forceRefresh)
-                    if (freshPlaylists != playlists) {
-                        playlists = freshPlaylists
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                }
-            }
+        val initialPlaylists = repository.getCachedPlaylists()
+        if (initialPlaylists.isNotEmpty()) {
+            playlists = initialPlaylists
+        }
+        val initialDaily = repository.getCachedDailyPlaylists()
+        if (initialDaily.isNotEmpty()) {
+            dailyPlaylists = initialDaily
         }
 
-        var wasOnline by remember { mutableStateOf(isOnline) }
-        LaunchedEffect(isOnline) {
-            if (!wasOnline && isOnline) {
-                refreshFromServerInBackground(forceRefresh = true)
+        scope.launch {
+            val freshDaily = repository.getDailyPlaylists(forceRefresh = true)
+            if (freshDaily.isNotEmpty()) {
+                dailyPlaylists = freshDaily
             }
-            wasOnline = isOnline
         }
-
-        LaunchedEffect(Unit) {
-            if (songs.size < oneScreenTrackCount || playlists.isEmpty() || dailyPlaylists.isEmpty() || discoverSongs.isEmpty()) {
-                try {
-                    coroutineScope {
-                        val cachedSongsDeferred = async { repository.getCachedSongsPage(limit = oneScreenTrackCount, offset = 0) }
-                        val cachedDiscoverDeferred = async { repository.getCachedDiscoverSongs(limit = 6) }
-                        val cachedPlaylistsDeferred = async { repository.getCachedPlaylists() }
-                        val cachedDailyDeferred = async { repository.getCachedDailyPlaylists() }
-
-                        val initialCached = cachedSongsDeferred.await()
-                        val initialDiscover = cachedDiscoverDeferred.await()
-                        val initialPlaylists = cachedPlaylistsDeferred.await()
-                        val initialDaily = cachedDailyDeferred.await()
-
-                        if (initialCached.isNotEmpty() && initialCached != songs) {
-                            songs = initialCached
-                        }
-                        if (initialDiscover.isNotEmpty() && initialDiscover != discoverSongs) {
-                            discoverSongs = initialDiscover
-                        }
-                        if (initialPlaylists.isNotEmpty() && initialPlaylists != playlists) {
-                            playlists = initialPlaylists
-                        }
-                        if (initialDaily.isNotEmpty() && initialDaily != dailyPlaylists) {
-                            dailyPlaylists = initialDaily
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                }
+        scope.launch {
+            val freshSongs = repository.getSongs(forceRefresh = true)
+            songs = freshSongs
+            isLoading = false
+            if (dailyPlaylists.isEmpty() && freshSongs.isNotEmpty()) {
+                dailyPlaylists = repository.getDailyPlaylists(forceRefresh = false)
             }
-            isLoading = songs.isEmpty() && dailyPlaylists.isEmpty() && isOnline
-
-            if (!com.example.util.NetworkMonitor.isOnline(context)) {
-                isLoading = false
-                return@LaunchedEffect
-            }
-
-            // Let the screen transition finish before starting background network/Room sync
-            delay(250L)
-            refreshFromServerInBackground(forceRefresh = repository.shouldRefreshHomeInBackground())
         }
-
-        val currentSongs by rememberUpdatedState(songs)
-        val currentHasMore by rememberUpdatedState(hasMoreSongs)
-        val currentLoadingMore by rememberUpdatedState(isLoadingMore)
-
-        LaunchedEffect(listState, oneScreenTrackCount) {
-            snapshotFlow {
-                val list = currentSongs
-                var maxIdx = -1
-                for (info in listState.layoutInfo.visibleItemsInfo) {
-                    val idKey = info.key as? Int ?: continue
-                    val idx = list.indexOfFirst { it.id == idKey }
-                    if (idx > maxIdx) maxIdx = idx
-                }
-                maxIdx to list.size
-            }
-                .distinctUntilChanged()
-                .collect { (lastVisibleIdx, loadedSize) ->
-                    if (!currentHasMore || currentLoadingMore || loadedSize <= 0) return@collect
-                    val desiredCount = MusicRepository.computeTargetHomeLoadedCount(
-                        lastVisibleSongIndex = lastVisibleIdx,
-                        oneScreenTrackCount = oneScreenTrackCount
-                    )
-                    if (loadedSize < desiredCount) {
-                        val needed = (desiredCount - loadedSize).coerceAtLeast(oneScreenTrackCount)
-                        isLoadingMore = true
-                        try {
-                            val nextPage = repository.getSongsPage(
-                                limit = needed,
-                                offset = loadedSize,
-                                forceRefresh = false
-                            )
-                            val latest = currentSongs
-                            if (nextPage.songs.isNotEmpty()) {
-                                val existingIds = latest.mapTo(HashSet()) { it.id }
-                                val appended = nextPage.songs.filter { it.id !in existingIds }
-                                if (appended.isNotEmpty()) {
-                                    songs = latest + appended
-                                }
-                            }
-                            hasMoreSongs = nextPage.hasMore && nextPage.songs.isNotEmpty()
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                        } finally {
-                            isLoadingMore = false
-                        }
-                    }
-                }
+        scope.launch {
+            val freshPlaylists = repository.getPlaylists(forceRefresh = true)
+            playlists = freshPlaylists
         }
+    }
 
-        val windowSize = rememberWindowSizeInfo()
-        val horizontalPad = windowSize.horizontalPadding
-        val cardWidth = when (windowSize.widthSize) {
-            WindowWidthSize.COMPACT -> 140.dp
-            WindowWidthSize.MEDIUM -> 160.dp
-            WindowWidthSize.EXPANDED -> 180.dp
-        }
-        val mfyCardWidth = (cardWidth * 1.15f).coerceIn(160.dp, 220.dp)
-        val madeForYouSongs = remember(discoverSongs, songs) {
-            if (discoverSongs.size > 2) discoverSongs.take(6) else songs.asReversed().take(6)
-        }
+    val windowSize = rememberWindowSizeInfo()
+    val horizontalPad = windowSize.horizontalPadding
+    val cardWidth = when (windowSize.widthSize) {
+        WindowWidthSize.COMPACT -> 140.dp
+        WindowWidthSize.MEDIUM -> 160.dp
+        WindowWidthSize.EXPANDED -> 180.dp
+    }
+    val mfyCardWidth = (cardWidth * 1.15f).coerceIn(160.dp, 220.dp)
 
-        Scaffold(
-            containerColor = AlaktraBackground,
-            contentWindowInsets = WindowInsets(0, 0, 0, 0)
-        ) { _ ->
-            Box(
+    Scaffold(
+        containerColor = AlaktraBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { _ ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize(),
-                contentAlignment = Alignment.TopCenter
+                    .fillMaxSize()
+                    .widthIn(max = 1000.dp),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 140.dp)
             ) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 1000.dp),
-                    contentPadding = PaddingValues(top = 12.dp, bottom = 140.dp)
-                ) {
             // Alaktra Brand Header & Greeting
-            item(key = "home_header", contentType = "home_header") {
+            item {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -328,7 +163,7 @@ fun HomeScreen(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .clip(HeaderLogoShape)
+                                .clip(RoundedCornerShape(20.dp))
                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Image(
@@ -432,12 +267,24 @@ fun HomeScreen(
 
             // Loading Skeleton
             if (isLoading) {
-                item(key = "home_loading", contentType = "home_loading") {
-                    HomeLoadingSkeleton(horizontalPad = horizontalPad)
+                item {
+                    Column(modifier = Modifier.padding(horizontal = horizontalPad)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AlaktraShimmerBox(modifier = Modifier.weight(1f).height(56.dp))
+                            AlaktraShimmerBox(modifier = Modifier.weight(1f).height(56.dp))
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AlaktraShimmerBox(modifier = Modifier.weight(1f).height(56.dp))
+                            AlaktraShimmerBox(modifier = Modifier.weight(1f).height(56.dp))
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                        AlaktraShimmerBox(modifier = Modifier.fillMaxWidth().height(160.dp), cornerRadius = 14.dp)
+                    }
                 }
             } else if (songs.isEmpty()) {
                 // Empty state
-                item(key = "home_empty", contentType = "home_empty") {
+                item {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -447,9 +294,9 @@ fun HomeScreen(
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
-                                .clip(CardCornerShape16)
+                                .clip(RoundedCornerShape(16.dp))
                                 .background(AlaktraSurface)
-                                .border(1.dp, AlaktraBorder, CardCornerShape16)
+                                .border(1.dp, AlaktraBorder, RoundedCornerShape(16.dp))
                                 .padding(24.dp)
                         ) {
                             Icon(
@@ -476,7 +323,7 @@ fun HomeScreen(
                 }
             } else {
                 // Permanent System Playlists Shortcuts (Liked & Downloaded)
-                item(key = "home_shortcuts", contentType = "home_shortcuts") {
+                item {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier
@@ -489,7 +336,7 @@ fun HomeScreen(
                         ) {
                             Surface(
                                 onClick = onNavigateToLikedSongs,
-                                shape = ShortcutCardShape,
+                                shape = RoundedCornerShape(10.dp),
                                 color = AlaktraSurface,
                                 border = BorderStroke(1.dp, AlaktraBorder),
                                 modifier = Modifier
@@ -504,7 +351,11 @@ fun HomeScreen(
                                         contentAlignment = Alignment.Center,
                                         modifier = Modifier
                                             .size(56.dp)
-                                            .background(LikedShortcutBrush)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFF4F46E5), Color(0xFF06B6D4))
+                                                )
+                                            )
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Favorite,
@@ -526,7 +377,7 @@ fun HomeScreen(
 
                             Surface(
                                 onClick = onNavigateToDownloadedSongs,
-                                shape = ShortcutCardShape,
+                                shape = RoundedCornerShape(10.dp),
                                 color = AlaktraSurface,
                                 border = BorderStroke(1.dp, AlaktraBorder),
                                 modifier = Modifier
@@ -541,7 +392,11 @@ fun HomeScreen(
                                         contentAlignment = Alignment.Center,
                                         modifier = Modifier
                                             .size(56.dp)
-                                            .background(DownloadedShortcutBrush)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFF0F766E), Color(0xFF14B8A6))
+                                                )
+                                            )
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DownloadDone,
@@ -565,7 +420,7 @@ fun HomeScreen(
                 }
 
                 // Quick Access Adaptive Grid
-                item(key = "home_quick_access", contentType = "home_quick_access") {
+                item {
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -577,9 +432,8 @@ fun HomeScreen(
                             maxWidth < 1000.dp -> 4
                             else -> 5
                         }
-                        val rows = remember(songs, columns) {
-                            songs.take(columns * 2).chunked(columns)
-                        }
+                        val quickItems = songs.take(columns * 2)
+                        val rows = quickItems.chunked(columns)
 
                         Column(modifier = Modifier.fillMaxWidth()) {
                             rows.forEach { rowItems ->
@@ -611,7 +465,7 @@ fun HomeScreen(
 
                 // Daily Mixes: 5 randomly generated 30-song playlists (saved per user per day)
                 if (dailyPlaylists.isNotEmpty()) {
-                    item(key = "home_daily_mixes", contentType = "home_daily_mixes") {
+                    item {
                         SectionHeader(
                             title = stringResource(R.string.daily_mixes_title),
                             subtitle = stringResource(R.string.daily_mixes_subtitle),
@@ -658,16 +512,16 @@ fun HomeScreen(
                 }
 
                 // Made For You (Gradient Card Highlights)
-                if (madeForYouSongs.size > 2) {
-                    item(key = "home_made_for_you", contentType = "home_made_for_you") {
-                        SectionHeader(title = "Made For You", subtitle = "Fresh discovery everyday", horizontalPad = horizontalPad)
+                if (songs.size > 2) {
+                    item {
+                        SectionHeader(title = "Made For You", subtitle = "Fresh discovery based on your taste", horizontalPad = horizontalPad)
 
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = horizontalPad),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             items(
-                                items = madeForYouSongs,
+                                items = songs.reversed().take(6),
                                 key = { "mfy_${it.id}" },
                                 contentType = { "made_for_you_card" }
                             ) { song ->
@@ -686,8 +540,8 @@ fun HomeScreen(
 
                 // Playlists carousel if available
                 if (playlists.isNotEmpty()) {
-                    item(key = "home_playlists", contentType = "home_playlists") {
-                        SectionHeader(title = "Your Playlists", horizontalPad = horizontalPad)
+                    item {
+                        SectionHeader(title = "Your Playlists", subtitle = "Curated collections", horizontalPad = horizontalPad)
 
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = horizontalPad),
@@ -711,8 +565,8 @@ fun HomeScreen(
                 }
 
                 // Trending & All Tracks List
-                item(key = "home_tracks_header", contentType = "home_tracks_header") {
-                    SectionHeader(title = "All Tracks", horizontalPad = horizontalPad)
+                item {
+                    SectionHeader(title = "Recommended Tracks", subtitle = "High fidelity streaming", horizontalPad = horizontalPad)
                 }
 
                 itemsIndexed(
@@ -725,7 +579,7 @@ fun HomeScreen(
                         song = song,
                         isPlaying = isCurrent && playbackState.isPlaying,
                         downloadProgress = downloadProgress[song.id],
-                        onSongClick = { audioController.playHomeAllTracks(songs, index, repository) },
+                        onSongClick = { audioController.playQueue(songs, index) },
                         onLikeToggle = {
                             scope.launch {
                                 val isLiked = repository.toggleLike(song)
@@ -735,16 +589,6 @@ fun HomeScreen(
                         },
                         onMoreClick = { selectedSongForMenu = song }
                     )
-                }
-
-                if (isLoadingMore) {
-                    item(key = "home_tracks_loading_more", contentType = "home_tracks_loading_more") {
-                        SongListSkeleton(
-                            count = 2,
-                            horizontalPadding = horizontalPad,
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
-                    }
                 }
             }
         }
@@ -782,7 +626,6 @@ fun HomeScreen(
             }
         )
     }
-    }
 }
 
 @Composable
@@ -817,24 +660,14 @@ private fun QuickAccessTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val isPlayableNow = isPlaying || isSongPlayableInUi(
-        song = song,
-        isOnline = LocalIsOnline.current,
-        offlinePlayableIds = LocalOfflinePlayableIds.current,
-        cacheIndexWarmed = LocalCacheIndexWarmed.current
-    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .height(58.dp)
-            .clip(QuickTileShape)
+            .clip(RoundedCornerShape(8.dp))
             .background(if (isPlaying) Color(0xFF222436) else AlaktraSurface)
-            .border(1.dp, if (isPlaying) AlaktraMint.copy(alpha = 0.5f) else AlaktraBorder, QuickTileShape)
-            .clickable {
-                if (isPlayableNow) onClick() else showOfflineUnplayableToast(context)
-            }
-            .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.42f }
+            .border(1.dp, if (isPlaying) AlaktraMint.copy(alpha = 0.5f) else AlaktraBorder, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
     ) {
         SongCover(
             imageUrl = song.coverUrl,
@@ -853,18 +686,8 @@ private fun QuickAccessTile(
             color = if (isPlaying) AlaktraMint else AlaktraTextPrimary,
             modifier = Modifier
                 .weight(1f)
-                .padding(end = if (isPlayableNow) 8.dp else 4.dp)
+                .padding(end = 8.dp)
         )
-        if (!isPlayableNow) {
-            Icon(
-                imageVector = Icons.Default.WifiOff,
-                contentDescription = "Unavailable offline",
-                tint = AlaktraTextMuted,
-                modifier = Modifier
-                    .padding(end = 8.dp)
-                    .size(13.dp)
-            )
-        }
     }
 }
 
@@ -881,20 +704,23 @@ private fun DailyPlaylistCard(
     }
     val trackCount = if (dailyPlaylist.songs.isNotEmpty()) dailyPlaylist.songs.size else dailyPlaylist.songCount
 
-    val cardBrush = remember(accentColor) {
-        Brush.verticalGradient(colors = listOf(accentColor.copy(alpha = 0.12f), AlaktraSurface))
-    }
-
     Column(
         modifier = Modifier
             .width(cardWidth)
             .testTag("daily_playlist_card_${dailyPlaylist.slotIndex}")
-            .clip(CardCornerShape16)
-            .background(cardBrush)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.12f),
+                        AlaktraSurface
+                    )
+                )
+            )
             .border(
                 width = 1.dp,
                 color = if (isPlaying) accentColor.copy(alpha = 0.75f) else AlaktraBorder,
-                shape = CardCornerShape16
+                shape = RoundedCornerShape(16.dp)
             )
             .clickable(onClick = onCardClick)
             .padding(10.dp)
@@ -915,8 +741,16 @@ private fun DailyPlaylistCard(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(CardCornerShape11)
-                    .background(DailyCardScrimBrush)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.25f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.55f)
+                            )
+                        )
+                    )
             )
 
             // Top-left Daily Mix index pill
@@ -924,9 +758,9 @@ private fun DailyPlaylistCard(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(7.dp)
-                    .clip(BadgeShape6)
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color.Black.copy(alpha = 0.68f))
-                    .border(0.75.dp, accentColor.copy(alpha = 0.65f), BadgeShape6)
+                    .border(0.75.dp, accentColor.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
@@ -1008,52 +842,32 @@ private fun MadeForYouCard(
     onClick: () -> Unit,
     cardWidth: androidx.compose.ui.unit.Dp = 160.dp
 ) {
-    val context = LocalContext.current
-    val isPlayableNow = isPlaying || isSongPlayableInUi(
-        song = song,
-        isOnline = LocalIsOnline.current,
-        offlinePlayableIds = LocalOfflinePlayableIds.current,
-        cacheIndexWarmed = LocalCacheIndexWarmed.current
-    )
     Box(
         modifier = Modifier
             .width(cardWidth)
             .heightIn(min = 180.dp, max = 220.dp)
-            .clip(CardCornerShape16)
-            .background(MadeForYouCardBrush)
-            .border(1.dp, AlaktraBorder, CardCornerShape16)
-            .clickable {
-                if (isPlayableNow) onClick() else showOfflineUnplayableToast(context)
-            }
-            .graphicsLayer { alpha = if (isPlayableNow) 1f else 0.42f }
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF1F2236), AlaktraCard)
+                )
+            )
+            .border(1.dp, AlaktraBorder, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
             .padding(12.dp)
     ) {
         Column {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(AlaktraMint.copy(alpha = 0.2f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .clip(BadgeShape6)
-                        .background(AlaktraMint.copy(alpha = 0.2f))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Text(
-                        text = "DISCOVER",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = AlaktraMint
-                    )
-                }
-                if (!isPlayableNow) {
-                    Icon(
-                        imageVector = Icons.Default.WifiOff,
-                        contentDescription = "Unavailable offline",
-                        tint = AlaktraTextMuted,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
+                Text(
+                    text = "DISCOVER",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = AlaktraMint
+                )
             }
             Spacer(modifier = Modifier.height(10.dp))
             SongCover(
@@ -1089,9 +903,9 @@ private fun PlaylistCard(
     Column(
         modifier = Modifier
             .width(cardWidth)
-            .clip(CardCornerShape14)
+            .clip(RoundedCornerShape(14.dp))
             .background(AlaktraSurface)
-            .border(1.dp, AlaktraBorder, CardCornerShape14)
+            .border(1.dp, AlaktraBorder, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(10.dp)
     ) {
@@ -1099,8 +913,12 @@ private fun PlaylistCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(ShortcutCardShape)
-                .background(PlaylistPlaceholderBrush),
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(Color(0xFF3B82F6), Color(0xFF1E1B4B))
+                    )
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(

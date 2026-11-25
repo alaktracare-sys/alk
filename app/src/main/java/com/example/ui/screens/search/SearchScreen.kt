@@ -18,7 +18,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,33 +41,19 @@ import com.example.audio.AudioController
 import com.example.data.repository.MusicRepository
 import com.example.model.ArtistProfile
 import com.example.model.Song
-import com.example.ui.components.ArtistListSkeleton
-import com.example.ui.components.LocalIsOnline
 import com.example.ui.components.SongItemRow
-import com.example.ui.components.SongListSkeleton
 import com.example.ui.components.SongMenuBottomSheet
 import com.example.ui.theme.*
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.util.Locale
 
 private const val SEARCH_PREFS_NAME = "alaktra_search_history"
 private const val KEY_RECENT_SEARCHES = "recent_queries"
 private const val MAX_RECENT_SEARCHES = 15
-
-private val SearchInputShape = RoundedCornerShape(14.dp)
-private val ArtistBubbleCardShape = RoundedCornerShape(14.dp)
-private val ArtistRowCardShape = RoundedCornerShape(16.dp)
-private val ArtistBubbleAvatarBrush = Brush.linearGradient(listOf(AlaktraMint.copy(alpha = 0.3f), AlaktraCyan.copy(alpha = 0.3f)))
-private val ArtistRowAvatarBrush = Brush.linearGradient(listOf(AlaktraMint, AlaktraCyan))
 
 private fun loadRecentSearches(context: Context): List<String> {
     val prefs = context.getSharedPreferences(SEARCH_PREFS_NAME, Context.MODE_PRIVATE)
@@ -95,28 +80,6 @@ private fun saveRecentSearchesToPrefs(context: Context, list: List<String>) {
     prefs.edit().putString(KEY_RECENT_SEARCHES, array.toString()).apply()
 }
 
-private object SearchHistoryCache {
-    @Volatile
-    private var memory: List<String>? = null
-
-    fun peek(): List<String>? = memory
-
-    suspend fun loadIfNeeded(context: Context): List<String> = withContext(Dispatchers.IO) {
-        memory?.let { return@withContext it }
-        val loaded = loadRecentSearches(context.applicationContext)
-        memory = loaded
-        loaded
-    }
-
-    fun update(context: Context, list: List<String>) {
-        memory = list
-        val appCtx = context.applicationContext
-        CoroutineScope(Dispatchers.IO).launch {
-            saveRecentSearchesToPrefs(appCtx, list)
-        }
-    }
-}
-
 enum class SearchFilter { ALL, ARTISTS, DOWNLOADED, FAVORITES }
 
 @Composable
@@ -128,163 +91,26 @@ fun SearchScreen(
     onViewSongArtist: (Song) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val isOnline = LocalIsOnline.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    var query by rememberSaveable { mutableStateOf("") }
-    var selectedFilter by rememberSaveable { mutableStateOf(SearchFilter.ALL) }
-    var results by remember {
-        mutableStateOf(
-            repository.peekCachedSongs().let { cached ->
-                val qClean = query.trim()
-                if (qClean.isBlank()) cached
-                else cached.filter {
-                    it.title.contains(qClean, ignoreCase = true) ||
-                        it.artist.contains(qClean, ignoreCase = true)
-                }
-            }
-        )
-    }
-    var matchingArtists by remember {
-        mutableStateOf(
-            repository.peekCachedArtists().let { cached ->
-                val qClean = query.trim()
-                if (qClean.isBlank()) cached
-                else cached.filter { it.name.contains(qClean, ignoreCase = true) }
-            }
-        )
-    }
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Song>>(emptyList()) }
+    var matchingArtists by remember { mutableStateOf<List<ArtistProfile>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
-    var isLoadingInitial by remember {
-        mutableStateOf(matchingArtists.isEmpty() && results.isEmpty())
-    }
-    var recentSearches by remember { mutableStateOf(SearchHistoryCache.peek().orEmpty()) }
+    var selectedFilter by remember { mutableStateOf(SearchFilter.ALL) }
+    var recentSearches by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedSongForMenu by remember { mutableStateOf<Song?>(null) }
     val scope = rememberCoroutineScope()
     var searchJob by remember { mutableStateOf<Job?>(null) }
 
-    val playbackState by audioController.stablePlaybackState.collectAsState()
+    val playbackState by audioController.playbackState.collectAsState()
     val downloadProgress by repository.downloadManager.downloadProgress.collectAsState()
 
     LaunchedEffect(Unit) {
-        try {
-            if (SearchHistoryCache.peek() == null) {
-                val loaded = SearchHistoryCache.loadIfNeeded(context)
-                if (loaded != recentSearches) {
-                    recentSearches = loaded
-                }
-            }
-            val cleanQ = query.trim()
-            if (matchingArtists.isEmpty() || (cleanQ.isNotBlank() && results.isEmpty())) {
-                try {
-                    coroutineScope {
-                        val cachedSongsDeferred = if (cleanQ.isNotBlank()) {
-                            async {
-                                repository.getCachedSongs().filter {
-                                    it.title.contains(cleanQ, ignoreCase = true) ||
-                                        it.artist.contains(cleanQ, ignoreCase = true)
-                                }
-                            }
-                        } else null
-                        val cachedArtistsDeferred = async { repository.getCachedArtists(query = cleanQ) }
-                        val cachedArtists = cachedArtistsDeferred.await()
-                        if (cachedArtists.isNotEmpty() && cachedArtists != matchingArtists) {
-                            matchingArtists = cachedArtists
-                        }
-                        if (cachedSongsDeferred != null) {
-                            val cachedSongs = cachedSongsDeferred.await()
-                            if (cachedSongs.isNotEmpty() && cachedSongs != results) {
-                                results = cachedSongs
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                }
-            }
-
-            if (!isOnline) return@LaunchedEffect
-
-            // Defer network refresh until screen transition finishes
-            delay(250L)
-
-            if (cleanQ.isBlank() && matchingArtists.isNotEmpty() && !repository.shouldRefreshSearchInBackground()) {
-                return@LaunchedEffect
-            }
-
-            try {
-                if (cleanQ.isBlank()) {
-                    repository.markSearchRefreshed()
-                }
-                coroutineScope {
-                    val songsDeferred = if (cleanQ.isNotBlank()) {
-                        async { repository.searchSongs(query = cleanQ, limit = 30) }
-                    } else null
-                    val artistsDeferred = async { repository.getArtists(query = cleanQ) }
-                    val freshArtists = artistsDeferred.await()
-                    if (freshArtists.isNotEmpty() && freshArtists != matchingArtists) {
-                        matchingArtists = freshArtists
-                    }
-                    if (songsDeferred != null) {
-                        val freshSongs = songsDeferred.await()
-                        if (freshSongs.isNotEmpty() && freshSongs != results) {
-                            results = freshSongs
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-            }
-        } finally {
-            isLoadingInitial = false
-        }
-    }
-
-    var wasOnline by remember { mutableStateOf(isOnline) }
-    LaunchedEffect(isOnline) {
-        if (!wasOnline && isOnline) {
-            val cleanQ = query.trim()
-            try {
-                if (cleanQ.isBlank()) {
-                    repository.markSearchRefreshed()
-                }
-                coroutineScope {
-                    val songsDeferred = if (cleanQ.isNotBlank()) {
-                        async { repository.searchSongs(query = cleanQ, limit = 30) }
-                    } else null
-                    val artistsDeferred = async { repository.getArtists(query = cleanQ) }
-                    val freshArtists = artistsDeferred.await()
-                    if (freshArtists.isNotEmpty() && freshArtists != matchingArtists) {
-                        matchingArtists = freshArtists
-                    }
-                    if (songsDeferred != null) {
-                        val freshSongs = songsDeferred.await()
-                        if (freshSongs.isNotEmpty() && freshSongs != results) {
-                            results = freshSongs
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-            }
-        }
-        wasOnline = isOnline
-    }
-
-    LaunchedEffect(selectedFilter) {
-        if (query.isBlank() && (selectedFilter == SearchFilter.DOWNLOADED || selectedFilter == SearchFilter.FAVORITES)) {
-            try {
-                val base = if (selectedFilter == SearchFilter.DOWNLOADED) {
-                    repository.getDownloadedSongs()
-                } else {
-                    repository.getCachedLikedSongs().ifEmpty { repository.getCachedSongs() }
-                }
-                if (base.isNotEmpty()) {
-                    results = (results + base).distinctBy { it.id }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-            }
-        }
+        recentSearches = loadRecentSearches(context)
+        val songsDeferred = async { repository.getSongs() }
+        val artistsDeferred = async { repository.getArtists() }
+        results = songsDeferred.await()
+        matchingArtists = artistsDeferred.await()
     }
 
     fun addRecentSearch(term: String) {
@@ -293,52 +119,30 @@ fun SearchScreen(
         val updated = (listOf(trimmed) + recentSearches.filterNot { it.equals(trimmed, ignoreCase = true) })
             .take(MAX_RECENT_SEARCHES)
         recentSearches = updated
-        SearchHistoryCache.update(context, updated)
+        saveRecentSearchesToPrefs(context, updated)
     }
 
     fun removeRecentSearch(term: String) {
         val updated = recentSearches.filterNot { it.equals(term, ignoreCase = true) }
         recentSearches = updated
-        SearchHistoryCache.update(context, updated)
+        saveRecentSearchesToPrefs(context, updated)
     }
 
     fun clearAllRecentSearches() {
         recentSearches = emptyList()
-        SearchHistoryCache.update(context, emptyList())
+        saveRecentSearchesToPrefs(context, emptyList())
     }
 
     fun triggerSearch(q: String) {
         searchJob?.cancel()
         searchJob = scope.launch {
             delay(200)
-            val clean = q.trim()
-            if (clean.isBlank()) {
-                val cachedArtists = repository.getCachedArtists(query = "")
-                if (cachedArtists.isNotEmpty()) matchingArtists = cachedArtists
-                isSearching = false
-                return@launch
-            }
-            if (isOnline && !com.example.util.NetworkMonitor.isServerTemporarilyUnreachable()) {
-                isSearching = true
-            }
-            try {
-                coroutineScope {
-                    val songsDeferred = async { repository.searchSongs(query = clean, limit = 30) }
-                    val artistsDeferred = async { repository.getArtists(query = clean) }
-                    val freshSongs = songsDeferred.await()
-                    val freshArtists = artistsDeferred.await()
-                    if (freshSongs != results) {
-                        results = freshSongs
-                    }
-                    if (freshArtists != matchingArtists) {
-                        matchingArtists = freshArtists
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-            } finally {
-                isSearching = false
-            }
+            isSearching = true
+            val songsDeferred = async { repository.getSongs(query = q.ifBlank { null }) }
+            val artistsDeferred = async { repository.getArtists(query = q.trim()) }
+            results = songsDeferred.await()
+            matchingArtists = artistsDeferred.await()
+            isSearching = false
         }
     }
 
@@ -419,7 +223,7 @@ fun SearchScreen(
                             keyboardController?.hide()
                         }
                     ),
-                    shape = SearchInputShape,
+                    shape = RoundedCornerShape(14.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = AlaktraTextPrimary,
                         unfocusedTextColor = AlaktraTextPrimary,
@@ -473,25 +277,15 @@ fun SearchScreen(
                     }
                 }
 
-                if (isSearching && (filteredResults.isNotEmpty() || matchingArtists.isNotEmpty())) {
-                    LinearProgressIndicator(
-                        color = AlaktraMint,
-                        trackColor = AlaktraSurface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 2.dp)
-                            .height(2.dp)
-                    )
-                }
-
-                if (selectedFilter == SearchFilter.ARTISTS) {
-                    if (matchingArtists.isEmpty() && (isSearching || isLoadingInitial)) {
-                        ArtistListSkeleton(
-                            count = 6,
-                            horizontalPadding = 20.dp,
-                            modifier = Modifier.padding(top = 6.dp)
-                        )
-                    } else if (matchingArtists.isEmpty()) {
+                if (isSearching) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        CircularProgressIndicator(color = AlaktraMint)
+                    }
+                } else if (selectedFilter == SearchFilter.ARTISTS) {
+                    if (matchingArtists.isEmpty()) {
                         EmptySearchPlaceholder(
                             title = "No artists found",
                             subtitle = if (query.isNotBlank()) "No artist profile matches \"$query\"."
@@ -505,8 +299,7 @@ fun SearchScreen(
                         ) {
                             items(
                                 items = matchingArtists,
-                                key = { "artist_card_${it.id}" },
-                                contentType = { "artist_row" }
+                                key = { "artist_card_${it.id}" }
                             ) { artist ->
                                 SearchArtistRowCard(
                                     artist = artist,
@@ -554,8 +347,7 @@ fun SearchScreen(
                                     ) {
                                         items(
                                             items = matchingArtists.take(12),
-                                            key = { "carousel_artist_${it.id}" },
-                                            contentType = { "artist_bubble" }
+                                            key = { "carousel_artist_${it.id}" }
                                         ) { artist ->
                                             SearchArtistBubble(
                                                 artist = artist,
@@ -674,12 +466,6 @@ fun SearchScreen(
                             }
                         }
                     }
-                } else if (filteredResults.isEmpty() && (isSearching || isLoadingInitial)) {
-                    SongListSkeleton(
-                        count = 6,
-                        horizontalPadding = 20.dp,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
                 } else if (filteredResults.isEmpty() && (selectedFilter != SearchFilter.ALL || matchingArtists.isEmpty())) {
                     EmptySearchPlaceholder(
                         title = "No tracks found",
@@ -705,8 +491,7 @@ fun SearchScreen(
                                 ) {
                                     items(
                                         items = matchingArtists.take(8),
-                                        key = { "matched_artist_${it.id}" },
-                                        contentType = { "artist_bubble" }
+                                        key = { "matched_artist_${it.id}" }
                                     ) { artist ->
                                         SearchArtistBubble(
                                             artist = artist,
@@ -829,7 +614,7 @@ private fun SearchArtistBubble(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(88.dp)
-            .clip(ArtistBubbleCardShape)
+            .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 6.dp, horizontal = 4.dp)
             .testTag("search_artist_bubble_${artist.id}")
@@ -839,16 +624,13 @@ private fun SearchArtistBubble(
             modifier = Modifier
                 .size(68.dp)
                 .clip(CircleShape)
-                .background(ArtistBubbleAvatarBrush)
+                .background(Brush.linearGradient(listOf(AlaktraMint.copy(alpha = 0.3f), AlaktraCyan.copy(alpha = 0.3f))))
                 .border(1.5.dp, AlaktraBorder, CircleShape)
         ) {
             if (artist.avatarUrl.isNotBlank()) {
                 AsyncImage(
                     model = remember(artist.avatarUrl) {
-                        ImageRequest.Builder(context)
-                            .data(artist.avatarUrl)
-                            .size(160)
-                            .build()
+                        ImageRequest.Builder(context).data(artist.avatarUrl).crossfade(true).build()
                     },
                     contentDescription = artist.name,
                     contentScale = ContentScale.Crop,
@@ -900,9 +682,9 @@ private fun SearchArtistRowCard(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(ArtistRowCardShape)
+            .clip(RoundedCornerShape(16.dp))
             .background(AlaktraCard)
-            .border(1.dp, AlaktraBorder, ArtistRowCardShape)
+            .border(1.dp, AlaktraBorder, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
             .testTag("search_artist_row_${artist.id}")
@@ -912,15 +694,12 @@ private fun SearchArtistRowCard(
             modifier = Modifier
                 .size(54.dp)
                 .clip(CircleShape)
-                .background(ArtistRowAvatarBrush)
+                .background(Brush.linearGradient(listOf(AlaktraMint, AlaktraCyan)))
         ) {
             if (artist.avatarUrl.isNotBlank()) {
                 AsyncImage(
                     model = remember(artist.avatarUrl) {
-                        ImageRequest.Builder(context)
-                            .data(artist.avatarUrl)
-                            .size(144)
-                            .build()
+                        ImageRequest.Builder(context).data(artist.avatarUrl).crossfade(true).build()
                     },
                     contentDescription = artist.name,
                     contentScale = ContentScale.Crop,

@@ -21,10 +21,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.repository.MusicRepository
 import com.example.model.Song
 import com.example.ui.components.SongCover
-import com.example.ui.components.SongListSkeleton
 import com.example.ui.theme.*
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,46 +31,15 @@ fun AddSongToPlaylistScreen(
     repository: MusicRepository,
     onBack: () -> Unit
 ) {
-    var allSongs by remember { mutableStateOf<List<Song>>(repository.peekCachedSongs()) }
+    var allSongs by remember { mutableStateOf<List<Song>>(emptyList()) }
     var playlistSongIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var searchQuery by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(allSongs.isEmpty()) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(playlistId) {
-        try {
-            val cached = repository.getCachedSongs()
-            if (cached.isNotEmpty()) {
-                allSongs = cached
-                isLoading = false
-            }
-            val playlistSongs = repository.getPlaylistSongs(playlistId)
-            playlistSongIds = playlistSongs.map { it.id }.toSet()
-
-            val firstPage = repository.getSongsPage(limit = 40, offset = 0).songs
-            if (firstPage.isNotEmpty()) {
-                allSongs = (firstPage + allSongs).distinctBy { it.id }
-            }
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-        } finally {
-            isLoading = false
-        }
-    }
-
-    LaunchedEffect(searchQuery) {
-        val q = searchQuery.trim()
-        if (q.length >= 2) {
-            delay(250L)
-            try {
-                val searched = repository.searchSongs(query = q, limit = 30)
-                if (searched.isNotEmpty()) {
-                    allSongs = (allSongs + searched).distinctBy { it.id }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-            }
-        }
+        allSongs = repository.getSongs()
+        val playlistSongs = repository.getPlaylistSongs(playlistId)
+        playlistSongIds = playlistSongs.map { it.id }.toSet()
     }
 
     val filteredSongs = remember(allSongs, searchQuery) {
@@ -142,22 +108,15 @@ fun AddSongToPlaylistScreen(
                     .padding(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 8.dp)
             )
 
-            if (isLoading && filteredSongs.isEmpty()) {
-                SongListSkeleton(
-                    count = 7,
-                    horizontalPadding = 20.dp,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 88.dp)
-                ) {
-                    items(
-                        items = filteredSongs,
-                        key = { it.id },
-                        contentType = { "add_song_row" }
-                    ) { song ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 88.dp)
+            ) {
+                items(
+                    items = filteredSongs,
+                    key = { it.id },
+                    contentType = { "add_song_row" }
+                ) { song ->
                     val isAdded = playlistSongIds.contains(song.id)
 
                     Row(
@@ -207,9 +166,8 @@ fun AddSongToPlaylistScreen(
                     }
                 }
             }
-        }
+            }
         }
     }
-}
 }
 
